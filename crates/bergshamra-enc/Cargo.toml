@@ -1,0 +1,19 @@
+[package]
+name = "bergshamra-enc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "XML Encryption for Bergshamra XML Security library"
+
+[dependencies]
+bergshamra-core.workspace = true
+bergshamra-xml.workspace = true
+bergshamra-transforms.workspace = true
+bergshamra-keys.workspace = true
+bergshamra-c14n.workspace = true
+bergshamra-crypto.workspace = true
+base64.workspace = true
+roxmltree.workspace = true
+quick-xml.workspace = true
+rand.workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "bergshamra-transforms"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Transform pipeline for Bergshamra XML Security library"
+
+[dependencies]
+bergshamra-core.workspace = true
+bergshamra-xml.workspace = true
+bergshamra-c14n.workspace = true
+bergshamra-crypto.workspace = true
+bergshamra-keys.workspace = true
+base64.workspace = true
+roxmltree.workspace = true

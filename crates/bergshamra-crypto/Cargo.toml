@@ -1,0 +1,36 @@
+[package]
+name = "bergshamra-crypto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Cryptographic algorithm implementations for Bergshamra XML Security library"
+
+[features]
+default = []
+legacy-algorithms = ["dep:md-5", "dep:ripemd"]
+
+[dependencies]
+bergshamra-core.workspace = true
+digest.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+sha3.workspace = true
+md-5 = { workspace = true, optional = true }
+ripemd = { workspace = true, optional = true }
+hmac.workspace = true
+rsa.workspace = true
+ecdsa.workspace = true
+dsa.workspace = true
+p256 = { workspace = true, features = ["ecdsa"] }
+p384 = { workspace = true, features = ["ecdsa"] }
+p521 = { workspace = true, features = ["ecdsa"] }
+aes.workspace = true
+cbc.workspace = true
+aes-gcm.workspace = true
+des.workspace = true
+aes-kw.workspace = true
+signature.workspace = true
+rand.workspace = true
+pkcs1.workspace = true
+pkcs8.workspace = true

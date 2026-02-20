@@ -1,0 +1,10 @@
+[package]
+name = "bergshamra-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Core types and constants for the Bergshamra XML Security library"
+
+[dependencies]
+thiserror.workspace = true

@@ -1,0 +1,23 @@
+[package]
+name = "bergshamra"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Bergshamra — Pure Rust XML Security library (XML-DSig, XML-Enc, C14N)"
+
+[[bin]]
+name = "bergshamra"
+path = "src/main.rs"
+
+[dependencies]
+bergshamra-core.workspace = true
+bergshamra-xml.workspace = true
+bergshamra-c14n.workspace = true
+bergshamra-crypto.workspace = true
+bergshamra-keys.workspace = true
+bergshamra-transforms.workspace = true
+bergshamra-dsig.workspace = true
+bergshamra-enc.workspace = true
+clap.workspace = true
+base64.workspace = true

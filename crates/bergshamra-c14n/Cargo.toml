@@ -1,0 +1,12 @@
+[package]
+name = "bergshamra-c14n"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "XML Canonicalization (C14N) for Bergshamra XML Security library"
+
+[dependencies]
+bergshamra-core.workspace = true
+bergshamra-xml.workspace = true
+roxmltree.workspace = true

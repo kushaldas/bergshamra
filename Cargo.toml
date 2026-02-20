@@ -1,0 +1,70 @@
+[workspace]
+members = [
+    "crates/bergshamra-core",
+    "crates/bergshamra-xml",
+    "crates/bergshamra-c14n",
+    "crates/bergshamra-crypto",
+    "crates/bergshamra-keys",
+    "crates/bergshamra-transforms",
+    "crates/bergshamra-dsig",
+    "crates/bergshamra-enc",
+    "crates/bergshamra",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Internal crates
+bergshamra-core = { path = "crates/bergshamra-core" }
+bergshamra-xml = { path = "crates/bergshamra-xml" }
+bergshamra-c14n = { path = "crates/bergshamra-c14n" }
+bergshamra-crypto = { path = "crates/bergshamra-crypto" }
+bergshamra-keys = { path = "crates/bergshamra-keys" }
+bergshamra-transforms = { path = "crates/bergshamra-transforms" }
+bergshamra-dsig = { path = "crates/bergshamra-dsig" }
+bergshamra-enc = { path = "crates/bergshamra-enc" }
+
+# XML parsing
+roxmltree = "0.20"
+quick-xml = "0.36"
+
+# Cryptography (RustCrypto ecosystem)
+sha1 = { version = "0.10", features = ["oid"] }
+sha2 = { version = "0.10", features = ["oid"] }
+sha3 = { version = "0.10", features = ["oid"] }
+md-5 = "0.10"
+ripemd = "0.1"
+hmac = "0.12"
+digest = "0.10"
+rsa = "0.9"
+ecdsa = "0.16"
+dsa = "0.6"
+p256 = "0.13"
+p384 = "0.13"
+p521 = "0.13"
+aes = "0.8"
+cbc = "0.1"
+aes-gcm = "0.10"
+des = "0.8"
+aes-kw = "0.2"
+signature = "2"
+rand = "0.8"
+
+# Key formats
+pkcs1 = "0.7"
+pkcs8 = "0.10"
+spki = "0.7"
+der = "0.7"
+pem-rfc7468 = "0.7"
+x509-cert = "0.2"
+p12 = "0.6"
+
+# Utilities
+base64 = "0.22"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }

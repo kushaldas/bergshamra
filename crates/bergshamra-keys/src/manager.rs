@@ -1,0 +1,79 @@
+#![forbid(unsafe_code)]
+
+//! Key manager with named key store.
+
+use crate::key::{Key, KeyUsage};
+use bergshamra_core::Error;
+
+/// Manages a collection of keys for lookup during signature/encryption processing.
+pub struct KeysManager {
+    keys: Vec<Key>,
+}
+
+impl KeysManager {
+    /// Create an empty keys manager.
+    pub fn new() -> Self {
+        Self { keys: Vec::new() }
+    }
+
+    /// Add a key to the manager.
+    pub fn add_key(&mut self, key: Key) {
+        self.keys.push(key);
+    }
+
+    /// Find a key by name.
+    pub fn find_by_name(&self, name: &str) -> Option<&Key> {
+        self.keys.iter().find(|k| k.name.as_deref() == Some(name))
+    }
+
+    /// Find the first key matching the given usage.
+    pub fn find_by_usage(&self, usage: KeyUsage) -> Option<&Key> {
+        self.keys.iter().find(|k| k.usage == usage || k.usage == KeyUsage::Any)
+    }
+
+    /// Find the first key that has an RSA public key.
+    pub fn find_rsa(&self) -> Option<&Key> {
+        self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::Rsa { .. }))
+    }
+
+    /// Find the first key that has an EC P-256 key.
+    pub fn find_ec_p256(&self) -> Option<&Key> {
+        self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::EcP256 { .. }))
+    }
+
+    /// Find the first key that has an EC P-384 key.
+    pub fn find_ec_p384(&self) -> Option<&Key> {
+        self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::EcP384 { .. }))
+    }
+
+    /// Find the first HMAC key.
+    pub fn find_hmac(&self) -> Option<&Key> {
+        self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::Hmac(_)))
+    }
+
+    /// Find the first AES key.
+    pub fn find_aes(&self) -> Option<&Key> {
+        self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::Aes(_)))
+    }
+
+    /// Get the first key available (for simple single-key scenarios).
+    pub fn first_key(&self) -> Result<&Key, Error> {
+        self.keys.first().ok_or_else(|| Error::KeyNotFound("no keys in manager".into()))
+    }
+
+    /// Number of keys.
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    /// Check if empty.
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+}
+
+impl Default for KeysManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
