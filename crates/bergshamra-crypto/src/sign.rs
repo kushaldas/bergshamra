@@ -13,6 +13,8 @@ pub enum SigningKey {
     EcP256Public(p256::ecdsa::VerifyingKey),
     EcP384(p384::ecdsa::SigningKey),
     EcP384Public(p384::ecdsa::VerifyingKey),
+    Dsa(dsa::SigningKey),
+    DsaPublic(dsa::VerifyingKey),
     Hmac(Vec<u8>),
 }
 
@@ -38,10 +40,14 @@ pub fn from_uri(uri: &str) -> Result<Box<dyn SignatureAlgorithm>, Error> {
         algorithm::RSA_PSS_SHA384 => Ok(Box::new(RsaPss { uri: algorithm::RSA_PSS_SHA384, hash: HashType::Sha384 })),
         algorithm::RSA_PSS_SHA512 => Ok(Box::new(RsaPss { uri: algorithm::RSA_PSS_SHA512, hash: HashType::Sha512 })),
 
-        algorithm::ECDSA_SHA1 => Ok(Box::new(EcdsaP256 { uri: algorithm::ECDSA_SHA1 })),
-        algorithm::ECDSA_SHA256 => Ok(Box::new(EcdsaP256 { uri: algorithm::ECDSA_SHA256 })),
-        algorithm::ECDSA_SHA384 => Ok(Box::new(EcdsaP384 { uri: algorithm::ECDSA_SHA384 })),
-        algorithm::ECDSA_SHA512 => Ok(Box::new(EcdsaP384 { uri: algorithm::ECDSA_SHA512 })),
+        algorithm::ECDSA_SHA1 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA1, _hash: HashType::Sha1 })),
+        algorithm::ECDSA_SHA224 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA224, _hash: HashType::Sha224 })),
+        algorithm::ECDSA_SHA256 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA256, _hash: HashType::Sha256 })),
+        algorithm::ECDSA_SHA384 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA384, _hash: HashType::Sha384 })),
+        algorithm::ECDSA_SHA512 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA512, _hash: HashType::Sha512 })),
+
+        algorithm::DSA_SHA1 => Ok(Box::new(DsaSign { uri: algorithm::DSA_SHA1, hash: HashType::Sha1 })),
+        algorithm::DSA_SHA256 => Ok(Box::new(DsaSign { uri: algorithm::DSA_SHA256, hash: HashType::Sha256 })),
 
         algorithm::HMAC_SHA1 => Ok(Box::new(HmacSign { uri: algorithm::HMAC_SHA1, hash: HashType::Sha1 })),
         algorithm::HMAC_SHA224 => Ok(Box::new(HmacSign { uri: algorithm::HMAC_SHA224, hash: HashType::Sha224 })),
@@ -172,9 +178,9 @@ impl SignatureAlgorithm for RsaPss {
     }
 }
 
-// ── ECDSA P-256 ──────────────────────────────────────────────────────
+// ── ECDSA (unified P-256 / P-384) ────────────────────────────────────
 
-struct EcdsaP256 { uri: &'static str }
+struct Ecdsa { uri: &'static str, _hash: HashType }
 
 /// Convert XML-DSig ECDSA r||s to a typed Signature for P-256.
 pub fn xmldsig_to_p256(rs: &[u8]) -> Result<p256::ecdsa::Signature, Error> {
@@ -196,34 +202,6 @@ pub fn p256_to_xmldsig(sig: &p256::ecdsa::Signature) -> Vec<u8> {
     out
 }
 
-impl SignatureAlgorithm for EcdsaP256 {
-    fn uri(&self) -> &'static str { self.uri }
-
-    fn sign(&self, key: &SigningKey, data: &[u8]) -> Result<Vec<u8>, Error> {
-        use signature::Signer;
-        let SigningKey::EcP256(sk) = key else {
-            return Err(Error::Key("P-256 signing key required".into()));
-        };
-        let sig: p256::ecdsa::Signature = sk.sign(data);
-        Ok(p256_to_xmldsig(&sig))
-    }
-
-    fn verify(&self, key: &SigningKey, data: &[u8], sig_bytes: &[u8]) -> Result<bool, Error> {
-        use signature::Verifier;
-        let vk = match key {
-            SigningKey::EcP256(sk) => *sk.verifying_key(),
-            SigningKey::EcP256Public(vk) => *vk,
-            _ => return Err(Error::Key("P-256 key required".into())),
-        };
-        let sig = xmldsig_to_p256(sig_bytes)?;
-        Ok(vk.verify(data, &sig).is_ok())
-    }
-}
-
-// ── ECDSA P-384 ──────────────────────────────────────────────────────
-
-struct EcdsaP384 { uri: &'static str }
-
 /// Convert XML-DSig ECDSA r||s to a typed Signature for P-384.
 pub fn xmldsig_to_p384(rs: &[u8]) -> Result<p384::ecdsa::Signature, Error> {
     if rs.len() != 96 {
@@ -244,28 +222,119 @@ pub fn p384_to_xmldsig(sig: &p384::ecdsa::Signature) -> Vec<u8> {
     out
 }
 
-impl SignatureAlgorithm for EcdsaP384 {
+impl SignatureAlgorithm for Ecdsa {
     fn uri(&self) -> &'static str { self.uri }
 
     fn sign(&self, key: &SigningKey, data: &[u8]) -> Result<Vec<u8>, Error> {
         use signature::Signer;
-        let SigningKey::EcP384(sk) = key else {
-            return Err(Error::Key("P-384 signing key required".into()));
-        };
-        let sig: p384::ecdsa::Signature = sk.sign(data);
-        Ok(p384_to_xmldsig(&sig))
+        match key {
+            SigningKey::EcP256(sk) => {
+                let sig: p256::ecdsa::Signature = sk.sign(data);
+                Ok(p256_to_xmldsig(&sig))
+            }
+            SigningKey::EcP384(sk) => {
+                let sig: p384::ecdsa::Signature = sk.sign(data);
+                Ok(p384_to_xmldsig(&sig))
+            }
+            _ => Err(Error::Key("ECDSA signing key required (P-256 or P-384)".into())),
+        }
     }
 
     fn verify(&self, key: &SigningKey, data: &[u8], sig_bytes: &[u8]) -> Result<bool, Error> {
         use signature::Verifier;
-        let vk = match key {
-            SigningKey::EcP384(sk) => *sk.verifying_key(),
-            SigningKey::EcP384Public(vk) => *vk,
-            _ => return Err(Error::Key("P-384 key required".into())),
-        };
-        let sig = xmldsig_to_p384(sig_bytes)?;
-        Ok(vk.verify(data, &sig).is_ok())
+        match key {
+            SigningKey::EcP256(sk) => {
+                let sig = xmldsig_to_p256(sig_bytes)?;
+                Ok(sk.verifying_key().verify(data, &sig).is_ok())
+            }
+            SigningKey::EcP256Public(vk) => {
+                let sig = xmldsig_to_p256(sig_bytes)?;
+                Ok(vk.verify(data, &sig).is_ok())
+            }
+            SigningKey::EcP384(sk) => {
+                let sig = xmldsig_to_p384(sig_bytes)?;
+                Ok(sk.verifying_key().verify(data, &sig).is_ok())
+            }
+            SigningKey::EcP384Public(vk) => {
+                let sig = xmldsig_to_p384(sig_bytes)?;
+                Ok(vk.verify(data, &sig).is_ok())
+            }
+            _ => Err(Error::Key("ECDSA key required (P-256 or P-384)".into())),
+        }
     }
+}
+
+// ── DSA ──────────────────────────────────────────────────────────────
+
+struct DsaSign { uri: &'static str, hash: HashType }
+
+impl SignatureAlgorithm for DsaSign {
+    fn uri(&self) -> &'static str { self.uri }
+
+    fn sign(&self, key: &SigningKey, data: &[u8]) -> Result<Vec<u8>, Error> {
+        use signature::DigestSigner;
+        let SigningKey::Dsa(sk) = key else {
+            return Err(Error::Key("DSA signing key required".into()));
+        };
+        let sig: dsa::Signature = match self.hash {
+            HashType::Sha1 => sk.try_sign_digest(sha1::Sha1::new_with_prefix(data))
+                .map_err(|e| Error::Crypto(format!("DSA sign: {e}")))?,
+            HashType::Sha256 => sk.try_sign_digest(sha2::Sha256::new_with_prefix(data))
+                .map_err(|e| Error::Crypto(format!("DSA sign: {e}")))?,
+            _ => return Err(Error::UnsupportedAlgorithm(format!("DSA with {:?}", self.hash))),
+        };
+        // XML-DSig format: r||s, each zero-padded to q byte length
+        Ok(dsa_sig_to_xmldsig(sk.verifying_key(), &sig))
+    }
+
+    fn verify(&self, key: &SigningKey, data: &[u8], sig_bytes: &[u8]) -> Result<bool, Error> {
+        use signature::DigestVerifier;
+        let vk = match key {
+            SigningKey::Dsa(sk) => sk.verifying_key().clone(),
+            SigningKey::DsaPublic(vk) => vk.clone(),
+            _ => return Err(Error::Key("DSA key required".into())),
+        };
+        let sig = xmldsig_to_dsa(&vk, sig_bytes)?;
+        let result = match self.hash {
+            HashType::Sha1 => vk.verify_digest(sha1::Sha1::new_with_prefix(data), &sig),
+            HashType::Sha256 => vk.verify_digest(sha2::Sha256::new_with_prefix(data), &sig),
+            _ => return Err(Error::UnsupportedAlgorithm(format!("DSA with {:?}", self.hash))),
+        };
+        Ok(result.is_ok())
+    }
+}
+
+use digest::Digest;
+
+/// Convert a DSA signature to XML-DSig r||s format.
+/// Each component is zero-padded to the byte-length of q.
+fn dsa_sig_to_xmldsig(vk: &dsa::VerifyingKey, sig: &dsa::Signature) -> Vec<u8> {
+    let q_len = (vk.components().q().bits() as usize + 7) / 8;
+    let r_bytes = sig.r().to_bytes_be();
+    let s_bytes = sig.s().to_bytes_be();
+    let mut out = vec![0u8; q_len * 2];
+    // Right-align r
+    let r_start = q_len.saturating_sub(r_bytes.len());
+    out[r_start..q_len].copy_from_slice(&r_bytes[r_bytes.len().saturating_sub(q_len)..]);
+    // Right-align s
+    let s_start = q_len + q_len.saturating_sub(s_bytes.len());
+    out[s_start..q_len * 2].copy_from_slice(&s_bytes[s_bytes.len().saturating_sub(q_len)..]);
+    out
+}
+
+/// Convert XML-DSig r||s format to a DSA signature.
+fn xmldsig_to_dsa(vk: &dsa::VerifyingKey, rs: &[u8]) -> Result<dsa::Signature, Error> {
+    let q_len = (vk.components().q().bits() as usize + 7) / 8;
+    if rs.len() != q_len * 2 {
+        return Err(Error::Crypto(format!(
+            "DSA signature must be {} bytes (2 * q_len={}), got {}",
+            q_len * 2, q_len, rs.len()
+        )));
+    }
+    let r = dsa::BigUint::from_bytes_be(&rs[..q_len]);
+    let s = dsa::BigUint::from_bytes_be(&rs[q_len..]);
+    dsa::Signature::from_components(r, s)
+        .map_err(|e| Error::Crypto(format!("invalid DSA signature: {e}")))
 }
 
 // ── HMAC ─────────────────────────────────────────────────────────────

@@ -16,12 +16,13 @@ p256 = { workspace = true, features = ["ecdsa"] }
 p384 = { workspace = true, features = ["ecdsa"] }
 p521 = { workspace = true, features = ["ecdsa"] }
 pkcs1.workspace = true
+pkcs5.workspace = true
 pkcs8.workspace = true
 spki.workspace = true
 der.workspace = true
 pem-rfc7468.workspace = true
 x509-cert.workspace = true
-p12.workspace = true
+bergshamra-pkcs12.workspace = true
 base64.workspace = true
 signature.workspace = true
 roxmltree.workspace = true

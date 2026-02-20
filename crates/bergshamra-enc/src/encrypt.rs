@@ -16,7 +16,7 @@ use bergshamra_core::{algorithm, ns, Error};
 ///
 /// Returns the XML document with `<EncryptedData>` populated.
 pub fn encrypt(ctx: &EncContext, template_xml: &str, data: &[u8]) -> Result<String, Error> {
-    let doc = roxmltree::Document::parse(template_xml)
+    let doc = roxmltree::Document::parse_with_options(template_xml, bergshamra_xml::parsing_options())
         .map_err(|e: roxmltree::Error| Error::XmlParse(e.to_string()))?;
 
     // Find EncryptedData element
@@ -41,34 +41,35 @@ pub fn encrypt(ctx: &EncContext, template_xml: &str, data: &[u8]) -> Result<Stri
     let engine = base64::engine::general_purpose::STANDARD;
     let cipher_b64 = engine.encode(&ciphertext);
 
-    // Replace empty CipherValue in template
-    let mut result = template_xml.to_owned();
+    // Replace empty CipherValue in EncryptedData using node range
+    let cipher_data = find_child_element(enc_data_node, ns::ENC, ns::node::CIPHER_DATA)
+        .ok_or_else(|| Error::MissingElement("CipherData".into()))?;
+    let cipher_value = find_child_element(cipher_data, ns::ENC, ns::node::CIPHER_VALUE)
+        .ok_or_else(|| Error::MissingElement("CipherValue".into()))?;
 
-    // Try various prefix patterns
-    let patterns = [
-        "<xenc:CipherValue></xenc:CipherValue>",
-        "<xenc:CipherValue/>",
-        "<CipherValue></CipherValue>",
-        "<CipherValue/>",
-        "<enc:CipherValue></enc:CipherValue>",
-        "<enc:CipherValue/>",
-    ];
-
-    let replacements = [
-        format!("<xenc:CipherValue>{cipher_b64}</xenc:CipherValue>"),
-        format!("<xenc:CipherValue>{cipher_b64}</xenc:CipherValue>"),
-        format!("<CipherValue>{cipher_b64}</CipherValue>"),
-        format!("<CipherValue>{cipher_b64}</CipherValue>"),
-        format!("<enc:CipherValue>{cipher_b64}</enc:CipherValue>"),
-        format!("<enc:CipherValue>{cipher_b64}</enc:CipherValue>"),
-    ];
-
-    for (pattern, replacement) in patterns.iter().zip(replacements.iter()) {
-        if result.contains(pattern) {
-            result = result.replacen(pattern, replacement, 1);
-            break;
+    let cv_range = cipher_value.range();
+    let cv_xml = &template_xml[cv_range.start..cv_range.end];
+    let prefix = extract_prefix(cv_xml, "CipherValue");
+    let replacement = if prefix.is_empty() {
+        format!("<CipherValue>{cipher_b64}</CipherValue>")
+    } else {
+        // Check if the prefix's namespace declaration is on this element itself
+        // (e.g. <enc:CipherValue xmlns:enc="..."/>). If so, we need to include it
+        // in the replacement, or just use unprefixed since the default namespace
+        // (from EncryptedData) is already xmlenc.
+        let ns_decl = format!("xmlns:{prefix}=");
+        if cv_xml.contains(&ns_decl) {
+            // Namespace is declared on the element itself — use unprefixed instead
+            format!("<CipherValue>{cipher_b64}</CipherValue>")
+        } else {
+            format!("<{prefix}:CipherValue>{cipher_b64}</{prefix}:CipherValue>")
         }
-    }
+    };
+
+    let mut result = String::with_capacity(template_xml.len() + cipher_b64.len());
+    result.push_str(&template_xml[..cv_range.start]);
+    result.push_str(&replacement);
+    result.push_str(&template_xml[cv_range.end..]);
 
     // Handle EncryptedKey if present
     result = encrypt_session_key(ctx, &result, enc_uri, &key_bytes)?;
@@ -147,7 +148,7 @@ fn encrypt_session_key(
     _data_enc_uri: &str,
     session_key: &[u8],
 ) -> Result<String, Error> {
-    let doc = roxmltree::Document::parse(xml)
+    let doc = roxmltree::Document::parse_with_options(xml, bergshamra_xml::parsing_options())
         .map_err(|e: roxmltree::Error| Error::XmlParse(e.to_string()))?;
 
     // Find EncryptedKey elements
@@ -202,6 +203,14 @@ fn encrypt_session_key(
                     .ok_or_else(|| Error::Key("AES key has no bytes".into()))?;
                 kw.wrap(kek_bytes, session_key)?
             }
+            algorithm::KW_TRIPLEDES => {
+                let kw = bergshamra_crypto::keywrap::from_uri(enc_uri)?;
+                let des_key = ctx.keys_manager.first_key()
+                    .map_err(|_| Error::Key("no key for 3DES key wrap".into()))?;
+                let kek_bytes = des_key.symmetric_key_bytes()
+                    .ok_or_else(|| Error::Key("no symmetric key for 3DES key wrap".into()))?;
+                kw.wrap(kek_bytes, session_key)?
+            }
             _ => return Err(Error::UnsupportedAlgorithm(format!("EncryptedKey method: {enc_uri}"))),
         };
 
@@ -221,7 +230,12 @@ fn encrypt_session_key(
         let replacement = if prefix.is_empty() {
             format!("<CipherValue>{ek_b64}</CipherValue>")
         } else {
-            format!("<{prefix}:CipherValue>{ek_b64}</{prefix}:CipherValue>")
+            let ns_decl = format!("xmlns:{prefix}=");
+            if cv_xml.contains(&ns_decl) {
+                format!("<CipherValue>{ek_b64}</CipherValue>")
+            } else {
+                format!("<{prefix}:CipherValue>{ek_b64}</{prefix}:CipherValue>")
+            }
         };
 
         result = result.replacen(cv_xml, &replacement, 1);

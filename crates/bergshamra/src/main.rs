@@ -37,15 +37,31 @@ enum Commands {
 
         /// Load X.509 certificate (PEM or DER)
         #[arg(long)]
-        cert: Option<PathBuf>,
+        cert: Vec<PathBuf>,
 
-        /// Load trusted CA certificate
+        /// Load trusted CA certificate(s)
         #[arg(long)]
-        trusted: Option<PathBuf>,
+        trusted: Vec<PathBuf>,
+
+        /// Load PKCS#12 (.p12/.pfx) key file
+        #[arg(long)]
+        pkcs12: Option<PathBuf>,
+
+        /// Password for PKCS#12 or encrypted PEM keys
+        #[arg(long)]
+        pwd: Option<String>,
 
         /// Load raw HMAC key (binary file)
         #[arg(long = "hmac-key")]
         hmac_key: Option<PathBuf>,
+
+        /// Load keys from xmlsec keys.xml file
+        #[arg(long = "keys-file")]
+        keys_file: Option<PathBuf>,
+
+        /// Map external URI to local file (URL=FILE)
+        #[arg(long = "url-map")]
+        url_map: Vec<String>,
 
         /// Register additional ID attribute names
         #[arg(long = "id-attr")]
@@ -69,9 +85,21 @@ enum Commands {
         #[arg(short = 'K', long = "key-name")]
         key_name: Vec<String>,
 
+        /// Load PKCS#12 (.p12/.pfx) key file
+        #[arg(long)]
+        pkcs12: Option<PathBuf>,
+
+        /// Password for PKCS#12 or encrypted PEM keys
+        #[arg(long)]
+        pwd: Option<String>,
+
         /// Load raw HMAC key (binary file)
         #[arg(long = "hmac-key")]
         hmac_key: Option<PathBuf>,
+
+        /// Load keys from xmlsec keys.xml file
+        #[arg(long = "keys-file")]
+        keys_file: Option<PathBuf>,
 
         /// Output file (default: stdout)
         #[arg(short, long)]
@@ -99,6 +127,14 @@ enum Commands {
         #[arg(short = 'K', long = "key-name")]
         key_name: Vec<String>,
 
+        /// Load PKCS#12 (.p12/.pfx) key file
+        #[arg(long)]
+        pkcs12: Option<PathBuf>,
+
+        /// Password for PKCS#12 or encrypted PEM keys
+        #[arg(long)]
+        pwd: Option<String>,
+
         /// Load raw HMAC key (binary file)
         #[arg(long = "hmac-key")]
         hmac_key: Option<PathBuf>,
@@ -106,6 +142,10 @@ enum Commands {
         /// Load raw AES key (binary file)
         #[arg(long = "aes-key")]
         aes_key: Option<PathBuf>,
+
+        /// Load keys from xmlsec keys.xml file
+        #[arg(long = "keys-file")]
+        keys_file: Option<PathBuf>,
 
         /// Output file (default: stdout)
         #[arg(short, long)]
@@ -137,9 +177,21 @@ enum Commands {
         #[arg(short = 'K', long = "key-name")]
         key_name: Vec<String>,
 
+        /// Load PKCS#12 (.p12/.pfx) key file
+        #[arg(long)]
+        pkcs12: Option<PathBuf>,
+
+        /// Password for PKCS#12 or encrypted PEM keys
+        #[arg(long)]
+        pwd: Option<String>,
+
         /// Load raw AES key (binary file)
         #[arg(long = "aes-key")]
         aes_key: Option<PathBuf>,
+
+        /// Load keys from xmlsec keys.xml file
+        #[arg(long = "keys-file")]
+        keys_file: Option<PathBuf>,
 
         /// Output file (default: stdout)
         #[arg(short, long)]
@@ -167,43 +219,56 @@ fn main() {
             key,
             key_name,
             cert,
-            trusted: _,
+            trusted,
+            pkcs12,
+            pwd,
             hmac_key,
+            keys_file,
+            url_map,
             id_attr,
             verbose,
-        } => cmd_verify(file, key, key_name, cert, hmac_key, id_attr, verbose),
+        } => cmd_verify(file, key, key_name, cert, trusted, pkcs12, pwd, hmac_key, keys_file, url_map, id_attr, verbose),
 
         Commands::Sign {
             template,
             key,
             key_name,
+            pkcs12,
+            pwd,
             hmac_key,
+            keys_file,
             output,
             id_attr,
             verbose,
-        } => cmd_sign(template, key, key_name, hmac_key, output, id_attr, verbose),
+        } => cmd_sign(template, key, key_name, pkcs12, pwd, hmac_key, keys_file, output, id_attr, verbose),
 
         Commands::Decrypt {
             file,
             key,
             key_name,
+            pkcs12,
+            pwd,
             hmac_key,
             aes_key,
+            keys_file,
             output,
             id_attr,
             verbose,
-        } => cmd_decrypt(file, key, key_name, hmac_key, aes_key, output, id_attr, verbose),
+        } => cmd_decrypt(file, key, key_name, pkcs12, pwd, hmac_key, aes_key, keys_file, output, id_attr, verbose),
 
         Commands::Encrypt {
             template,
             data,
             cert,
             key_name,
+            pkcs12,
+            pwd,
             aes_key,
+            keys_file,
             output,
             id_attr,
             verbose,
-        } => cmd_encrypt(template, data, cert, key_name, aes_key, output, id_attr, verbose),
+        } => cmd_encrypt(template, data, cert, key_name, pkcs12, pwd, aes_key, keys_file, output, id_attr, verbose),
 
         Commands::Info => cmd_info(),
     };
@@ -218,18 +283,27 @@ fn cmd_verify(
     file: PathBuf,
     key: Option<PathBuf>,
     key_name: Vec<String>,
-    cert: Option<PathBuf>,
+    certs: Vec<PathBuf>,
+    trusted: Vec<PathBuf>,
+    pkcs12: Option<PathBuf>,
+    pwd: Option<String>,
     hmac_key: Option<PathBuf>,
+    keys_file: Option<PathBuf>,
+    url_map: Vec<String>,
     id_attr: Vec<String>,
     verbose: bool,
 ) -> Result<(), Error> {
     let xml = read_file(&file)?;
-    let mut mgr = build_keys_manager(key, key_name, cert, hmac_key, None)?;
-    let _ = &mut mgr; // silence unused mut if needed
+    let mgr = build_keys_manager(key, key_name, certs, trusted, pkcs12, pwd.as_deref(), hmac_key, None, keys_file)?;
 
     let mut ctx = bergshamra_dsig::DsigContext::new(mgr);
     for attr in &id_attr {
         ctx.add_id_attr(attr);
+    }
+    for spec in &url_map {
+        if let Some((url, file_path)) = spec.split_once('=') {
+            ctx.add_url_map(url, file_path);
+        }
     }
 
     if verbose {
@@ -253,13 +327,16 @@ fn cmd_sign(
     template: PathBuf,
     key: Option<PathBuf>,
     key_name: Vec<String>,
+    pkcs12: Option<PathBuf>,
+    pwd: Option<String>,
     hmac_key: Option<PathBuf>,
+    keys_file: Option<PathBuf>,
     output: Option<PathBuf>,
     id_attr: Vec<String>,
     verbose: bool,
 ) -> Result<(), Error> {
     let template_xml = read_file(&template)?;
-    let mgr = build_keys_manager(key, key_name, None, hmac_key, None)?;
+    let mgr = build_keys_manager(key, key_name, vec![], vec![], pkcs12, pwd.as_deref(), hmac_key, None, keys_file)?;
 
     let mut ctx = bergshamra_dsig::DsigContext::new(mgr);
     for attr in &id_attr {
@@ -278,14 +355,17 @@ fn cmd_decrypt(
     file: PathBuf,
     key: Option<PathBuf>,
     key_name: Vec<String>,
+    pkcs12: Option<PathBuf>,
+    pwd: Option<String>,
     hmac_key: Option<PathBuf>,
     aes_key: Option<PathBuf>,
+    keys_file: Option<PathBuf>,
     output: Option<PathBuf>,
     id_attr: Vec<String>,
     verbose: bool,
 ) -> Result<(), Error> {
     let xml = read_file(&file)?;
-    let mgr = build_keys_manager(key, key_name, None, hmac_key, aes_key)?;
+    let mgr = build_keys_manager(key, key_name, vec![], vec![], pkcs12, pwd.as_deref(), hmac_key, aes_key, keys_file)?;
 
     let mut ctx = bergshamra_enc::EncContext::new(mgr);
     for attr in &id_attr {
@@ -296,8 +376,8 @@ fn cmd_decrypt(
         eprintln!("Decrypting: {}", file.display());
     }
 
-    let decrypted = bergshamra_enc::decrypt::decrypt(&ctx, &xml)?;
-    write_output(output, decrypted.as_bytes())
+    let decrypted = bergshamra_enc::decrypt::decrypt_to_bytes(&ctx, &xml)?;
+    write_output(output, &decrypted)
 }
 
 fn cmd_encrypt(
@@ -305,7 +385,10 @@ fn cmd_encrypt(
     data_file: PathBuf,
     cert: Option<PathBuf>,
     key_name: Vec<String>,
+    pkcs12: Option<PathBuf>,
+    pwd: Option<String>,
     aes_key: Option<PathBuf>,
+    keys_file: Option<PathBuf>,
     output: Option<PathBuf>,
     id_attr: Vec<String>,
     verbose: bool,
@@ -313,7 +396,8 @@ fn cmd_encrypt(
     let template_xml = read_file(&template)?;
     let data = std::fs::read(&data_file)
         .map_err(|e| Error::Other(format!("{}: {e}", data_file.display())))?;
-    let mgr = build_keys_manager(None, key_name, cert, None, aes_key)?;
+    let cert_vec = cert.into_iter().collect();
+    let mgr = build_keys_manager(None, key_name, cert_vec, vec![], pkcs12, pwd.as_deref(), None, aes_key, keys_file)?;
 
     let mut ctx = bergshamra_enc::EncContext::new(mgr);
     for attr in &id_attr {
@@ -385,15 +469,27 @@ fn write_output(path: Option<PathBuf>, data: &[u8]) -> Result<(), Error> {
 fn build_keys_manager(
     key_path: Option<PathBuf>,
     key_names: Vec<String>,
-    cert_path: Option<PathBuf>,
-    hmac_key_path: Option<PathBuf>,
+    cert_paths: Vec<PathBuf>,
+    trusted_paths: Vec<PathBuf>,
+    pkcs12_path: Option<PathBuf>,
+    password: Option<&str>,
+    hmac_key_spec: Option<PathBuf>,
     aes_key_path: Option<PathBuf>,
+    keys_file_path: Option<PathBuf>,
 ) -> Result<KeysManager, Error> {
     let mut mgr = KeysManager::new();
 
-    // Load key file (auto-detect PEM/DER)
+    // Load keys from xmlsec keys.xml file
+    if let Some(path) = keys_file_path {
+        let keys = bergshamra_keys::keysxml::load_keys_file(&path)?;
+        for key in keys {
+            mgr.add_key(key);
+        }
+    }
+
+    // Load key file (auto-detect PEM/DER/PKCS#12)
     if let Some(path) = key_path {
-        let key = bergshamra_keys::loader::load_key_file(&path)?;
+        let key = bergshamra_keys::loader::load_key_file_with_password(&path, password)?;
         mgr.add_key(key);
     }
 
@@ -401,7 +497,7 @@ fn build_keys_manager(
     for spec in &key_names {
         if let Some((name, file_str)) = spec.split_once(':') {
             let path = PathBuf::from(file_str);
-            let mut key = bergshamra_keys::loader::load_key_file(&path)?;
+            let mut key = bergshamra_keys::loader::load_key_file_with_password(&path, password)?;
             key.name = Some(name.to_owned());
             mgr.add_key(key);
         } else {
@@ -409,17 +505,43 @@ fn build_keys_manager(
         }
     }
 
-    // Load certificate
-    if let Some(path) = cert_path {
-        let key = bergshamra_keys::loader::load_key_file(&path)?;
+    // Load PKCS#12 key file
+    if let Some(path) = pkcs12_path {
+        let data = std::fs::read(&path)
+            .map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
+        let key = bergshamra_keys::loader::load_pkcs12(&data, password.unwrap_or(""))?;
         mgr.add_key(key);
     }
 
-    // Load HMAC key
-    if let Some(path) = hmac_key_path {
+    // Load certificates
+    for path in &cert_paths {
+        let key = bergshamra_keys::loader::load_key_file_with_password(path, password)?;
+        mgr.add_key(key);
+    }
+
+    // Load trusted CA certificates
+    for path in &trusted_paths {
+        let key = bergshamra_keys::loader::load_key_file_with_password(path, password)?;
+        mgr.add_key(key);
+    }
+
+    // Load HMAC key (supports NAME:FILE or just FILE)
+    if let Some(spec) = hmac_key_spec {
+        let spec_str = spec.to_string_lossy();
+        let (name, path) = if let Some((n, f)) = spec_str.split_once(':') {
+            // Check if it looks like NAME:FILE (name won't contain path separators)
+            if !n.contains('/') && !n.contains('\\') && !f.is_empty() {
+                (Some(n.to_owned()), PathBuf::from(f))
+            } else {
+                (None, spec.clone())
+            }
+        } else {
+            (None, spec.clone())
+        };
         let bytes = std::fs::read(&path)
             .map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
-        let key = Key::new(KeyData::Hmac(bytes), KeyUsage::Any);
+        let mut key = Key::new(KeyData::Hmac(bytes), KeyUsage::Any);
+        key.name = name;
         mgr.add_key(key);
     }
 

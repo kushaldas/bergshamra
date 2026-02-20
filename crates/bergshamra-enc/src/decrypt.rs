@@ -18,7 +18,16 @@ use std::collections::HashMap;
 ///
 /// Returns the decrypted XML document as a string.
 pub fn decrypt(ctx: &EncContext, xml: &str) -> Result<String, Error> {
-    let doc = roxmltree::Document::parse(xml)
+    let bytes = decrypt_to_bytes(ctx, xml)?;
+    String::from_utf8(bytes)
+        .map_err(|e| Error::Decryption(format!("plaintext is not valid UTF-8: {e}")))
+}
+
+/// Decrypt an XML document containing `<EncryptedData>`.
+///
+/// Returns the raw decrypted bytes, supporting non-UTF-8 content.
+pub fn decrypt_to_bytes(ctx: &EncContext, xml: &str) -> Result<Vec<u8>, Error> {
+    let doc = roxmltree::Document::parse_with_options(xml, bergshamra_xml::parsing_options())
         .map_err(|e: roxmltree::Error| Error::XmlParse(e.to_string()))?;
 
     // Build ID map
@@ -55,9 +64,7 @@ pub fn decrypt(ctx: &EncContext, xml: &str) -> Result<String, Error> {
     let plaintext = cipher_alg.decrypt(&key_bytes, &cipher_bytes)?;
 
     // Replace EncryptedData with plaintext
-    let result = replace_encrypted_data(xml, enc_data_node, enc_type, &plaintext)?;
-
-    Ok(result)
+    replace_encrypted_data_bytes(xml, enc_data_node, enc_type, &plaintext)
 }
 
 /// Resolve the decryption key from KeyInfo or EncryptedKey.
@@ -200,47 +207,32 @@ fn read_cipher_data(cipher_data_node: roxmltree::Node<'_, '_>) -> Result<Vec<u8>
     Err(Error::MissingElement("CipherValue or CipherReference".into()))
 }
 
-/// Replace the <EncryptedData> element in the XML string with the decrypted plaintext.
-fn replace_encrypted_data(
+/// Replace the <EncryptedData> element in the XML string with the decrypted plaintext (bytes).
+fn replace_encrypted_data_bytes(
     xml: &str,
     enc_data_node: roxmltree::Node<'_, '_>,
-    enc_type: &str,
+    _enc_type: &str,
     plaintext: &[u8],
-) -> Result<String, Error> {
-    let plaintext_str = std::str::from_utf8(plaintext)
-        .map_err(|e| Error::Decryption(format!("plaintext is not valid UTF-8: {e}")))?;
-
-    // Find the byte range of the EncryptedData element in the original XML
+) -> Result<Vec<u8>, Error> {
     let range = enc_data_node.range();
     let start = range.start;
     let end = range.end;
 
-    match enc_type {
-        ns::ENC_TYPE_ELEMENT => {
-            // Replace EncryptedData with the decrypted element
-            let mut result = String::with_capacity(xml.len());
-            result.push_str(&xml[..start]);
-            result.push_str(plaintext_str);
-            result.push_str(&xml[end..]);
-            Ok(result)
-        }
-        ns::ENC_TYPE_CONTENT => {
-            // Replace EncryptedData with the decrypted content (children)
-            let mut result = String::with_capacity(xml.len());
-            result.push_str(&xml[..start]);
-            result.push_str(plaintext_str);
-            result.push_str(&xml[end..]);
-            Ok(result)
-        }
-        _ => {
-            // Default: replace the EncryptedData element entirely
-            let mut result = String::with_capacity(xml.len());
-            result.push_str(&xml[..start]);
-            result.push_str(plaintext_str);
-            result.push_str(&xml[end..]);
-            Ok(result)
-        }
+    // Check if EncryptedData is the root element — if so, return just the plaintext
+    // without the XML declaration or other wrapper content.
+    let before = xml[..start].trim();
+    let after = xml[end..].trim();
+    let before_is_decl = before.is_empty()
+        || (before.starts_with("<?xml") && before.ends_with("?>"));
+    if before_is_decl && after.is_empty() {
+        return Ok(plaintext.to_vec());
     }
+
+    let mut result = Vec::with_capacity(xml.len());
+    result.extend_from_slice(xml[..start].as_bytes());
+    result.extend_from_slice(plaintext);
+    result.extend_from_slice(xml[end..].as_bytes());
+    Ok(result)
 }
 
 // ── Helper functions ─────────────────────────────────────────────────

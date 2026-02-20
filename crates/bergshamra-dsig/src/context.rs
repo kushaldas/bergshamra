@@ -10,6 +10,8 @@ pub struct DsigContext {
     pub keys_manager: KeysManager,
     /// Additional ID attribute names to register.
     pub id_attrs: Vec<String>,
+    /// URL-to-file mappings for external URI resolution.
+    pub url_maps: Vec<(String, String)>,
 }
 
 impl DsigContext {
@@ -18,11 +20,17 @@ impl DsigContext {
         Self {
             keys_manager,
             id_attrs: Vec::new(),
+            url_maps: Vec::new(),
         }
     }
 
     /// Add an ID attribute name to register during processing.
     pub fn add_id_attr(&mut self, name: &str) {
         self.id_attrs.push(name.to_owned());
+    }
+
+    /// Map an external URI to a local file path.
+    pub fn add_url_map(&mut self, url: &str, file_path: &str) {
+        self.url_maps.push((url.to_owned(), file_path.to_owned()));
     }
 }

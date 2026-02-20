@@ -37,7 +37,7 @@ impl VerifyResult {
 
 /// Verify a signed XML document.
 pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
-    let doc = roxmltree::Document::parse(xml)
+    let doc = roxmltree::Document::parse_with_options(xml, bergshamra_xml::parsing_options())
         .map_err(|e: roxmltree::Error| Error::XmlParse(e.to_string()))?;
 
     // Build ID map
@@ -76,7 +76,7 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
     // 3. Verify each Reference
     let references = find_child_elements(signed_info, ns::DSIG, ns::node::REFERENCE);
     for reference in &references {
-        let result = verify_reference(reference, &doc, &id_map, xml, sig_node)?;
+        let result = verify_reference(reference, &doc, &id_map, xml, sig_node, &ctx.url_maps)?;
         if let VerifyResult::Invalid { reason } = result {
             return Ok(VerifyResult::Invalid {
                 reason: format!("Reference digest failed: {reason}"),
@@ -85,9 +85,17 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
     }
 
     // 4. Resolve signing key
+    // First try inline KeyValue (RSA/EC public key embedded in XML),
+    // then fall back to KeysManager lookup via KeyName or first key.
     let key_info_node = find_child_element(sig_node, ns::DSIG, ns::node::KEY_INFO);
+    let extracted_key: Option<bergshamra_keys::Key>;
     let key = if let Some(ki) = key_info_node {
-        bergshamra_keys::keyinfo::resolve_key_info(ki, &ctx.keys_manager)?
+        extracted_key = bergshamra_keys::keyinfo::extract_key_value(ki);
+        if let Some(ref ek) = extracted_key {
+            ek
+        } else {
+            bergshamra_keys::keyinfo::resolve_key_info(ki, &ctx.keys_manager)?
+        }
     } else {
         ctx.keys_manager.first_key()?
     };
@@ -140,6 +148,7 @@ fn verify_reference(
     id_map: &HashMap<String, roxmltree::NodeId>,
     xml: &str,
     sig_node: roxmltree::Node<'_, '_>,
+    url_maps: &[(String, String)],
 ) -> Result<VerifyResult, Error> {
     // Read URI attribute
     let uri = reference.attribute(ns::attr::URI).unwrap_or("");
@@ -167,7 +176,7 @@ fn verify_reference(
         .map_err(|e| Error::Base64(format!("DigestValue: {e}")))?;
 
     // Resolve URI and get initial data
-    let (ref_xml, initial_ns) = resolve_reference_uri(uri, doc, id_map, xml)?;
+    let (ref_xml, initial_ns) = resolve_reference_uri(uri, doc, id_map, xml, url_maps)?;
 
     // Read and apply transforms
     let transforms_node = find_child_element(*reference, ns::DSIG, ns::node::TRANSFORMS);
@@ -213,6 +222,7 @@ fn resolve_reference_uri(
     doc: &roxmltree::Document<'_>,
     id_map: &HashMap<String, roxmltree::NodeId>,
     xml: &str,
+    url_maps: &[(String, String)],
 ) -> Result<(String, Option<NodeSet>), Error> {
     if uri.is_empty() {
         // Whole document
@@ -222,6 +232,14 @@ fn resolve_reference_uri(
         let ns = NodeSet::tree_without_comments(node);
         Ok((xml.to_owned(), Some(ns)))
     } else {
+        // Try url-map for external URIs
+        for (map_url, file_path) in url_maps {
+            if uri == map_url || uri.starts_with(map_url) {
+                let data = std::fs::read_to_string(file_path)
+                    .map_err(|e| Error::Other(format!("url-map {file_path}: {e}")))?;
+                return Ok((data, None));
+            }
+        }
         Err(Error::InvalidUri(format!("external URI not supported: {uri}")))
     }
 }
@@ -253,8 +271,66 @@ pub(crate) fn apply_transform(
             let t = bergshamra_transforms::base64_transform::Base64DecodeTransform;
             t.execute(data)
         }
+        algorithm::XPATH => {
+            apply_xpath_transform(data, transform_node, sig_node)
+        }
         _ => Err(Error::UnsupportedAlgorithm(format!("transform: {uri}"))),
     }
+}
+
+/// Apply an XPath 1.0 transform.
+///
+/// Currently supports the common enveloped-signature pattern:
+///   `not(ancestor-or-self::dsig:Signature)`
+/// where `dsig` is bound to the XML-DSig namespace.
+fn apply_xpath_transform(
+    data: bergshamra_transforms::TransformData,
+    transform_node: &roxmltree::Node<'_, '_>,
+    sig_node: roxmltree::Node<'_, '_>,
+) -> Result<bergshamra_transforms::TransformData, Error> {
+    // Extract the XPath expression from the <XPath> child element
+    let xpath_node = transform_node
+        .children()
+        .find(|n| n.is_element() && n.tag_name().name() == "XPath")
+        .ok_or_else(|| Error::MissingElement("XPath expression element".into()))?;
+
+    let xpath_expr = xpath_node.text().unwrap_or("").trim();
+
+    // Check if this is the enveloped-signature pattern:
+    // not(ancestor-or-self::PREFIX:Signature)
+    if is_enveloped_xpath(xpath_expr, &xpath_node) {
+        // Apply enveloped signature transform (same as the dedicated one)
+        use bergshamra_transforms::pipeline::Transform;
+        let t = bergshamra_transforms::enveloped::EnvelopedSignatureTransform::from_node(sig_node);
+        return t.execute(data);
+    }
+
+    Err(Error::UnsupportedAlgorithm(format!(
+        "XPath expression not supported: {xpath_expr}"
+    )))
+}
+
+/// Check if an XPath expression is the enveloped-signature pattern.
+///
+/// Matches: `not(ancestor-or-self::PREFIX:Signature)` where PREFIX is bound
+/// to the XML-DSig namespace `http://www.w3.org/2000/09/xmldsig#`.
+fn is_enveloped_xpath(expr: &str, xpath_node: &roxmltree::Node<'_, '_>) -> bool {
+    let expr = expr.trim();
+
+    // Pattern: not(ancestor-or-self::PREFIX:Signature)
+    if !expr.starts_with("not(ancestor-or-self::") || !expr.ends_with(":Signature)") {
+        return false;
+    }
+
+    // Extract the prefix
+    let inner = &expr["not(ancestor-or-self::".len()..expr.len() - ":Signature)".len()];
+
+    // Verify the prefix is bound to the DSIG namespace
+    let dsig_ns = ns::DSIG;
+    // Check namespace declarations on the XPath element and ancestors
+    xpath_node.namespaces().any(|ns_decl| {
+        ns_decl.name() == Some(inner) && ns_decl.uri() == dsig_ns
+    })
 }
 
 // ── Helper functions ─────────────────────────────────────────────────

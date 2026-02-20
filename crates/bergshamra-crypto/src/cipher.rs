@@ -132,13 +132,20 @@ impl CipherAlgorithm for AesGcm {
                 cipher.encrypt(nonce, plaintext)
                     .map_err(|e| Error::Crypto(format!("AES-GCM encrypt: {e}")))?
             }
+            24 => {
+                use aes_gcm::aead::consts::U12;
+                let cipher = aes_gcm::AesGcm::<aes::Aes192, U12>::new_from_slice(key)
+                    .map_err(|e| Error::Crypto(format!("AES-GCM init: {e}")))?;
+                cipher.encrypt(nonce, plaintext)
+                    .map_err(|e| Error::Crypto(format!("AES-GCM encrypt: {e}")))?
+            }
             32 => {
                 let cipher = aes_gcm::Aes256Gcm::new_from_slice(key)
                     .map_err(|e| Error::Crypto(format!("AES-GCM init: {e}")))?;
                 cipher.encrypt(nonce, plaintext)
                     .map_err(|e| Error::Crypto(format!("AES-GCM encrypt: {e}")))?
             }
-            _ => return Err(Error::Crypto("AES-GCM only supports 128 and 256 bit keys".into())),
+            _ => return Err(Error::Crypto("AES-GCM only supports 128, 192, and 256 bit keys".into())),
         };
 
         let mut result = Vec::with_capacity(12 + ct.len());
@@ -167,13 +174,20 @@ impl CipherAlgorithm for AesGcm {
                 cipher.decrypt(nonce, ct_and_tag)
                     .map_err(|e| Error::Crypto(format!("AES-GCM decrypt: {e}")))
             }
+            24 => {
+                use aes_gcm::aead::consts::U12;
+                let cipher = aes_gcm::AesGcm::<aes::Aes192, U12>::new_from_slice(key)
+                    .map_err(|e| Error::Crypto(format!("AES-GCM init: {e}")))?;
+                cipher.decrypt(nonce, ct_and_tag)
+                    .map_err(|e| Error::Crypto(format!("AES-GCM decrypt: {e}")))
+            }
             32 => {
                 let cipher = aes_gcm::Aes256Gcm::new_from_slice(key)
                     .map_err(|e| Error::Crypto(format!("AES-GCM init: {e}")))?;
                 cipher.decrypt(nonce, ct_and_tag)
                     .map_err(|e| Error::Crypto(format!("AES-GCM decrypt: {e}")))
             }
-            _ => Err(Error::Crypto("AES-GCM only supports 128 and 256 bit keys".into())),
+            _ => Err(Error::Crypto("AES-GCM only supports 128, 192, and 256 bit keys".into())),
         }
     }
 }

@@ -26,6 +26,10 @@ pub enum KeyData {
         private: Option<p384::ecdsa::SigningKey>,
         public: p384::ecdsa::VerifyingKey,
     },
+    Dsa {
+        private: Option<dsa::SigningKey>,
+        public: dsa::VerifyingKey,
+    },
     Hmac(Vec<u8>),
     Aes(Vec<u8>),
     Des3(Vec<u8>),
@@ -53,6 +57,13 @@ impl std::fmt::Debug for KeyData {
                     write!(f, "EC P-384 private+public key")
                 } else {
                     write!(f, "EC P-384 public key")
+                }
+            }
+            Self::Dsa { private, .. } => {
+                if private.is_some() {
+                    write!(f, "DSA private+public key")
+                } else {
+                    write!(f, "DSA public key")
                 }
             }
             Self::Hmac(k) => write!(f, "HMAC key ({} bytes)", k.len()),
@@ -112,6 +123,12 @@ impl Key {
             }
             KeyData::EcP384 { public, .. } => {
                 Some(bergshamra_crypto::sign::SigningKey::EcP384Public(*public))
+            }
+            KeyData::Dsa { private: Some(sk), .. } => {
+                Some(bergshamra_crypto::sign::SigningKey::Dsa(sk.clone()))
+            }
+            KeyData::Dsa { public, .. } => {
+                Some(bergshamra_crypto::sign::SigningKey::DsaPublic(public.clone()))
             }
             KeyData::Hmac(k) => Some(bergshamra_crypto::sign::SigningKey::Hmac(k.clone())),
             _ => None,

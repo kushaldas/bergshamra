@@ -4,6 +4,7 @@ members = [
     "crates/bergshamra-xml",
     "crates/bergshamra-c14n",
     "crates/bergshamra-crypto",
+    "crates/bergshamra-pkcs12",
     "crates/bergshamra-keys",
     "crates/bergshamra-transforms",
     "crates/bergshamra-dsig",
@@ -28,6 +29,7 @@ bergshamra-keys = { path = "crates/bergshamra-keys" }
 bergshamra-transforms = { path = "crates/bergshamra-transforms" }
 bergshamra-dsig = { path = "crates/bergshamra-dsig" }
 bergshamra-enc = { path = "crates/bergshamra-enc" }
+bergshamra-pkcs12 = { path = "crates/bergshamra-pkcs12" }
 
 # XML parsing
 roxmltree = "0.20"
@@ -57,12 +59,14 @@ rand = "0.8"
 
 # Key formats
 pkcs1 = "0.7"
-pkcs8 = "0.10"
+pkcs8 = { version = "0.10", features = ["encryption", "3des"] }
 spki = "0.7"
 der = "0.7"
 pem-rfc7468 = "0.7"
 x509-cert = "0.2"
-p12 = "0.6"
+yasna = { version = "0.5", features = ["std"] }
+pkcs5 = { version = "0.7", features = ["sha1-insecure"] }
+pbkdf2 = "0.12"
 
 # Utilities
 base64 = "0.22"

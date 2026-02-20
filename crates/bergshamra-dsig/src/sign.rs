@@ -18,7 +18,7 @@ use std::collections::HashMap;
 ///
 /// Returns the signed XML document as a string.
 pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
-    let doc = roxmltree::Document::parse(template_xml)
+    let doc = roxmltree::Document::parse_with_options(template_xml, bergshamra_xml::parsing_options())
         .map_err(|e: roxmltree::Error| Error::XmlParse(e.to_string()))?;
 
     // Build ID map
@@ -122,7 +122,7 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
 
     // Now canonicalize SignedInfo and compute signature
     // Re-parse the updated XML
-    let updated_doc = roxmltree::Document::parse(&result_xml)
+    let updated_doc = roxmltree::Document::parse_with_options(&result_xml, bergshamra_xml::parsing_options())
         .map_err(|e: roxmltree::Error| Error::XmlParse(e.to_string()))?;
     let updated_sig = find_element(&updated_doc, ns::DSIG, ns::node::SIGNATURE)
         .ok_or_else(|| Error::MissingElement("Signature".into()))?;

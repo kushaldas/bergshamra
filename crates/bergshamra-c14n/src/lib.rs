@@ -85,7 +85,7 @@ pub fn canonicalize(
     node_set: Option<&NodeSet>,
     inclusive_prefixes: &[String],
 ) -> Result<Vec<u8>, Error> {
-    let doc = roxmltree::Document::parse(xml).map_err(|e| Error::XmlParse(e.to_string()))?;
+    let doc = roxmltree::Document::parse_with_options(xml, roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() }).map_err(|e| Error::XmlParse(e.to_string()))?;
 
     match mode {
         C14nMode::Inclusive | C14nMode::InclusiveWithComments => {

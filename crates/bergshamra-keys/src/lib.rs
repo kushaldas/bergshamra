@@ -6,9 +6,10 @@
 //! Provides a `KeysManager` for named key lookup and a `KeyInfo` XML processor.
 
 pub mod key;
+pub mod keyinfo;
+pub mod keysxml;
 pub mod loader;
 pub mod manager;
-pub mod keyinfo;
 
 pub use key::{Key, KeyData, KeyUsage};
 pub use manager::KeysManager;

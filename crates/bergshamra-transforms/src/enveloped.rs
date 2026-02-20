@@ -38,7 +38,7 @@ impl Transform for EnvelopedSignatureTransform {
     fn execute(&self, input: TransformData) -> Result<TransformData, Error> {
         match input {
             TransformData::Xml { xml_text, node_set } => {
-                let doc = roxmltree::Document::parse(&xml_text)
+                let doc = roxmltree::Document::parse_with_options(&xml_text, bergshamra_xml::parsing_options())
                     .map_err(|e: roxmltree::Error| Error::XmlParse(e.to_string()))?;
 
                 // Build a node set that excludes the Signature subtree

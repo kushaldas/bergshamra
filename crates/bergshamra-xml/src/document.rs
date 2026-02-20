@@ -20,7 +20,7 @@ impl XmlDocument {
     pub fn parse(text: String) -> Result<Self, Error> {
         // Validate that the XML parses successfully.
         let _doc =
-            roxmltree::Document::parse(&text).map_err(|e| Error::XmlParse(e.to_string()))?;
+            roxmltree::Document::parse_with_options(&text, crate::parsing_options()).map_err(|e| Error::XmlParse(e.to_string()))?;
         Ok(Self {
             text,
             extra_id_attrs: Vec::new(),
@@ -51,7 +51,7 @@ impl XmlDocument {
     /// call this once at the top of a processing pipeline and pass the
     /// resulting document reference down through the call chain.
     pub fn parse_doc(&self) -> Result<roxmltree::Document<'_>, Error> {
-        roxmltree::Document::parse(&self.text).map_err(|e| Error::XmlParse(e.to_string()))
+        roxmltree::Document::parse_with_options(&self.text, crate::parsing_options()).map_err(|e| Error::XmlParse(e.to_string()))
     }
 
     /// Build the ID → NodeId mapping for a parsed document.

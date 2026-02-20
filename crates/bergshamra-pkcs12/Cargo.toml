@@ -1,0 +1,19 @@
+[package]
+name = "bergshamra-pkcs12"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "PKCS#12 parser for Bergshamra XML Security library"
+
+[dependencies]
+bergshamra-core.workspace = true
+yasna.workspace = true
+aes.workspace = true
+cbc.workspace = true
+des.workspace = true
+hmac.workspace = true
+pbkdf2.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+cipher = "0.4"
