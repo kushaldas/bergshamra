@@ -10,6 +10,8 @@ pub struct EncContext {
     pub keys_manager: KeysManager,
     /// Additional ID attribute names.
     pub id_attrs: Vec<String>,
+    /// Whether CipherReference resolution is disabled.
+    pub disable_cipher_reference: bool,
 }
 
 impl EncContext {
@@ -17,6 +19,7 @@ impl EncContext {
         Self {
             keys_manager,
             id_attrs: Vec::new(),
+            disable_cipher_reference: false,
         }
     }
 

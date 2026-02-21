@@ -67,6 +67,14 @@ enum Commands {
         #[arg(long = "id-attr")]
         id_attr: Vec<String>,
 
+        /// Minimum HMAC output length in bits (default: spec-derived)
+        #[arg(long = "hmac-min-out-len")]
+        hmac_min_out_len: Option<usize>,
+
+        /// Debug: print pre-digest and pre-signature data to stderr
+        #[arg(long)]
+        debug: bool,
+
         /// Verbose output
         #[arg(short, long)]
         verbose: bool,
@@ -85,6 +93,14 @@ enum Commands {
         #[arg(short = 'K', long = "key-name")]
         key_name: Vec<String>,
 
+        /// Load X.509 certificate (PEM or DER) for X509Data population
+        #[arg(long)]
+        cert: Vec<PathBuf>,
+
+        /// Load trusted CA certificate(s)
+        #[arg(long)]
+        trusted: Vec<PathBuf>,
+
         /// Load PKCS#12 (.p12/.pfx) key file
         #[arg(long)]
         pkcs12: Option<PathBuf>,
@@ -101,6 +117,10 @@ enum Commands {
         #[arg(long = "keys-file")]
         keys_file: Option<PathBuf>,
 
+        /// Map external URI to local file (URL=FILE)
+        #[arg(long = "url-map")]
+        url_map: Vec<String>,
+
         /// Output file (default: stdout)
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -108,6 +128,10 @@ enum Commands {
         /// Register additional ID attribute names
         #[arg(long = "id-attr")]
         id_attr: Vec<String>,
+
+        /// Debug: print pre-digest and pre-signature data to stderr
+        #[arg(long)]
+        debug: bool,
 
         /// Verbose output
         #[arg(short, long)]
@@ -155,6 +179,10 @@ enum Commands {
         #[arg(long = "id-attr")]
         id_attr: Vec<String>,
 
+        /// Disable CipherReference resolution
+        #[arg(long = "no-cipher-reference")]
+        no_cipher_reference: bool,
+
         /// Verbose output
         #[arg(short, long)]
         verbose: bool,
@@ -169,9 +197,9 @@ enum Commands {
         #[arg(long)]
         data: PathBuf,
 
-        /// Load public key or certificate for key transport
+        /// Load public key or certificate(s) for key transport
         #[arg(long)]
-        cert: Option<PathBuf>,
+        cert: Vec<PathBuf>,
 
         /// Load key with a name (NAME:FILE)
         #[arg(short = 'K', long = "key-name")]
@@ -201,6 +229,14 @@ enum Commands {
         #[arg(long = "id-attr")]
         id_attr: Vec<String>,
 
+        /// Select element to encrypt by namespace:localname (e.g. http://example.org:CreditCard)
+        #[arg(long = "node-name")]
+        node_name: Option<String>,
+
+        /// Select element to encrypt by ID attribute value
+        #[arg(long = "node-id")]
+        node_id: Option<String>,
+
         /// Verbose output
         #[arg(short, long)]
         verbose: bool,
@@ -226,21 +262,27 @@ fn main() {
             keys_file,
             url_map,
             id_attr,
+            hmac_min_out_len,
+            debug,
             verbose,
-        } => cmd_verify(file, key, key_name, cert, trusted, pkcs12, pwd, hmac_key, keys_file, url_map, id_attr, verbose),
+        } => cmd_verify(file, key, key_name, cert, trusted, pkcs12, pwd, hmac_key, keys_file, url_map, id_attr, hmac_min_out_len, debug, verbose),
 
         Commands::Sign {
             template,
             key,
             key_name,
+            cert,
+            trusted,
             pkcs12,
             pwd,
             hmac_key,
             keys_file,
+            url_map,
             output,
             id_attr,
+            debug,
             verbose,
-        } => cmd_sign(template, key, key_name, pkcs12, pwd, hmac_key, keys_file, output, id_attr, verbose),
+        } => cmd_sign(template, key, key_name, cert, trusted, pkcs12, pwd, hmac_key, keys_file, url_map, output, id_attr, debug, verbose),
 
         Commands::Decrypt {
             file,
@@ -253,8 +295,9 @@ fn main() {
             keys_file,
             output,
             id_attr,
+            no_cipher_reference,
             verbose,
-        } => cmd_decrypt(file, key, key_name, pkcs12, pwd, hmac_key, aes_key, keys_file, output, id_attr, verbose),
+        } => cmd_decrypt(file, key, key_name, pkcs12, pwd, hmac_key, aes_key, keys_file, output, id_attr, no_cipher_reference, verbose),
 
         Commands::Encrypt {
             template,
@@ -267,8 +310,10 @@ fn main() {
             keys_file,
             output,
             id_attr,
+            node_name,
+            node_id,
             verbose,
-        } => cmd_encrypt(template, data, cert, key_name, pkcs12, pwd, aes_key, keys_file, output, id_attr, verbose),
+        } => cmd_encrypt(template, data, cert, key_name, pkcs12, pwd, aes_key, keys_file, output, id_attr, node_name, node_id, verbose),
 
         Commands::Info => cmd_info(),
     };
@@ -291,6 +336,8 @@ fn cmd_verify(
     keys_file: Option<PathBuf>,
     url_map: Vec<String>,
     id_attr: Vec<String>,
+    hmac_min_out_len: Option<usize>,
+    debug: bool,
     verbose: bool,
 ) -> Result<(), Error> {
     let xml = read_file(&file)?;
@@ -304,6 +351,13 @@ fn cmd_verify(
         if let Some((url, file_path)) = spec.split_once('=') {
             ctx.add_url_map(url, file_path);
         }
+    }
+    if let Some(min_len) = hmac_min_out_len {
+        ctx.hmac_min_out_len = min_len;
+    }
+    ctx.debug = debug;
+    if let Some(parent) = file.parent() {
+        ctx.base_dir = Some(parent.to_string_lossy().into_owned());
     }
 
     if verbose {
@@ -327,20 +381,33 @@ fn cmd_sign(
     template: PathBuf,
     key: Option<PathBuf>,
     key_name: Vec<String>,
+    certs: Vec<PathBuf>,
+    trusted: Vec<PathBuf>,
     pkcs12: Option<PathBuf>,
     pwd: Option<String>,
     hmac_key: Option<PathBuf>,
     keys_file: Option<PathBuf>,
+    url_map: Vec<String>,
     output: Option<PathBuf>,
     id_attr: Vec<String>,
+    debug: bool,
     verbose: bool,
 ) -> Result<(), Error> {
     let template_xml = read_file(&template)?;
-    let mgr = build_keys_manager(key, key_name, vec![], vec![], pkcs12, pwd.as_deref(), hmac_key, None, keys_file)?;
+    let mgr = build_keys_manager(key, key_name, certs, trusted, pkcs12, pwd.as_deref(), hmac_key, None, keys_file)?;
 
     let mut ctx = bergshamra_dsig::DsigContext::new(mgr);
     for attr in &id_attr {
         ctx.add_id_attr(attr);
+    }
+    for spec in &url_map {
+        if let Some((url, file_path)) = spec.split_once('=') {
+            ctx.add_url_map(url, file_path);
+        }
+    }
+    ctx.debug = debug;
+    if let Some(parent) = template.parent() {
+        ctx.base_dir = Some(parent.to_string_lossy().into_owned());
     }
 
     if verbose {
@@ -362,6 +429,7 @@ fn cmd_decrypt(
     keys_file: Option<PathBuf>,
     output: Option<PathBuf>,
     id_attr: Vec<String>,
+    no_cipher_reference: bool,
     verbose: bool,
 ) -> Result<(), Error> {
     let xml = read_file(&file)?;
@@ -371,6 +439,7 @@ fn cmd_decrypt(
     for attr in &id_attr {
         ctx.add_id_attr(attr);
     }
+    ctx.disable_cipher_reference = no_cipher_reference;
 
     if verbose {
         eprintln!("Decrypting: {}", file.display());
@@ -383,7 +452,7 @@ fn cmd_decrypt(
 fn cmd_encrypt(
     template: PathBuf,
     data_file: PathBuf,
-    cert: Option<PathBuf>,
+    certs: Vec<PathBuf>,
     key_name: Vec<String>,
     pkcs12: Option<PathBuf>,
     pwd: Option<String>,
@@ -391,13 +460,26 @@ fn cmd_encrypt(
     keys_file: Option<PathBuf>,
     output: Option<PathBuf>,
     id_attr: Vec<String>,
+    node_name: Option<String>,
+    node_id: Option<String>,
     verbose: bool,
 ) -> Result<(), Error> {
     let template_xml = read_file(&template)?;
     let data = std::fs::read(&data_file)
         .map_err(|e| Error::Other(format!("{}: {e}", data_file.display())))?;
-    let cert_vec = cert.into_iter().collect();
-    let mgr = build_keys_manager(None, key_name, cert_vec, vec![], pkcs12, pwd.as_deref(), None, aes_key, keys_file)?;
+
+    // If --node-name or --node-id is specified, and the template wraps EncryptedData
+    // inside a document (not standalone), extract just that element from the data.
+    // When EncryptedData is the root element, pass the data as-is (including any
+    // XML prolog). The decrypt side detects plaintext that starts with <?xml and
+    // returns it verbatim, preserving the original encoding attribute and DOCTYPE.
+    let data = if template_has_wrapper(&template_xml) {
+        extract_node_data(&data, node_name.as_deref(), node_id.as_deref(), &id_attr)?
+    } else {
+        data
+    };
+
+    let mgr = build_keys_manager(None, key_name, certs, vec![], pkcs12, pwd.as_deref(), None, aes_key, keys_file)?;
 
     let mut ctx = bergshamra_enc::EncContext::new(mgr);
     for attr in &id_attr {
@@ -410,6 +492,67 @@ fn cmd_encrypt(
 
     let encrypted = bergshamra_enc::encrypt::encrypt(&ctx, &template_xml, &data)?;
     write_output(output, encrypted.as_bytes())
+}
+
+/// Check if the template has a wrapper element around EncryptedData.
+/// Returns true if EncryptedData is NOT the root element (i.e., it's embedded in a document).
+fn template_has_wrapper(template_xml: &str) -> bool {
+    if let Ok(doc) = roxmltree::Document::parse_with_options(template_xml, bergshamra_xml::parsing_options()) {
+        let root = doc.root_element();
+        // If the root element is EncryptedData, there's no wrapper
+        root.tag_name().name() != "EncryptedData"
+    } else {
+        false
+    }
+}
+
+/// Extract a specific element from XML data based on node-name or node-id.
+fn extract_node_data(
+    data: &[u8],
+    node_name: Option<&str>,
+    node_id: Option<&str>,
+    id_attrs: &[String],
+) -> Result<Vec<u8>, Error> {
+    if node_name.is_none() && node_id.is_none() {
+        return Ok(data.to_vec());
+    }
+
+    let xml_str = std::str::from_utf8(data)
+        .map_err(|e| Error::Other(format!("data is not valid UTF-8: {e}")))?;
+    let doc = roxmltree::Document::parse_with_options(xml_str, bergshamra_xml::parsing_options())
+        .map_err(|e: roxmltree::Error| Error::XmlParse(e.to_string()))?;
+
+    let target_node = if let Some(name) = node_name {
+        // Parse namespace:localname format
+        let (ns_uri, local_name) = if let Some(colon_pos) = name.rfind(':') {
+            (&name[..colon_pos], &name[colon_pos + 1..])
+        } else {
+            ("", name)
+        };
+        doc.descendants()
+            .find(|n| {
+                n.is_element()
+                    && n.tag_name().name() == local_name
+                    && (ns_uri.is_empty() || n.tag_name().namespace().unwrap_or("") == ns_uri)
+            })
+            .ok_or_else(|| Error::MissingElement(format!("element matching --node-name {name}")))?
+    } else if let Some(id) = node_id {
+        let mut id_attr_names: Vec<&str> = vec!["Id", "ID", "id"];
+        let extra: Vec<&str> = id_attrs.iter().map(|s| s.as_str()).collect();
+        id_attr_names.extend(extra);
+        doc.descendants()
+            .find(|n| {
+                n.is_element()
+                    && id_attr_names.iter().any(|attr| n.attribute(*attr) == Some(id))
+            })
+            .ok_or_else(|| Error::MissingElement(format!("element with ID={id}")))?
+    } else {
+        unreachable!()
+    };
+
+    // Extract the element's serialized form from the original XML
+    let range = target_node.range();
+    Ok(xml_str[range.start..range.end].as_bytes().to_vec())
 }
 
 fn cmd_info() -> Result<(), Error> {
@@ -497,7 +640,15 @@ fn build_keys_manager(
     for spec in &key_names {
         if let Some((name, file_str)) = spec.split_once(':') {
             let path = PathBuf::from(file_str);
-            let mut key = bergshamra_keys::loader::load_key_file_with_password(&path, password)?;
+            let mut key = match bergshamra_keys::loader::load_key_file_with_password(&path, password) {
+                Ok(k) => k,
+                Err(_) => {
+                    // Fallback: load as raw symmetric key (for concatkdf/pbkdf2 master keys)
+                    let bytes = std::fs::read(&path)
+                        .map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
+                    Key::new(KeyData::Aes(bytes), KeyUsage::Any)
+                }
+            };
             key.name = Some(name.to_owned());
             mgr.add_key(key);
         } else {

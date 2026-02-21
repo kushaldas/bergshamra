@@ -16,3 +16,5 @@ bergshamra-crypto.workspace = true
 base64.workspace = true
 roxmltree.workspace = true
 quick-xml.workspace = true
+x509-cert.workspace = true
+der.workspace = true

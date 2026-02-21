@@ -12,7 +12,7 @@
 //! - `<DESKeyValue xmlns="...aleksey...">` — base64 3DES key
 //! - `<RSAKeyValue>` — standard ds:RSAKeyValue (Modulus + Exponent)
 
-use crate::key::Key;
+use crate::key::{Key, KeyData};
 use crate::loader;
 use bergshamra_core::Error;
 

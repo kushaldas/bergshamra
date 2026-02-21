@@ -85,6 +85,22 @@ pub fn load_ec_p384_private_pem(pem_data: &[u8]) -> Result<Key, Error> {
     ))
 }
 
+/// Load an EC P-521 private key from PEM data.
+pub fn load_ec_p521_private_pem(pem_data: &[u8]) -> Result<Key, Error> {
+    use pkcs8::DecodePrivateKey;
+    let pem_str = std::str::from_utf8(pem_data)
+        .map_err(|e| Error::Key(format!("invalid PEM encoding: {e}")))?;
+
+    let secret = p521::SecretKey::from_pkcs8_pem(pem_str)
+        .map_err(|e| Error::Key(format!("failed to parse EC P-521 private key: {e}")))?;
+    let sk = p521::ecdsa::SigningKey::from(ecdsa::SigningKey::from(secret));
+    let vk = p521::ecdsa::VerifyingKey::from(&sk);
+    Ok(Key::new(
+        KeyData::EcP521 { private: Some(sk), public: vk },
+        KeyUsage::Any,
+    ))
+}
+
 /// Load an HMAC key from raw binary data.
 pub fn load_hmac_key(data: &[u8]) -> Key {
     Key::new(KeyData::Hmac(data.to_vec()), KeyUsage::Any)
@@ -139,6 +155,16 @@ fn load_private_key_pkcs8_der(der: &[u8]) -> Result<Key, Error> {
         ));
     }
 
+    // Try EC P-521
+    if let Ok(secret) = p521::SecretKey::from_pkcs8_der(der) {
+        let sk = p521::ecdsa::SigningKey::from(ecdsa::SigningKey::from(secret));
+        let vk = p521::ecdsa::VerifyingKey::from(&sk);
+        return Ok(Key::new(
+            KeyData::EcP521 { private: Some(sk), public: vk },
+            KeyUsage::Any,
+        ));
+    }
+
     // Try DSA
     {
         use pkcs8::der::Decode;
@@ -153,7 +179,7 @@ fn load_private_key_pkcs8_der(der: &[u8]) -> Result<Key, Error> {
         }
     }
 
-    Err(Error::Key("unable to parse PKCS#8 DER private key (tried RSA, P-256, P-384, DSA)".into()))
+    Err(Error::Key("unable to parse PKCS#8 DER private key (tried RSA, P-256, P-384, P-521, DSA)".into()))
 }
 
 /// Load keys from a PKCS#12 (.p12/.pfx) file.
@@ -207,6 +233,16 @@ fn load_encrypted_pem(pem_data: &[u8], password: &str) -> Result<Key, Error> {
         ));
     }
 
+    // Try EC P-521
+    if let Ok(secret) = p521::SecretKey::from_pkcs8_encrypted_pem(pem_str, password) {
+        let sk = p521::ecdsa::SigningKey::from(ecdsa::SigningKey::from(secret));
+        let vk = p521::ecdsa::VerifyingKey::from(&sk);
+        return Ok(Key::new(
+            KeyData::EcP521 { private: Some(sk), public: vk },
+            KeyUsage::Any,
+        ));
+    }
+
     // Try generic decrypt via pem-rfc7468 + DER parse (catches DSA and others)
     {
         if let Ok((_label, der_bytes)) = pem_rfc7468::decode_vec(pem_data) {
@@ -221,7 +257,7 @@ fn load_encrypted_pem(pem_data: &[u8], password: &str) -> Result<Key, Error> {
         }
     }
 
-    Err(Error::Key("failed to decrypt encrypted PKCS#8 PEM (tried RSA, P-256, P-384, DSA)".into()))
+    Err(Error::Key("failed to decrypt encrypted PKCS#8 PEM (tried RSA, P-256, P-384, P-521, DSA)".into()))
 }
 
 /// Auto-detect key format and load from PEM data.
@@ -244,10 +280,17 @@ pub fn load_pem_auto(pem_data: &[u8], password: Option<&str>) -> Result<Key, Err
     if let Ok(key) = load_rsa_public_pem(pem_data) {
         return Ok(key);
     }
+    // Try SPKI PEM (handles EC P-256/P-384/P-521 and DSA public keys)
+    if let Ok(key) = load_spki_pem(pem_data) {
+        return Ok(key);
+    }
     if let Ok(key) = load_ec_p256_private_pem(pem_data) {
         return Ok(key);
     }
     if let Ok(key) = load_ec_p384_private_pem(pem_data) {
+        return Ok(key);
+    }
+    if let Ok(key) = load_ec_p521_private_pem(pem_data) {
         return Ok(key);
     }
     // Try X.509 certificate PEM
@@ -257,13 +300,23 @@ pub fn load_pem_auto(pem_data: &[u8], password: Option<&str>) -> Result<Key, Err
     Err(Error::Key("unable to auto-detect key format from PEM data".into()))
 }
 
+/// Load a public key from a PEM-encoded SubjectPublicKeyInfo (`-----BEGIN PUBLIC KEY-----`).
+pub fn load_spki_pem(pem_data: &[u8]) -> Result<Key, Error> {
+    let (_label, der_bytes) = pem_rfc7468::decode_vec(pem_data)
+        .map_err(|e| Error::Key(format!("failed to decode SPKI PEM: {e}")))?;
+    load_spki_der(&der_bytes)
+}
+
 /// Load a public key from a PEM-encoded X.509 certificate.
 pub fn load_x509_cert_pem(pem_data: &[u8]) -> Result<Key, Error> {
     let pem_str = std::str::from_utf8(pem_data)
         .map_err(|e| Error::Key(format!("invalid PEM encoding: {e}")))?;
 
+    // Trim trailing whitespace — some PEM files have extra newlines
+    let trimmed = pem_str.trim();
+
     // Extract DER from PEM
-    let (label, der_bytes) = pem_rfc7468::decode_vec(pem_str.as_bytes())
+    let (label, der_bytes) = pem_rfc7468::decode_vec(trimmed.as_bytes())
         .map_err(|e| Error::Key(format!("failed to decode certificate PEM: {e}")))?;
 
     if label != "CERTIFICATE" {
@@ -322,6 +375,11 @@ pub fn load_key_file_with_password(
         ));
     }
 
+    // Try SPKI DER (public key)
+    if let Ok(key) = load_spki_der(&data) {
+        return Ok(key);
+    }
+
     // Try X.509 certificate DER (extract public key)
     if let Ok(key) = load_x509_cert_der(&data) {
         return Ok(key);
@@ -378,6 +436,19 @@ pub fn load_x509_cert_der(data: &[u8]) -> Result<Key, Error> {
         return Ok(key);
     }
 
+    // Try EC P-521
+    if let Ok(pk) = p521::PublicKey::from_public_key_der(&spki_der) {
+        let vk = p521::ecdsa::VerifyingKey::from(
+            ecdsa::VerifyingKey::from(pk),
+        );
+        let mut key = Key::new(
+            KeyData::EcP521 { private: None, public: vk },
+            KeyUsage::Verify,
+        );
+        key.x509_chain = vec![data.to_vec()];
+        return Ok(key);
+    }
+
     // Try DSA
     {
         use pkcs8::der::Decode;
@@ -394,6 +465,59 @@ pub fn load_x509_cert_der(data: &[u8]) -> Result<Key, Error> {
     }
 
     Err(Error::Key("unsupported public key algorithm in X.509 certificate".into()))
+}
+
+/// Load a key from raw SubjectPublicKeyInfo DER bytes.
+pub fn load_spki_der(spki_der: &[u8]) -> Result<Key, Error> {
+    use spki::DecodePublicKey;
+
+    // Try RSA
+    if let Ok(pk) = rsa::RsaPublicKey::from_public_key_der(spki_der) {
+        return Ok(Key::new(
+            KeyData::Rsa { private: None, public: pk },
+            KeyUsage::Verify,
+        ));
+    }
+
+    // Try EC P-256
+    if let Ok(vk) = p256::ecdsa::VerifyingKey::from_public_key_der(spki_der) {
+        return Ok(Key::new(
+            KeyData::EcP256 { private: None, public: vk },
+            KeyUsage::Verify,
+        ));
+    }
+
+    // Try EC P-384
+    if let Ok(vk) = p384::ecdsa::VerifyingKey::from_public_key_der(spki_der) {
+        return Ok(Key::new(
+            KeyData::EcP384 { private: None, public: vk },
+            KeyUsage::Verify,
+        ));
+    }
+
+    // Try EC P-521
+    if let Ok(pk) = p521::PublicKey::from_public_key_der(spki_der) {
+        let vk = p521::ecdsa::VerifyingKey::from(ecdsa::VerifyingKey::from(pk));
+        return Ok(Key::new(
+            KeyData::EcP521 { private: None, public: vk },
+            KeyUsage::Verify,
+        ));
+    }
+
+    // Try DSA
+    {
+        use pkcs8::der::Decode;
+        if let Ok(spki_ref) = spki::SubjectPublicKeyInfoRef::from_der(spki_der) {
+            if let Ok(vk) = dsa::VerifyingKey::try_from(spki_ref) {
+                return Ok(Key::new(
+                    KeyData::Dsa { private: None, public: vk },
+                    KeyUsage::Verify,
+                ));
+            }
+        }
+    }
+
+    Err(Error::Key("unsupported public key algorithm in SPKI DER".into()))
 }
 
 #[cfg(test)]

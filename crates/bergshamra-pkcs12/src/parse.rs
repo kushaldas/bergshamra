@@ -18,6 +18,7 @@ const OID_DATA: &[u64] = &[1, 2, 840, 113549, 1, 7, 1];
 const OID_ENCRYPTED_DATA: &[u64] = &[1, 2, 840, 113549, 1, 7, 6];
 
 // Bag types (PKCS#12)
+const OID_KEY_BAG: &[u64] = &[1, 2, 840, 113549, 1, 12, 10, 1, 1];
 const OID_PKCS8_SHROUDED_KEY_BAG: &[u64] = &[1, 2, 840, 113549, 1, 12, 10, 1, 2];
 const OID_CERT_BAG: &[u64] = &[1, 2, 840, 113549, 1, 12, 10, 1, 3];
 
@@ -80,6 +81,9 @@ struct MacData {
 }
 
 enum SafeBag {
+    KeyBag {
+        pkcs8_der: Vec<u8>,
+    },
     ShroudedKeyBag {
         algorithm: EncryptionAlgorithm,
         ciphertext: Vec<u8>,
@@ -142,6 +146,9 @@ pub fn parse_pfx(data: &[u8], password: &str) -> Result<Pkcs12Contents, Error> {
 
         for bag in bags {
             match bag {
+                SafeBag::KeyBag { pkcs8_der } => {
+                    private_keys.push(pkcs8_der);
+                }
                 SafeBag::ShroudedKeyBag { algorithm, ciphertext } => {
                     let pkcs8_der =
                         decrypt_data(&algorithm, &ciphertext, password, &bmp_password)?;
@@ -232,7 +239,23 @@ fn parse_safe_bag(r: BERReader) -> Result<SafeBag, ASN1Error> {
     r.read_sequence(|r| {
         let bag_type = r.next().read_oid()?;
 
-        if bag_type == oid(OID_PKCS8_SHROUDED_KEY_BAG) {
+        if bag_type == oid(OID_KEY_BAG) {
+            // [0] EXPLICIT PrivateKeyInfo (PKCS#8 DER, unencrypted)
+            let pkcs8_der = r
+                .next()
+                .read_tagged(Tag::context(0), |r| r.read_der())?;
+            // Skip optional attributes
+            let _attrs = r.read_optional(|r| {
+                r.read_set_of(|r| {
+                    r.read_sequence(|r| {
+                        let _oid = r.next().read_oid()?;
+                        r.next().read_set_of(|r| { let _ = r.read_der()?; Ok(()) })?;
+                        Ok(())
+                    })
+                })
+            })?;
+            Ok(SafeBag::KeyBag { pkcs8_der })
+        } else if bag_type == oid(OID_PKCS8_SHROUDED_KEY_BAG) {
             // [0] EXPLICIT EncryptedPrivateKeyInfo
             let (algorithm, ciphertext) = r.next().read_tagged(Tag::context(0), |r| {
                 r.read_sequence(|r| {

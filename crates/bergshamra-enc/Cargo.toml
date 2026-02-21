@@ -17,3 +17,6 @@ base64.workspace = true
 roxmltree.workspace = true
 quick-xml.workspace = true
 rand.workspace = true
+p256.workspace = true
+p384.workspace = true
+p521.workspace = true

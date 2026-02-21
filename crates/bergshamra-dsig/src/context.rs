@@ -12,6 +12,12 @@ pub struct DsigContext {
     pub id_attrs: Vec<String>,
     /// URL-to-file mappings for external URI resolution.
     pub url_maps: Vec<(String, String)>,
+    /// Minimum HMAC output length in bits (0 = use spec default).
+    pub hmac_min_out_len: usize,
+    /// Debug mode: print pre-digest and pre-signature data to stderr.
+    pub debug: bool,
+    /// Base directory for resolving relative external URI references.
+    pub base_dir: Option<String>,
 }
 
 impl DsigContext {
@@ -21,6 +27,9 @@ impl DsigContext {
             keys_manager,
             id_attrs: Vec::new(),
             url_maps: Vec::new(),
+            hmac_min_out_len: 0,
+            debug: false,
+            base_dir: None,
         }
     }
 

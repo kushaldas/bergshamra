@@ -66,6 +66,19 @@ impl NodeSet {
         }
     }
 
+    /// Create a node set containing all nodes except comments.
+    /// Per W3C DSig spec, `URI=""` selects the document without comments.
+    pub fn all_without_comments(doc: &roxmltree::Document<'_>) -> Self {
+        let nodes: HashSet<usize> = doc.descendants()
+            .filter(|n| !n.is_comment())
+            .map(|n| node_index(n))
+            .collect();
+        Self {
+            nodes,
+            set_type: NodeSetType::Normal,
+        }
+    }
+
     /// Create a node set for a subtree rooted at the given node (without comments).
     pub fn tree_without_comments(root: roxmltree::Node<'_, '_>) -> Self {
         let mut nodes = HashSet::new();

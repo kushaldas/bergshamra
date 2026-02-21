@@ -263,42 +263,22 @@ impl<'a> ExcC14nContext<'a> {
 
 /// Get the prefix for an element's tag name.
 fn get_element_prefix(node: &roxmltree::Node<'_, '_>) -> String {
-    if let Some(ns_uri) = node.tag_name().namespace() {
-        find_prefix_for_uri(node, ns_uri).unwrap_or_default()
-    } else {
-        String::new()
-    }
+    node.tag_name_prefix().unwrap_or("").to_owned()
 }
 
 /// Get the prefix for an attribute.
 fn get_attr_prefix(
-    node: &roxmltree::Node<'_, '_>,
+    _node: &roxmltree::Node<'_, '_>,
     attr: &roxmltree::Attribute<'_, '_>,
 ) -> Option<String> {
     if let Some(ns_uri) = attr.namespace() {
         if ns_uri == "http://www.w3.org/XML/1998/namespace" {
             return Some("xml".to_owned());
         }
-        Some(find_prefix_for_uri(node, ns_uri).unwrap_or_default())
+        Some(attr.prefix().unwrap_or("").to_owned())
     } else {
         None
     }
-}
-
-/// Find the prefix that maps to a given namespace URI.
-fn find_prefix_for_uri(node: &roxmltree::Node<'_, '_>, ns_uri: &str) -> Option<String> {
-    let mut current = Some(*node);
-    while let Some(n) = current {
-        if n.is_element() {
-            for ns in n.namespaces() {
-                if ns.uri() == ns_uri {
-                    return Some(ns.name().unwrap_or("").to_owned());
-                }
-            }
-        }
-        current = n.parent();
-    }
-    None
 }
 
 /// Collect all in-scope namespaces for an element.
@@ -333,13 +313,9 @@ fn collect_inscope_namespaces(node: &roxmltree::Node<'_, '_>) -> BTreeMap<String
 
 /// Get the qualified element name.
 fn qualified_element_name(node: &roxmltree::Node<'_, '_>) -> String {
-    if let Some(ns_uri) = node.tag_name().namespace() {
-        if let Some(prefix) = find_prefix_for_uri(node, ns_uri) {
-            if prefix.is_empty() {
-                return node.tag_name().name().to_owned();
-            }
-            return format!("{}:{}", prefix, node.tag_name().name());
-        }
+    if let Some(prefix) = node.tag_name_prefix() {
+        format!("{}:{}", prefix, node.tag_name().name())
+    } else {
+        node.tag_name().name().to_owned()
     }
-    node.tag_name().name().to_owned()
 }

@@ -27,11 +27,17 @@ pub fn resolve_id<'a>(
         .ok_or_else(|| Error::InvalidUri(format!("ID not found: {id}")))
 }
 
-/// Parse an `xpointer(id('...'))` expression and return the ID value.
+/// Parse an `xpointer(id('...'))` or `xpointer(id("..."))` expression and return the ID value.
 pub fn parse_xpointer_id(expr: &str) -> Option<&str> {
-    let inner = expr.strip_prefix("xpointer(id('")?;
-    let inner = inner.strip_suffix("'))")?;
-    Some(inner)
+    // Try single quotes first: xpointer(id('...'))
+    if let Some(inner) = expr.strip_prefix("xpointer(id('") {
+        return inner.strip_suffix("'))");
+    }
+    // Try double quotes: xpointer(id("..."))
+    if let Some(inner) = expr.strip_prefix("xpointer(id(\"") {
+        return inner.strip_suffix("\"))");
+    }
+    None
 }
 
 /// Check if `ancestor` is an ancestor-or-self of `node`.

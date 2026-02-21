@@ -11,6 +11,8 @@ pub mod sign;
 pub mod cipher;
 pub mod keywrap;
 pub mod keytransport;
+pub mod kdf;
+pub mod keyagreement;
 pub mod registry;
 
 pub use digest::DigestAlgorithm;

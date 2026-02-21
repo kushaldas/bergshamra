@@ -101,7 +101,7 @@ impl CipherAlgorithm for AesCbc {
             _ => return Err(Error::Crypto("unsupported AES key size".into())),
         }
 
-        pkcs7_unpad(&buf, 16)
+        xmlenc_unpad(&buf, 16)
     }
 }
 
@@ -243,7 +243,7 @@ impl CipherAlgorithm for TripleDesCbc {
         dec.decrypt_padded_mut::<cbc::cipher::block_padding::NoPadding>(&mut buf)
             .map_err(|e| Error::Crypto(format!("3DES decrypt: {e}")))?;
 
-        pkcs7_unpad(&buf, 8)
+        xmlenc_unpad(&buf, 8)
     }
 }
 
@@ -257,19 +257,21 @@ fn pkcs7_pad(data: &[u8], block_size: usize) -> Vec<u8> {
     padded
 }
 
-fn pkcs7_unpad(data: &[u8], block_size: usize) -> Result<Vec<u8>, Error> {
+/// Remove W3C XML Encryption padding.
+///
+/// The XML Encryption spec (both 1.0 PKCS#7 style and 1.1 ISO 10126 style)
+/// stores the padding length in the last byte.  PKCS#7 fills all padding bytes
+/// with the length value; ISO 10126 uses random filler bytes with only the
+/// last byte indicating the length.  We accept both by only checking the last
+/// byte, which is compatible with either scheme.
+fn xmlenc_unpad(data: &[u8], block_size: usize) -> Result<Vec<u8>, Error> {
     if data.is_empty() {
         return Ok(Vec::new());
     }
     let pad_byte = *data.last().unwrap();
     let pad_len = pad_byte as usize;
     if pad_len == 0 || pad_len > block_size || pad_len > data.len() {
-        return Err(Error::Crypto("invalid PKCS#7 padding".into()));
-    }
-    for &b in &data[data.len() - pad_len..] {
-        if b != pad_byte {
-            return Err(Error::Crypto("invalid PKCS#7 padding".into()));
-        }
+        return Err(Error::Crypto("invalid padding".into()));
     }
     Ok(data[..data.len() - pad_len].to_vec())
 }
@@ -282,8 +284,17 @@ mod tests {
     fn test_pkcs7_roundtrip() {
         let padded = pkcs7_pad(b"hello", 16);
         assert_eq!(padded.len(), 16);
-        let unpadded = pkcs7_unpad(&padded, 16).unwrap();
+        let unpadded = xmlenc_unpad(&padded, 16).unwrap();
         assert_eq!(unpadded, b"hello");
+    }
+
+    #[test]
+    fn test_iso10126_unpad() {
+        // ISO 10126 padding: random bytes + last byte = pad length
+        let mut data = b"hello world!".to_vec(); // 12 bytes
+        data.extend_from_slice(&[0xAB, 0xCD, 0xEF, 0x04]); // 4 bytes padding, last = 4
+        let unpadded = xmlenc_unpad(&data, 16).unwrap();
+        assert_eq!(unpadded, b"hello world!");
     }
 
     #[test]

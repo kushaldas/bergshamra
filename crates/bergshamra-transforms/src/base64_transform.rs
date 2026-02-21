@@ -4,6 +4,26 @@
 
 use crate::pipeline::{Transform, TransformData};
 use bergshamra_core::{algorithm, Error};
+use bergshamra_xml::NodeSet;
+
+/// Extract text content from an XML document, optionally filtered by a node set.
+fn extract_text_content(xml_text: &str, node_set: Option<&NodeSet>) -> Result<String, Error> {
+    let doc = roxmltree::Document::parse_with_options(xml_text, bergshamra_xml::parsing_options())
+        .map_err(|e| Error::Transform(format!("base64: XML parse: {e}")))?;
+    let mut text = String::new();
+    for node in doc.descendants() {
+        if node.is_text() {
+            if let Some(ns) = node_set {
+                if ns.contains(&node) {
+                    text.push_str(node.text().unwrap_or(""));
+                }
+            } else {
+                text.push_str(node.text().unwrap_or(""));
+            }
+        }
+    }
+    Ok(text)
+}
 
 /// Base64 decode transform — decodes Base64-encoded data.
 pub struct Base64DecodeTransform;
@@ -23,7 +43,11 @@ impl Transform for Base64DecodeTransform {
                     .map_err(|e| Error::Transform(format!("base64 input not UTF-8: {e}")))?
                     .to_owned()
             }
-            TransformData::Xml { xml_text, .. } => xml_text.clone(),
+            TransformData::Xml { xml_text, node_set } => {
+                // Extract text content from the node set, not the full XML.
+                // Per W3C: "removes the tags and extracts the content".
+                extract_text_content(xml_text, node_set.as_ref())?
+            }
         };
 
         let cleaned: String = text

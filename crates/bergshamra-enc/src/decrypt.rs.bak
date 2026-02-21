@@ -57,71 +57,14 @@ pub fn decrypt_to_bytes(ctx: &EncContext, xml: &str) -> Result<Vec<u8>, Error> {
     let cipher_data_node = find_child_element(enc_data_node, ns::ENC, ns::node::CIPHER_DATA)
         .ok_or_else(|| Error::MissingElement("CipherData".into()))?;
 
-    let cipher_bytes = read_cipher_data(ctx, cipher_data_node, &doc, &id_map)?;
-
-    // Truncate the session key to the cipher's expected size if it's longer.
-    // xmlsec1 may wrap a larger key than the EncryptionMethod requires
-    // (e.g. --session-key aes-256 with aes128-gcm EncryptionMethod).
-    let expected_key_size = key_length_for_algorithm(enc_uri);
-    let effective_key = if key_bytes.len() > expected_key_size && expected_key_size > 0 {
-        &key_bytes[..expected_key_size]
-    } else {
-        &key_bytes
-    };
+    let cipher_bytes = read_cipher_data(cipher_data_node, &doc, &id_map)?;
 
     // Decrypt
     let cipher_alg = bergshamra_crypto::cipher::from_uri(enc_uri)?;
-    let plaintext = cipher_alg.decrypt(effective_key, &cipher_bytes)?;
+    let plaintext = cipher_alg.decrypt(&key_bytes, &cipher_bytes)?;
 
     // Replace EncryptedData with plaintext
-    let result = replace_encrypted_data_bytes(xml, enc_data_node, enc_type, &plaintext)?;
-
-    // If the document declares a non-UTF-8 encoding (e.g., ISO-8859-1),
-    // convert the UTF-8 output to that encoding. The decrypted content from
-    // the cipher is always UTF-8 (xmlsec1/libxml2 stores UTF-8 internally),
-    // but the original document may use a different encoding.
-    Ok(maybe_convert_encoding(&result))
-}
-
-/// If the output declares `encoding="ISO-8859-1"` (or similar Latin-1 variant),
-/// convert UTF-8 bytes to Latin-1. Returns the input unchanged if no conversion needed.
-fn maybe_convert_encoding(data: &[u8]) -> Vec<u8> {
-    // Quick check: look for encoding declaration in the first ~200 bytes
-    let header = &data[..data.len().min(200)];
-    let header_str = match std::str::from_utf8(header) {
-        Ok(s) => s,
-        Err(_) => return data.to_vec(),
-    };
-    let header_lower = header_str.to_lowercase();
-    if !header_lower.contains("encoding=\"iso-8859-1\"")
-        && !header_lower.contains("encoding='iso-8859-1'")
-    {
-        return data.to_vec();
-    }
-    // Convert UTF-8 → ISO-8859-1
-    utf8_to_latin1(data)
-}
-
-/// Convert UTF-8 bytes to ISO-8859-1. Characters in U+0080..U+00FF become
-/// single bytes. Characters outside U+0000..U+00FF are passed through as-is
-/// (they can't be represented in Latin-1 but we preserve them for safety).
-fn utf8_to_latin1(data: &[u8]) -> Vec<u8> {
-    let s = match std::str::from_utf8(data) {
-        Ok(s) => s,
-        Err(_) => return data.to_vec(),
-    };
-    let mut out = Vec::with_capacity(s.len());
-    for ch in s.chars() {
-        if (ch as u32) <= 0xFF {
-            out.push(ch as u8);
-        } else {
-            // Can't represent in Latin-1; encode as UTF-8 bytes
-            let mut buf = [0u8; 4];
-            let encoded = ch.encode_utf8(&mut buf);
-            out.extend_from_slice(encoded.as_bytes());
-        }
-    }
-    out
+    replace_encrypted_data_bytes(xml, enc_data_node, enc_type, &plaintext)
 }
 
 /// Resolve the decryption key from KeyInfo or EncryptedKey.
@@ -228,7 +171,7 @@ fn decrypt_encrypted_key(
     // Read CipherData/CipherValue
     let cipher_data = find_child_element(enc_key_node, ns::ENC, ns::node::CIPHER_DATA)
         .ok_or_else(|| Error::MissingElement("CipherData on EncryptedKey".into()))?;
-    let cipher_bytes = read_cipher_data(ctx, cipher_data, doc, id_map)?;
+    let cipher_bytes = read_cipher_data(cipher_data, doc, id_map)?;
 
     // Determine key unwrap method
     match enc_uri {
@@ -527,7 +470,7 @@ fn key_length_for_algorithm(uri: &str) -> usize {
 }
 
 /// Parse ConcatKDF parameters from a KeyDerivationMethod element.
-pub(crate) fn parse_concat_kdf_params(
+fn parse_concat_kdf_params(
     kd_method: roxmltree::Node<'_, '_>,
 ) -> Result<bergshamra_crypto::kdf::ConcatKdfParams, Error> {
     let mut params = bergshamra_crypto::kdf::ConcatKdfParams::default();
@@ -556,7 +499,7 @@ pub(crate) fn parse_concat_kdf_params(
 }
 
 /// Parse PBKDF2 parameters from a KeyDerivationMethod element.
-pub(crate) fn parse_pbkdf2_params(
+fn parse_pbkdf2_params(
     kd_method: roxmltree::Node<'_, '_>,
     default_key_len: usize,
 ) -> Result<bergshamra_crypto::kdf::Pbkdf2Params, Error> {
@@ -677,7 +620,6 @@ fn read_oaep_params(enc_method: roxmltree::Node<'_, '_>) -> bergshamra_crypto::k
 
 /// Read CipherData — extract CipherValue (Base64) or CipherReference.
 fn read_cipher_data(
-    ctx: &EncContext,
     cipher_data_node: roxmltree::Node<'_, '_>,
     doc: &roxmltree::Document<'_>,
     id_map: &HashMap<String, roxmltree::NodeId>,
@@ -696,9 +638,6 @@ fn read_cipher_data(
 
     // CipherReference: resolve URI and apply transforms
     if let Some(cipher_ref) = find_child_element(cipher_data_node, ns::ENC, ns::node::CIPHER_REFERENCE) {
-        if ctx.disable_cipher_reference {
-            return Err(Error::Other("CipherReference resolution is disabled".into()));
-        }
         return resolve_cipher_reference(cipher_ref, doc, id_map);
     }
 
@@ -781,27 +720,9 @@ fn collect_text_content(node: roxmltree::Node<'_, '_>) -> String {
 fn replace_encrypted_data_bytes(
     xml: &str,
     enc_data_node: roxmltree::Node<'_, '_>,
-    enc_type: &str,
+    _enc_type: &str,
     plaintext: &[u8],
 ) -> Result<Vec<u8>, Error> {
-    // When Type is not Element or Content (e.g., MimeType="text/plain" with no Type,
-    // or any non-XML type), the plaintext is opaque data — return it as-is.
-    let is_xml_type = enc_type.is_empty()
-        || enc_type.ends_with("#Element")
-        || enc_type.ends_with("#Content");
-    if !is_xml_type {
-        return Ok(plaintext.to_vec());
-    }
-
-    // If no Type is specified but EncryptedData has a MimeType that's not XML,
-    // treat the plaintext as opaque data.
-    if enc_type.is_empty() {
-        let mime = enc_data_node.attribute("MimeType").unwrap_or("");
-        if !mime.is_empty() && !mime.contains("xml") {
-            return Ok(plaintext.to_vec());
-        }
-    }
-
     let range = enc_data_node.range();
     let start = range.start;
     let end = range.end;
@@ -1096,8 +1017,7 @@ mod tests {
         let doc = roxmltree::Document::parse(xml).unwrap();
         let id_map = build_id_map(&doc, &["Id", "ID", "id"]);
         let root = doc.root_element();
-        let ctx = EncContext::new(bergshamra_keys::KeysManager::new());
-        let result = read_cipher_data(&ctx, root, &doc, &id_map).unwrap();
+        let result = read_cipher_data(root, &doc, &id_map).unwrap();
         assert_eq!(result, b"Hello World");
     }
 }

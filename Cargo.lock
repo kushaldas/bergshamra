@@ -134,6 +134,7 @@ dependencies = [
  "bergshamra-transforms",
  "bergshamra-xml",
  "clap",
+ "roxmltree",
 ]
 
 [[package]]
@@ -170,6 +171,7 @@ dependencies = [
  "p256",
  "p384",
  "p521",
+ "pbkdf2",
  "pkcs1",
  "pkcs8",
  "rand",
@@ -192,8 +194,10 @@ dependencies = [
  "bergshamra-keys",
  "bergshamra-transforms",
  "bergshamra-xml",
+ "der",
  "quick-xml",
  "roxmltree",
+ "x509-cert",
 ]
 
 [[package]]
@@ -207,6 +211,9 @@ dependencies = [
  "bergshamra-keys",
  "bergshamra-transforms",
  "bergshamra-xml",
+ "p256",
+ "p384",
+ "p521",
  "quick-xml",
  "rand",
  "roxmltree",
@@ -916,8 +923,6 @@ dependencies = [
 [[package]]
 name = "roxmltree"
 version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rsa"

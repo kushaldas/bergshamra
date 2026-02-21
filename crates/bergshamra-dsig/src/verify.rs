@@ -70,13 +70,44 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
         .attribute(ns::attr::ALGORITHM)
         .ok_or_else(|| Error::MissingAttribute("Algorithm on SignatureMethod".into()))?;
 
+    // Parse HMACOutputLength for HMAC truncation (CVE-2009-0217)
+    let hmac_output_length_bits: Option<usize> = if bergshamra_crypto::sign::is_hmac_algorithm(sig_method_uri) {
+        if let Some(len_node) = find_child_element(sig_method_node, ns::DSIG, ns::node::HMAC_OUTPUT_LENGTH) {
+            let len_text = len_node.text().unwrap_or("").trim();
+            let bits: usize = len_text
+                .parse()
+                .map_err(|_| Error::XmlStructure("invalid HMACOutputLength value".into()))?;
+            // Validate: must be a multiple of 8
+            if bits % 8 != 0 {
+                return Ok(VerifyResult::Invalid {
+                    reason: "HMACOutputLength must be a multiple of 8".into(),
+                });
+            }
+            // Validate minimum truncation per W3C recommendation (CVE-2009-0217)
+            // Only enforce when hmac_min_out_len is explicitly set (matching xmlsec behavior)
+            if ctx.hmac_min_out_len > 0 && bits < ctx.hmac_min_out_len {
+                return Ok(VerifyResult::Invalid {
+                    reason: format!(
+                        "HMACOutputLength {bits} bits is below minimum {} bits (CVE-2009-0217)",
+                        ctx.hmac_min_out_len
+                    ),
+                });
+            }
+            Some(bits)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // Read exc-C14N PrefixList if applicable
     let inclusive_prefixes = read_inclusive_prefixes(c14n_method_node);
 
     // 3. Verify each Reference
     let references = find_child_elements(signed_info, ns::DSIG, ns::node::REFERENCE);
     for reference in &references {
-        let result = verify_reference(reference, &doc, &id_map, xml, sig_node, &ctx.url_maps)?;
+        let result = verify_reference(reference, &doc, &id_map, xml, sig_node, &ctx.url_maps, ctx.debug, ctx.base_dir.as_deref())?;
         if let VerifyResult::Invalid { reason } = result {
             return Ok(VerifyResult::Invalid {
                 reason: format!("Reference digest failed: {reason}"),
@@ -86,18 +117,32 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
 
     // 4. Resolve signing key
     // First try inline KeyValue (RSA/EC public key embedded in XML),
-    // then fall back to KeysManager lookup via KeyName or first key.
+    // then try EncryptedKey unwrap, then fall back to KeysManager lookup.
     let key_info_node = find_child_element(sig_node, ns::DSIG, ns::node::KEY_INFO);
     let extracted_key: Option<bergshamra_keys::Key>;
     let key = if let Some(ki) = key_info_node {
-        extracted_key = bergshamra_keys::keyinfo::extract_key_value(ki);
+        // Check for KeyInfoReference — dereference to the target KeyInfo
+        let effective_ki = resolve_key_info_reference(ki, &doc, &id_map).unwrap_or(ki);
+        extracted_key = bergshamra_keys::keyinfo::extract_key_value(effective_ki)
+            .or_else(|| try_unwrap_encrypted_key(effective_ki, &ctx.keys_manager).ok());
         if let Some(ref ek) = extracted_key {
+            if ctx.debug {
+                eprintln!("== Key: extracted inline key ({})", ek.data.algorithm_name());
+            }
             ek
         } else {
-            bergshamra_keys::keyinfo::resolve_key_info(ki, &ctx.keys_manager)?
+            let k = bergshamra_keys::keyinfo::resolve_key_info(effective_ki, &ctx.keys_manager)?;
+            if ctx.debug {
+                eprintln!("== Key: resolved from manager ({})", k.data.algorithm_name());
+            }
+            k
         }
     } else {
-        ctx.keys_manager.first_key()?
+        let k = ctx.keys_manager.first_key()?;
+        if ctx.debug {
+            eprintln!("== Key: first key from manager ({})", k.data.algorithm_name());
+        }
+        k
     };
 
     // 5. Canonicalize <SignedInfo>
@@ -109,6 +154,12 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
         Some(&signed_info_ns),
         &inclusive_prefixes,
     )?;
+
+    if ctx.debug {
+        eprintln!("== PreSigned data - start buffer:");
+        eprint!("{}", String::from_utf8_lossy(&c14n_signed_info));
+        eprintln!("\n== PreSigned data - end buffer");
+    }
 
     // 6. Verify SignatureValue
     let sig_value_node = find_child_element(sig_node, ns::DSIG, ns::node::SIGNATURE_VALUE)
@@ -124,6 +175,19 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
     let sig_value = engine
         .decode(&sig_value_clean)
         .map_err(|e| Error::Base64(format!("SignatureValue: {e}")))?;
+
+    // Validate HMAC truncation length against decoded signature
+    if let Some(bits) = hmac_output_length_bits {
+        let expected_bytes = bits / 8;
+        if sig_value.len() != expected_bytes {
+            return Ok(VerifyResult::Invalid {
+                reason: format!(
+                    "SignatureValue length {} bytes does not match HMACOutputLength {} bits ({} bytes)",
+                    sig_value.len(), bits, expected_bytes
+                ),
+            });
+        }
+    }
 
     let signing_key = key
         .to_signing_key()
@@ -149,6 +213,8 @@ fn verify_reference(
     xml: &str,
     sig_node: roxmltree::Node<'_, '_>,
     url_maps: &[(String, String)],
+    debug: bool,
+    base_dir: Option<&str>,
 ) -> Result<VerifyResult, Error> {
     // Read URI attribute
     let uri = reference.attribute(ns::attr::URI).unwrap_or("");
@@ -176,13 +242,16 @@ fn verify_reference(
         .map_err(|e| Error::Base64(format!("DigestValue: {e}")))?;
 
     // Resolve URI and get initial data
-    let (ref_xml, initial_ns) = resolve_reference_uri(uri, doc, id_map, xml, url_maps)?;
+    let resolved = resolve_reference_uri(uri, doc, id_map, xml, url_maps, base_dir)?;
 
     // Read and apply transforms
     let transforms_node = find_child_element(*reference, ns::DSIG, ns::node::TRANSFORMS);
-    let mut data = bergshamra_transforms::TransformData::Xml {
-        xml_text: ref_xml,
-        node_set: initial_ns,
+    let mut data = match resolved {
+        ResolvedUri::Xml { xml_text, node_set } => bergshamra_transforms::TransformData::Xml {
+            xml_text,
+            node_set,
+        },
+        ResolvedUri::Binary(bytes) => bergshamra_transforms::TransformData::Binary(bytes),
     };
 
     if let Some(transforms) = transforms_node {
@@ -201,6 +270,12 @@ fn verify_reference(
     // Convert to binary for digesting
     let bytes = data.to_binary()?;
 
+    if debug {
+        eprintln!("== PreDigest data - start buffer (URI={uri}):");
+        eprint!("{}", String::from_utf8_lossy(&bytes));
+        eprintln!("\n== PreDigest data - end buffer");
+    }
+
     // Compute digest
     let computed = digest::digest(digest_uri, &bytes)?;
 
@@ -216,28 +291,67 @@ fn verify_reference(
     }
 }
 
-/// Resolve a reference URI to (xml_text, optional node_set).
+/// Resolved URI data — either XML (same-document) or raw binary (external).
+enum ResolvedUri {
+    Xml { xml_text: String, node_set: Option<NodeSet> },
+    Binary(Vec<u8>),
+}
+
+/// Resolve a reference URI.
 fn resolve_reference_uri(
     uri: &str,
     doc: &roxmltree::Document<'_>,
     id_map: &HashMap<String, roxmltree::NodeId>,
     xml: &str,
     url_maps: &[(String, String)],
-) -> Result<(String, Option<NodeSet>), Error> {
+    base_dir: Option<&str>,
+) -> Result<ResolvedUri, Error> {
     if uri.is_empty() {
-        // Whole document
-        Ok((xml.to_owned(), None))
-    } else if let Some(id) = xpath::parse_same_document_ref(uri) {
+        // Whole document, per W3C spec section 4.3.3.3:
+        // "if the URI is not a full XPointer, then all comment nodes are excluded"
+        let ns = NodeSet::all_without_comments(doc);
+        Ok(ResolvedUri::Xml { xml_text: xml.to_owned(), node_set: Some(ns) })
+    } else if let Some(fragment) = xpath::parse_same_document_ref(uri) {
+        // Handle xpointer(/) — selects entire document
+        if fragment == "xpointer(/)" {
+            return Ok(ResolvedUri::Xml { xml_text: xml.to_owned(), node_set: None });
+        }
+        // Handle xpointer(id('...')) — extract the ID.
+        // Per W3C: bare `#id` excludes comments, `#xpointer(id('...'))` includes them.
+        let is_xpointer = xpath::parse_xpointer_id(fragment).is_some();
+        let id = xpath::parse_xpointer_id(fragment).unwrap_or(fragment);
         let node = xpath::resolve_id(doc, id_map, id)?;
-        let ns = NodeSet::tree_without_comments(node);
-        Ok((xml.to_owned(), Some(ns)))
+        let ns = if is_xpointer {
+            NodeSet::tree_with_comments(node)
+        } else {
+            NodeSet::tree_without_comments(node)
+        };
+        Ok(ResolvedUri::Xml { xml_text: xml.to_owned(), node_set: Some(ns) })
     } else {
-        // Try url-map for external URIs
+        // Try url-map for external URIs — read as raw bytes
         for (map_url, file_path) in url_maps {
             if uri == map_url || uri.starts_with(map_url) {
-                let data = std::fs::read_to_string(file_path)
+                let data = std::fs::read(file_path)
                     .map_err(|e| Error::Other(format!("url-map {file_path}: {e}")))?;
-                return Ok((data, None));
+                return Ok(ResolvedUri::Binary(data));
+            }
+        }
+        // Try resolving as a relative file path (no scheme = local file)
+        if !uri.contains("://") {
+            if let Some(base) = base_dir {
+                let path = std::path::Path::new(base).join(uri);
+                if path.exists() {
+                    let data = std::fs::read(&path)
+                        .map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
+                    return Ok(ResolvedUri::Binary(data));
+                }
+            }
+            // Try relative to CWD
+            let path = std::path::Path::new(uri);
+            if path.exists() {
+                let data = std::fs::read(path)
+                    .map_err(|e| Error::Other(format!("{uri}: {e}")))?;
+                return Ok(ResolvedUri::Binary(data));
             }
         }
         Err(Error::InvalidUri(format!("external URI not supported: {uri}")))
@@ -274,15 +388,27 @@ pub(crate) fn apply_transform(
         algorithm::XPATH => {
             apply_xpath_transform(data, transform_node, sig_node)
         }
+        algorithm::XPOINTER => {
+            apply_xpointer_transform(data, transform_node)
+        }
+        algorithm::XPATH2 => {
+            apply_xpath_filter2_transform(data, transform_node)
+        }
         _ => Err(Error::UnsupportedAlgorithm(format!("transform: {uri}"))),
     }
 }
 
 /// Apply an XPath 1.0 transform.
 ///
-/// Currently supports the common enveloped-signature pattern:
-///   `not(ancestor-or-self::dsig:Signature)`
-/// where `dsig` is bound to the XML-DSig namespace.
+/// The XPath 1.0 transform evaluates the expression for each node in the
+/// input node-set. If the expression evaluates to true, the node is included
+/// in the output.
+///
+/// Supports a subset of XPath 1.0 expressions commonly used in XML-DSig:
+/// - `ancestor-or-self::prefix:Name` — true if node or ancestor is named element
+/// - `not(expr)` — negation
+/// - `expr and expr` — conjunction
+/// - `self::text()` — true for text nodes
 fn apply_xpath_transform(
     data: bergshamra_transforms::TransformData,
     transform_node: &roxmltree::Node<'_, '_>,
@@ -305,9 +431,209 @@ fn apply_xpath_transform(
         return t.execute(data);
     }
 
+    // Try to parse and evaluate as a boolean XPath expression
+    if let Some(parsed) = parse_xpath_bool_expr(xpath_expr, &xpath_node) {
+        return apply_parsed_xpath_filter(data, &parsed);
+    }
+
     Err(Error::UnsupportedAlgorithm(format!(
         "XPath expression not supported: {xpath_expr}"
     )))
+}
+
+/// A parsed XPath boolean expression tree.
+#[derive(Debug)]
+enum XPathBoolExpr {
+    /// `ancestor-or-self::ns:Name` — true if node or any ancestor is the named element
+    AncestorOrSelf { ns_uri: String, local_name: String },
+    /// `self::text()` — true for text nodes
+    SelfText,
+    /// `not(expr)`
+    Not(Box<XPathBoolExpr>),
+    /// `expr and expr`
+    And(Box<XPathBoolExpr>, Box<XPathBoolExpr>),
+    /// `expr or expr`
+    Or(Box<XPathBoolExpr>, Box<XPathBoolExpr>),
+}
+
+/// Parse a limited subset of XPath 1.0 boolean expressions.
+///
+/// Handles combinations of `ancestor-or-self::prefix:Name`, `self::text()`,
+/// `not()`, `and`, `or`.
+fn parse_xpath_bool_expr(expr: &str, xpath_node: &roxmltree::Node<'_, '_>) -> Option<XPathBoolExpr> {
+    let expr = expr.trim();
+    if expr.is_empty() {
+        return None;
+    }
+
+    // Try splitting on top-level ` and ` (outside parentheses)
+    if let Some((left, right)) = split_top_level(expr, " and ") {
+        let l = parse_xpath_bool_expr(left, xpath_node)?;
+        let r = parse_xpath_bool_expr(right, xpath_node)?;
+        return Some(XPathBoolExpr::And(Box::new(l), Box::new(r)));
+    }
+
+    // Try splitting on top-level ` or ` (outside parentheses)
+    if let Some((left, right)) = split_top_level(expr, " or ") {
+        let l = parse_xpath_bool_expr(left, xpath_node)?;
+        let r = parse_xpath_bool_expr(right, xpath_node)?;
+        return Some(XPathBoolExpr::Or(Box::new(l), Box::new(r)));
+    }
+
+    // Handle not(...) — strip outer not() and parse inner
+    if let Some(inner) = strip_not(expr) {
+        let inner_expr = parse_xpath_bool_expr(inner, xpath_node)?;
+        return Some(XPathBoolExpr::Not(Box::new(inner_expr)));
+    }
+
+    // Handle parenthesized expression
+    if expr.starts_with('(') && expr.ends_with(')') {
+        return parse_xpath_bool_expr(&expr[1..expr.len()-1], xpath_node);
+    }
+
+    // self::text()
+    if expr == "self::text()" {
+        return Some(XPathBoolExpr::SelfText);
+    }
+
+    // ancestor-or-self::prefix:Name or ancestor-or-self::Name
+    if let Some(name_part) = expr.strip_prefix("ancestor-or-self::") {
+        let (ns_uri, local_name) = resolve_prefixed_name(name_part, xpath_node)?;
+        return Some(XPathBoolExpr::AncestorOrSelf { ns_uri, local_name });
+    }
+
+    None
+}
+
+/// Split an expression at the first top-level occurrence of `sep`
+/// (i.e., not inside parentheses).
+fn split_top_level<'a>(expr: &'a str, sep: &str) -> Option<(&'a str, &'a str)> {
+    let mut depth = 0i32;
+    let bytes = expr.as_bytes();
+    let sep_bytes = sep.as_bytes();
+    for i in 0..bytes.len() {
+        if bytes[i] == b'(' { depth += 1; }
+        if bytes[i] == b')' { depth -= 1; }
+        if depth == 0 && i + sep_bytes.len() <= bytes.len() && &bytes[i..i + sep_bytes.len()] == sep_bytes {
+            let left = &expr[..i];
+            let right = &expr[i + sep.len()..];
+            if !left.trim().is_empty() && !right.trim().is_empty() {
+                return Some((left.trim(), right.trim()));
+            }
+        }
+    }
+    None
+}
+
+/// Strip `not(...)` wrapper and return inner expression.
+fn strip_not(expr: &str) -> Option<&str> {
+    let expr = expr.trim();
+    if expr.starts_with("not(") && expr.ends_with(')') {
+        // Check that the closing paren matches the opening one after "not("
+        let inner = &expr[4..expr.len()-1];
+        // Verify balanced parentheses
+        let mut depth = 0i32;
+        for c in inner.chars() {
+            if c == '(' { depth += 1; }
+            if c == ')' { depth -= 1; }
+            if depth < 0 { return None; }
+        }
+        if depth == 0 {
+            return Some(inner.trim());
+        }
+    }
+    None
+}
+
+/// Resolve a possibly-prefixed element name using the XPath node's namespace declarations.
+fn resolve_prefixed_name(name: &str, xpath_node: &roxmltree::Node<'_, '_>) -> Option<(String, String)> {
+    if let Some((prefix, local)) = name.split_once(':') {
+        // Resolve namespace prefix
+        let uri = xpath_node.namespaces()
+            .find(|ns| ns.name() == Some(prefix))
+            .map(|ns| ns.uri())?;
+        Some((uri.to_string(), local.to_string()))
+    } else {
+        // No prefix — match any namespace (empty URI signals "any")
+        Some((String::new(), name.to_string()))
+    }
+}
+
+/// Evaluate a parsed XPath boolean expression for a given node.
+fn eval_xpath_bool(
+    expr: &XPathBoolExpr,
+    node: roxmltree::Node<'_, '_>,
+) -> bool {
+    match expr {
+        XPathBoolExpr::AncestorOrSelf { ns_uri, local_name } => {
+            // Check if node or any ancestor is the named element
+            let mut current = Some(node);
+            while let Some(n) = current {
+                if n.is_element() && n.tag_name().name() == local_name
+                    && (ns_uri.is_empty() || n.tag_name().namespace().unwrap_or("") == ns_uri)
+                {
+                    return true;
+                }
+                current = n.parent();
+            }
+            false
+        }
+        XPathBoolExpr::SelfText => node.is_text(),
+        XPathBoolExpr::Not(inner) => !eval_xpath_bool(inner, node),
+        XPathBoolExpr::And(left, right) => {
+            eval_xpath_bool(left, node) && eval_xpath_bool(right, node)
+        }
+        XPathBoolExpr::Or(left, right) => {
+            eval_xpath_bool(left, node) || eval_xpath_bool(right, node)
+        }
+    }
+}
+
+/// Apply a parsed XPath boolean expression as a node filter.
+fn apply_parsed_xpath_filter(
+    data: bergshamra_transforms::TransformData,
+    expr: &XPathBoolExpr,
+) -> Result<bergshamra_transforms::TransformData, Error> {
+    use bergshamra_xml::nodeset::{NodeSet, NodeSetType, node_index};
+    use std::collections::HashSet;
+
+    // If input is binary, convert to XML first (per XML-DSig spec: "If the input
+    // is an octet stream, the implementation MUST convert the octets to an XPath
+    // node-set by parsing the octets and creating a node-set that includes all
+    // document nodes").
+    let (xml_text, input_ns) = match data {
+        bergshamra_transforms::TransformData::Xml { xml_text, node_set } => {
+            (xml_text, node_set)
+        }
+        bergshamra_transforms::TransformData::Binary(bytes) => {
+            let text = String::from_utf8(bytes)
+                .map_err(|e| Error::XmlParse(format!("XPath transform: invalid UTF-8: {e}")))?;
+            (text, None)
+        }
+    };
+
+    let doc = roxmltree::Document::parse_with_options(
+        &xml_text, bergshamra_xml::parsing_options(),
+    ).map_err(|e| Error::XmlParse(e.to_string()))?;
+
+    // Filter: include only nodes for which the expression evaluates to true
+    let mut result_ids = HashSet::new();
+    for node in doc.descendants() {
+        // If we have an input node set, only consider nodes in it
+        if let Some(ref ns) = input_ns {
+            if !ns.contains(&node) {
+                continue;
+            }
+        }
+        if eval_xpath_bool(expr, node) {
+            result_ids.insert(node_index(node));
+        }
+    }
+
+    Ok(bergshamra_transforms::TransformData::Xml {
+        xml_text,
+        node_set: Some(NodeSet::from_ids(result_ids, NodeSetType::Normal)),
+    })
 }
 
 /// Check if an XPath expression is the enveloped-signature pattern.
@@ -331,6 +657,337 @@ fn is_enveloped_xpath(expr: &str, xpath_node: &roxmltree::Node<'_, '_>) -> bool 
     xpath_node.namespaces().any(|ns_decl| {
         ns_decl.name() == Some(inner) && ns_decl.uri() == dsig_ns
     })
+}
+
+/// Apply an XPath Filter 2.0 transform.
+///
+/// Per W3C XPath Filter 2.0 spec (Section 3.4):
+/// 1. Initialize filter node-set F to all nodes in the input document
+/// 2. For each XPath expression: evaluate, subtree-expand, apply set op to F
+/// 3. Output O = I ∩ F (input node-set intersected with filter node-set)
+///
+/// An empty input node-set always produces an empty output node-set.
+fn apply_xpath_filter2_transform(
+    data: bergshamra_transforms::TransformData,
+    transform_node: &roxmltree::Node<'_, '_>,
+) -> Result<bergshamra_transforms::TransformData, Error> {
+    use bergshamra_xml::nodeset::NodeSet;
+
+    match data {
+        bergshamra_transforms::TransformData::Xml { xml_text, node_set } => {
+            let doc = roxmltree::Document::parse_with_options(
+                &xml_text, bergshamra_xml::parsing_options(),
+            ).map_err(|e| Error::XmlParse(e.to_string()))?;
+
+            // I = input node-set (from previous transform or URI resolution)
+            let input_ns = node_set.unwrap_or_else(|| NodeSet::all(&doc));
+
+            // F = filter node-set, initialized to ALL nodes in the input document
+            let mut filter_ns = NodeSet::all(&doc);
+
+            // Process each <XPath> child element in sequence, updating F
+            for child in transform_node.children() {
+                if !child.is_element() || child.tag_name().name() != "XPath" {
+                    continue;
+                }
+                let filter = child.attribute("Filter").unwrap_or("");
+                let xpath_expr = child.text().unwrap_or("").trim();
+
+                // Evaluate XPath expression and subtree-expand (S')
+                let xpath_ns = evaluate_simple_xpath(&doc, xpath_expr, &child)?;
+
+                // Update filter node-set F based on filter type
+                match filter {
+                    "intersect" => { filter_ns = filter_ns.intersection(&xpath_ns); }
+                    "subtract" => { filter_ns = filter_ns.subtract(&xpath_ns); }
+                    "union" => { filter_ns = filter_ns.union(&xpath_ns); }
+                    _ => return Err(Error::UnsupportedAlgorithm(format!(
+                        "XPath Filter 2.0 unknown filter: {filter}"
+                    ))),
+                }
+            }
+
+            // Output O = I ∩ F
+            let result_ns = input_ns.intersection(&filter_ns);
+
+            Ok(bergshamra_transforms::TransformData::Xml {
+                xml_text,
+                node_set: Some(result_ns),
+            })
+        }
+        other => Ok(other),
+    }
+}
+
+/// Evaluate a simple XPath expression and return the matching node set.
+///
+/// Supports:
+/// - `/` — the document root (all nodes)
+/// - `//ElementName` — all descendant elements with the given local name
+/// - `//prefix:ElementName` — namespace-qualified element selection
+fn evaluate_simple_xpath(
+    doc: &roxmltree::Document<'_>,
+    expr: &str,
+    xpath_node: &roxmltree::Node<'_, '_>,
+) -> Result<NodeSet, Error> {
+    use bergshamra_xml::nodeset::NodeSet;
+    use std::collections::HashSet;
+
+    // `/` — selects the entire document
+    if expr == "/" {
+        return Ok(NodeSet::all(doc));
+    }
+
+    // `//name` or `//prefix:name` — descendant-or-self element selection
+    if let Some(name_expr) = expr.strip_prefix("//") {
+        let (ns_uri, local_name) = if let Some((prefix, local)) = name_expr.split_once(':') {
+            // Resolve namespace prefix from the XPath element's namespace declarations
+            let uri = xpath_node.namespaces()
+                .find(|ns| ns.name() == Some(prefix))
+                .map(|ns| ns.uri())
+                .ok_or_else(|| Error::InvalidUri(format!(
+                    "XPath Filter 2.0: unresolved namespace prefix '{prefix}'"
+                )))?;
+            (Some(uri), local)
+        } else {
+            (None, name_expr)
+        };
+
+        // Find all matching elements and collect their subtrees
+        let mut nodes = HashSet::new();
+        for node in doc.descendants() {
+            if node.is_element() && node.tag_name().name() == local_name {
+                let matches = match ns_uri {
+                    Some(uri) => node.tag_name().namespace().unwrap_or("") == uri,
+                    None => true, // no namespace specified — match any namespace
+                };
+                if matches {
+                    // Collect the element and all its descendants (subtree)
+                    collect_subtree_ids(node, &mut nodes);
+                }
+            }
+        }
+
+        return Ok(NodeSet::from_ids(nodes, bergshamra_xml::nodeset::NodeSetType::Normal));
+    }
+
+    Err(Error::UnsupportedAlgorithm(format!(
+        "XPath Filter 2.0 expression not supported: {expr}"
+    )))
+}
+
+/// Collect all node IDs in a subtree.
+fn collect_subtree_ids(node: roxmltree::Node<'_, '_>, ids: &mut std::collections::HashSet<usize>) {
+    use bergshamra_xml::nodeset::node_index;
+    ids.insert(node_index(node));
+    for child in node.children() {
+        collect_subtree_ids(child, ids);
+    }
+}
+
+/// Apply an XPointer transform.
+///
+/// Extracts `xpointer(id('...'))` from the `<XPointer>` child element
+/// and selects the subtree rooted at the element with the given ID.
+fn apply_xpointer_transform(
+    data: bergshamra_transforms::TransformData,
+    transform_node: &roxmltree::Node<'_, '_>,
+) -> Result<bergshamra_transforms::TransformData, Error> {
+    use bergshamra_xml::xpath;
+    use bergshamra_xml::nodeset::NodeSet;
+
+    // Extract the XPointer expression from the <XPointer> child element
+    let xpointer_node = transform_node
+        .children()
+        .find(|n| n.is_element() && n.tag_name().name() == "XPointer")
+        .ok_or_else(|| Error::MissingElement("XPointer expression element".into()))?;
+
+    let xpointer_expr = xpointer_node.text().unwrap_or("").trim();
+
+    // Parse xpointer(id('...')) or xpointer(id("..."))
+    let id = xpath::parse_xpointer_id(xpointer_expr)
+        .ok_or_else(|| Error::UnsupportedAlgorithm(format!(
+            "XPointer expression not supported: {xpointer_expr}"
+        )))?;
+
+    match data {
+        bergshamra_transforms::TransformData::Xml { xml_text, node_set } => {
+            let doc = roxmltree::Document::parse_with_options(
+                &xml_text, bergshamra_xml::parsing_options(),
+            ).map_err(|e| Error::XmlParse(e.to_string()))?;
+
+            // Build ID map
+            let id_map = build_id_map(&doc, &["Id", "ID", "id"]);
+
+            // Resolve the ID
+            let target = xpath::resolve_id(&doc, &id_map, id)?;
+
+            // Build a node set for the subtree (xpointer includes comments)
+            let subtree_ns = NodeSet::tree_with_comments(target);
+
+            // Intersect with existing node set if present
+            let final_ns = match node_set {
+                Some(existing) => existing.intersection(&subtree_ns),
+                None => subtree_ns,
+            };
+
+            Ok(bergshamra_transforms::TransformData::Xml {
+                xml_text,
+                node_set: Some(final_ns),
+            })
+        }
+        other => Ok(other),
+    }
+}
+
+/// Try to unwrap an `<EncryptedKey>` inside `<KeyInfo>` to recover a session key.
+///
+/// This handles the case where a symmetric signing key (e.g. HMAC) is encrypted
+/// using AES Key Wrap, 3DES Key Wrap, or RSA key transport.
+fn try_unwrap_encrypted_key(
+    key_info_node: roxmltree::Node<'_, '_>,
+    manager: &bergshamra_keys::KeysManager,
+) -> Result<bergshamra_keys::Key, Error> {
+    // Find <EncryptedKey> child
+    let enc_key_node = key_info_node.children().find(|n| {
+        n.is_element()
+            && n.tag_name().name() == ns::node::ENCRYPTED_KEY
+            && n.tag_name().namespace().unwrap_or("") == ns::ENC
+    }).ok_or_else(|| Error::Key("no EncryptedKey found".into()))?;
+
+    // Read EncryptionMethod
+    let enc_method = find_child_element(enc_key_node, ns::ENC, ns::node::ENCRYPTION_METHOD)
+        .ok_or_else(|| Error::MissingElement("EncryptionMethod on EncryptedKey".into()))?;
+    let enc_uri = enc_method
+        .attribute(ns::attr::ALGORITHM)
+        .ok_or_else(|| Error::MissingAttribute("Algorithm on EncryptedKey EncryptionMethod".into()))?;
+
+    // Read CipherData/CipherValue
+    let cipher_data = find_child_element(enc_key_node, ns::ENC, ns::node::CIPHER_DATA)
+        .ok_or_else(|| Error::MissingElement("CipherData on EncryptedKey".into()))?;
+    let cipher_value = find_child_element(cipher_data, ns::ENC, ns::node::CIPHER_VALUE)
+        .ok_or_else(|| Error::MissingElement("CipherValue on EncryptedKey".into()))?;
+    let b64_text = cipher_value.text().unwrap_or("").trim();
+    let clean: String = b64_text.chars().filter(|c| !c.is_whitespace()).collect();
+    use base64::Engine;
+    let engine = base64::engine::general_purpose::STANDARD;
+    let cipher_bytes = engine.decode(&clean)
+        .map_err(|e| Error::Base64(format!("EncryptedKey CipherValue: {e}")))?;
+
+    // Resolve the KEK from EncryptedKey's own KeyInfo
+    let ek_key_info = find_child_element(enc_key_node, ns::DSIG, ns::node::KEY_INFO);
+
+    let session_key_bytes = match enc_uri {
+        algorithm::KW_AES128 | algorithm::KW_AES192 | algorithm::KW_AES256 => {
+            let kw = bergshamra_crypto::keywrap::from_uri(enc_uri)?;
+            let expected_kek_size = match enc_uri {
+                algorithm::KW_AES128 => 16,
+                algorithm::KW_AES192 => 24,
+                algorithm::KW_AES256 => 32,
+                _ => 0,
+            };
+            // Try KeyName from EncryptedKey's KeyInfo
+            let kek = resolve_kek_from_key_info(ek_key_info, manager)?;
+            let kek_bytes = kek.symmetric_key_bytes()
+                .ok_or_else(|| Error::Key("KEK has no symmetric key bytes".into()))?;
+            // Validate size if possible
+            if expected_kek_size > 0 && kek_bytes.len() != expected_kek_size {
+                // Try to find one with the right size
+                if let Some(sized_key) = manager.find_aes_by_size(expected_kek_size) {
+                    let sized_bytes = sized_key.symmetric_key_bytes()
+                        .ok_or_else(|| Error::Key("AES key has no bytes".into()))?;
+                    kw.unwrap(sized_bytes, &cipher_bytes)?
+                } else {
+                    kw.unwrap(kek_bytes, &cipher_bytes)?
+                }
+            } else {
+                kw.unwrap(kek_bytes, &cipher_bytes)?
+            }
+        }
+        algorithm::KW_TRIPLEDES => {
+            let kw = bergshamra_crypto::keywrap::from_uri(enc_uri)?;
+            let kek = resolve_kek_from_key_info(ek_key_info, manager)?;
+            let kek_bytes = kek.symmetric_key_bytes()
+                .ok_or_else(|| Error::Key("no symmetric key for 3DES key unwrap".into()))?;
+            kw.unwrap(kek_bytes, &cipher_bytes)?
+        }
+        algorithm::RSA_PKCS1 | algorithm::RSA_OAEP | algorithm::RSA_OAEP_ENC11 => {
+            let oaep_params = read_oaep_params(enc_method);
+            let transport = bergshamra_crypto::keytransport::from_uri_with_params(enc_uri, oaep_params)?;
+            let rsa_key = manager.find_rsa_private()
+                .or_else(|| manager.find_rsa())
+                .ok_or_else(|| Error::Key("no RSA key for EncryptedKey decryption".into()))?;
+            let private_key = rsa_key.rsa_private_key()
+                .ok_or_else(|| Error::Key("RSA private key required for key transport".into()))?;
+            transport.decrypt(private_key, &cipher_bytes)?
+        }
+        _ => return Err(Error::UnsupportedAlgorithm(format!("EncryptedKey method: {enc_uri}"))),
+    };
+
+    // Create an HMAC key from the unwrapped session key
+    Ok(bergshamra_keys::Key::new(
+        bergshamra_keys::key::KeyData::Hmac(session_key_bytes),
+        bergshamra_keys::key::KeyUsage::Any,
+    ))
+}
+
+/// Resolve the Key Encryption Key from an EncryptedKey's KeyInfo.
+fn resolve_kek_from_key_info<'a>(
+    ek_key_info: Option<roxmltree::Node<'_, '_>>,
+    manager: &'a bergshamra_keys::KeysManager,
+) -> Result<&'a bergshamra_keys::Key, Error> {
+    if let Some(ki) = ek_key_info {
+        // Try KeyName
+        for child in ki.children() {
+            if !child.is_element() {
+                continue;
+            }
+            let ns_uri = child.tag_name().namespace().unwrap_or("");
+            let local = child.tag_name().name();
+            if ns_uri == ns::DSIG && local == ns::node::KEY_NAME {
+                let name = child.text().unwrap_or("").trim();
+                if !name.is_empty() {
+                    if let Some(key) = manager.find_by_name(name) {
+                        return Ok(key);
+                    }
+                }
+            }
+        }
+    }
+    // Fallback: first key in manager
+    manager.first_key()
+}
+
+/// Read RSA-OAEP parameters from an EncryptionMethod element.
+fn read_oaep_params(enc_method: roxmltree::Node<'_, '_>) -> bergshamra_crypto::keytransport::OaepParams {
+    let mut params = bergshamra_crypto::keytransport::OaepParams::default();
+    for child in enc_method.children() {
+        if !child.is_element() {
+            continue;
+        }
+        let local = child.tag_name().name();
+        let child_ns = child.tag_name().namespace().unwrap_or("");
+        if local == ns::node::DIGEST_METHOD && (child_ns == ns::DSIG || child_ns == ns::ENC) {
+            if let Some(alg) = child.attribute(ns::attr::ALGORITHM) {
+                params.digest_uri = Some(alg.to_owned());
+            }
+        }
+        if local == ns::node::RSA_MGF && (child_ns == ns::ENC11 || child_ns == ns::ENC) {
+            if let Some(alg) = child.attribute(ns::attr::ALGORITHM) {
+                params.mgf_uri = Some(alg.to_owned());
+            }
+        }
+        if local == ns::node::RSA_OAEP_PARAMS {
+            if let Some(text) = child.text() {
+                let clean: String = text.trim().chars().filter(|c| !c.is_whitespace()).collect();
+                use base64::Engine;
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&clean) {
+                    params.oaep_params = Some(bytes);
+                }
+            }
+        }
+    }
+    params
 }
 
 // ── Helper functions ─────────────────────────────────────────────────
@@ -374,6 +1031,32 @@ fn find_child_elements<'a>(
         .collect()
 }
 
+/// Resolve a `<dsig11:KeyInfoReference URI="#id"/>` by following the same-document
+/// reference to the target `<KeyInfo>` element. Returns that element if found.
+fn resolve_key_info_reference<'a, 'b>(
+    key_info_node: roxmltree::Node<'a, 'b>,
+    doc: &'a roxmltree::Document<'b>,
+    id_map: &HashMap<String, roxmltree::NodeId>,
+) -> Option<roxmltree::Node<'a, 'b>> {
+    for child in key_info_node.children() {
+        if !child.is_element() {
+            continue;
+        }
+        let ns_uri = child.tag_name().namespace().unwrap_or("");
+        let local = child.tag_name().name();
+        if local == ns::node::KEY_INFO_REFERENCE && ns_uri == ns::DSIG11 {
+            if let Some(uri) = child.attribute(ns::attr::URI) {
+                if let Some(fragment) = uri.strip_prefix('#') {
+                    if let Some(&node_id) = id_map.get(fragment) {
+                        return doc.get_node(node_id);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 fn build_id_map(
     doc: &roxmltree::Document<'_>,
     attr_names: &[&str],
@@ -385,6 +1068,10 @@ fn build_id_map(
                 if let Some(val) = node.attribute(*attr_name) {
                     map.insert(val.to_owned(), node.id());
                 }
+            }
+            // Also check xml:id (XML namespace)
+            if let Some(val) = node.attribute(("http://www.w3.org/XML/1998/namespace", "id")) {
+                map.insert(val.to_owned(), node.id());
             }
         }
     }

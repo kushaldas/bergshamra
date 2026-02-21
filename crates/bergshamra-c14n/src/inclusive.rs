@@ -326,47 +326,23 @@ fn collect_inscope_namespaces(node: &roxmltree::Node<'_, '_>) -> BTreeMap<String
 
 /// Get the qualified element name (prefix:local or just local).
 fn qualified_element_name(node: &roxmltree::Node<'_, '_>) -> String {
-    if let Some(prefix) = node.tag_name().namespace().and_then(|ns_uri| {
-        // Find the prefix for this namespace URI
-        find_element_prefix(node, ns_uri)
-    }) {
-        if prefix.is_empty() {
-            node.tag_name().name().to_owned()
-        } else {
-            format!("{}:{}", prefix, node.tag_name().name())
-        }
+    if let Some(prefix) = node.tag_name_prefix() {
+        format!("{}:{}", prefix, node.tag_name().name())
     } else {
         node.tag_name().name().to_owned()
     }
 }
 
-/// Find the prefix used for a given namespace URI on an element.
-fn find_element_prefix(node: &roxmltree::Node<'_, '_>, ns_uri: &str) -> Option<String> {
-    // Check this element and ancestors for the namespace declaration
-    let mut current = Some(*node);
-    while let Some(n) = current {
-        if n.is_element() {
-            for ns in n.namespaces() {
-                if ns.uri() == ns_uri {
-                    return Some(ns.name().unwrap_or("").to_owned());
-                }
-            }
-        }
-        current = n.parent();
-    }
-    None
-}
-
 /// Find the prefix for an attribute's namespace.
 fn find_attr_prefix<'a>(
-    node: &roxmltree::Node<'a, 'a>,
+    _node: &roxmltree::Node<'a, 'a>,
     attr: &roxmltree::Attribute<'a, 'a>,
 ) -> Option<String> {
     if let Some(ns_uri) = attr.namespace() {
         if ns_uri == "http://www.w3.org/XML/1998/namespace" {
             return Some("xml".to_owned());
         }
-        find_element_prefix(node, ns_uri)
+        attr.prefix().map(|p| p.to_owned())
     } else {
         None
     }

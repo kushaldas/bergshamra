@@ -13,6 +13,8 @@ pub enum SigningKey {
     EcP256Public(p256::ecdsa::VerifyingKey),
     EcP384(p384::ecdsa::SigningKey),
     EcP384Public(p384::ecdsa::VerifyingKey),
+    EcP521(p521::ecdsa::SigningKey),
+    EcP521Public(p521::ecdsa::VerifyingKey),
     Dsa(dsa::SigningKey),
     DsaPublic(dsa::VerifyingKey),
     Hmac(Vec<u8>),
@@ -40,11 +42,21 @@ pub fn from_uri(uri: &str) -> Result<Box<dyn SignatureAlgorithm>, Error> {
         algorithm::RSA_PSS_SHA384 => Ok(Box::new(RsaPss { uri: algorithm::RSA_PSS_SHA384, hash: HashType::Sha384 })),
         algorithm::RSA_PSS_SHA512 => Ok(Box::new(RsaPss { uri: algorithm::RSA_PSS_SHA512, hash: HashType::Sha512 })),
 
-        algorithm::ECDSA_SHA1 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA1, _hash: HashType::Sha1 })),
-        algorithm::ECDSA_SHA224 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA224, _hash: HashType::Sha224 })),
-        algorithm::ECDSA_SHA256 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA256, _hash: HashType::Sha256 })),
-        algorithm::ECDSA_SHA384 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA384, _hash: HashType::Sha384 })),
-        algorithm::ECDSA_SHA512 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA512, _hash: HashType::Sha512 })),
+        algorithm::RSA_PSS_SHA3_224 => Ok(Box::new(RsaPss { uri: algorithm::RSA_PSS_SHA3_224, hash: HashType::Sha3_224 })),
+        algorithm::RSA_PSS_SHA3_256 => Ok(Box::new(RsaPss { uri: algorithm::RSA_PSS_SHA3_256, hash: HashType::Sha3_256 })),
+        algorithm::RSA_PSS_SHA3_384 => Ok(Box::new(RsaPss { uri: algorithm::RSA_PSS_SHA3_384, hash: HashType::Sha3_384 })),
+        algorithm::RSA_PSS_SHA3_512 => Ok(Box::new(RsaPss { uri: algorithm::RSA_PSS_SHA3_512, hash: HashType::Sha3_512 })),
+
+        algorithm::ECDSA_SHA1 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA1, hash: HashType::Sha1 })),
+        algorithm::ECDSA_SHA224 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA224, hash: HashType::Sha224 })),
+        algorithm::ECDSA_SHA256 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA256, hash: HashType::Sha256 })),
+        algorithm::ECDSA_SHA384 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA384, hash: HashType::Sha384 })),
+        algorithm::ECDSA_SHA512 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA512, hash: HashType::Sha512 })),
+
+        algorithm::ECDSA_SHA3_224 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA3_224, hash: HashType::Sha3_224 })),
+        algorithm::ECDSA_SHA3_256 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA3_256, hash: HashType::Sha3_256 })),
+        algorithm::ECDSA_SHA3_384 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA3_384, hash: HashType::Sha3_384 })),
+        algorithm::ECDSA_SHA3_512 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA3_512, hash: HashType::Sha3_512 })),
 
         algorithm::DSA_SHA1 => Ok(Box::new(DsaSign { uri: algorithm::DSA_SHA1, hash: HashType::Sha1 })),
         algorithm::DSA_SHA256 => Ok(Box::new(DsaSign { uri: algorithm::DSA_SHA256, hash: HashType::Sha256 })),
@@ -55,12 +67,30 @@ pub fn from_uri(uri: &str) -> Result<Box<dyn SignatureAlgorithm>, Error> {
         algorithm::HMAC_SHA384 => Ok(Box::new(HmacSign { uri: algorithm::HMAC_SHA384, hash: HashType::Sha384 })),
         algorithm::HMAC_SHA512 => Ok(Box::new(HmacSign { uri: algorithm::HMAC_SHA512, hash: HashType::Sha512 })),
 
+        #[cfg(feature = "legacy-algorithms")]
+        algorithm::RSA_MD5 => Ok(Box::new(RsaPkcs1v15 { uri: algorithm::RSA_MD5, hash: HashType::Md5 })),
+        #[cfg(feature = "legacy-algorithms")]
+        algorithm::RSA_RIPEMD160 => Ok(Box::new(RsaPkcs1v15 { uri: algorithm::RSA_RIPEMD160, hash: HashType::Ripemd160 })),
+        #[cfg(feature = "legacy-algorithms")]
+        algorithm::ECDSA_RIPEMD160 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_RIPEMD160, hash: HashType::Ripemd160 })),
+        #[cfg(feature = "legacy-algorithms")]
+        algorithm::HMAC_MD5 => Ok(Box::new(HmacSign { uri: algorithm::HMAC_MD5, hash: HashType::Md5 })),
+        #[cfg(feature = "legacy-algorithms")]
+        algorithm::HMAC_RIPEMD160 => Ok(Box::new(HmacSign { uri: algorithm::HMAC_RIPEMD160, hash: HashType::Ripemd160 })),
+
         _ => Err(Error::UnsupportedAlgorithm(format!("signature algorithm: {uri}"))),
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-enum HashType { Sha1, Sha224, Sha256, Sha384, Sha512 }
+enum HashType {
+    Sha1, Sha224, Sha256, Sha384, Sha512,
+    Sha3_224, Sha3_256, Sha3_384, Sha3_512,
+    #[cfg(feature = "legacy-algorithms")]
+    Md5,
+    #[cfg(feature = "legacy-algorithms")]
+    Ripemd160,
+}
 
 // ── RSA PKCS#1 v1.5 ─────────────────────────────────────────────────
 
@@ -81,6 +111,14 @@ impl RsaPkcs1v15 {
             HashType::Sha256 => do_sign!(sha2::Sha256),
             HashType::Sha384 => do_sign!(sha2::Sha384),
             HashType::Sha512 => do_sign!(sha2::Sha512),
+            HashType::Sha3_224 => do_sign!(sha3::Sha3_224),
+            HashType::Sha3_256 => do_sign!(sha3::Sha3_256),
+            HashType::Sha3_384 => do_sign!(sha3::Sha3_384),
+            HashType::Sha3_512 => do_sign!(sha3::Sha3_512),
+            #[cfg(feature = "legacy-algorithms")]
+            HashType::Md5 => do_sign!(md5::Md5),
+            #[cfg(feature = "legacy-algorithms")]
+            HashType::Ripemd160 => do_sign!(ripemd::Ripemd160),
         }
     }
 
@@ -100,6 +138,14 @@ impl RsaPkcs1v15 {
             HashType::Sha256 => do_verify!(sha2::Sha256),
             HashType::Sha384 => do_verify!(sha2::Sha384),
             HashType::Sha512 => do_verify!(sha2::Sha512),
+            HashType::Sha3_224 => do_verify!(sha3::Sha3_224),
+            HashType::Sha3_256 => do_verify!(sha3::Sha3_256),
+            HashType::Sha3_384 => do_verify!(sha3::Sha3_384),
+            HashType::Sha3_512 => do_verify!(sha3::Sha3_512),
+            #[cfg(feature = "legacy-algorithms")]
+            HashType::Md5 => do_verify!(md5::Md5),
+            #[cfg(feature = "legacy-algorithms")]
+            HashType::Ripemd160 => do_verify!(ripemd::Ripemd160),
         }
     }
 }
@@ -150,6 +196,12 @@ impl SignatureAlgorithm for RsaPss {
             HashType::Sha256 => do_sign!(sha2::Sha256),
             HashType::Sha384 => do_sign!(sha2::Sha384),
             HashType::Sha512 => do_sign!(sha2::Sha512),
+            HashType::Sha3_224 => do_sign!(sha3::Sha3_224),
+            HashType::Sha3_256 => do_sign!(sha3::Sha3_256),
+            HashType::Sha3_384 => do_sign!(sha3::Sha3_384),
+            HashType::Sha3_512 => do_sign!(sha3::Sha3_512),
+            #[cfg(feature = "legacy-algorithms")]
+            _ => Err(Error::UnsupportedAlgorithm(format!("RSA-PSS with {:?}", self.hash))),
         }
     }
 
@@ -174,21 +226,89 @@ impl SignatureAlgorithm for RsaPss {
             HashType::Sha256 => do_verify!(sha2::Sha256),
             HashType::Sha384 => do_verify!(sha2::Sha384),
             HashType::Sha512 => do_verify!(sha2::Sha512),
+            HashType::Sha3_224 => do_verify!(sha3::Sha3_224),
+            HashType::Sha3_256 => do_verify!(sha3::Sha3_256),
+            HashType::Sha3_384 => do_verify!(sha3::Sha3_384),
+            HashType::Sha3_512 => do_verify!(sha3::Sha3_512),
+            #[cfg(feature = "legacy-algorithms")]
+            _ => Err(Error::UnsupportedAlgorithm(format!("RSA-PSS with {:?}", self.hash))),
         }
     }
 }
 
 // ── ECDSA (unified P-256 / P-384) ────────────────────────────────────
 
-struct Ecdsa { uri: &'static str, _hash: HashType }
+struct Ecdsa { uri: &'static str, hash: HashType }
 
-/// Convert XML-DSig ECDSA r||s to a typed Signature for P-256.
-pub fn xmldsig_to_p256(rs: &[u8]) -> Result<p256::ecdsa::Signature, Error> {
-    if rs.len() != 64 {
-        return Err(Error::Crypto(format!("P-256 signature must be 64 bytes, got {}", rs.len())));
+/// Compute the digest of `data` using the given HashType.
+fn compute_hash(hash: HashType, data: &[u8]) -> Vec<u8> {
+    use digest::Digest;
+    match hash {
+        HashType::Sha1 => sha1::Sha1::digest(data).to_vec(),
+        HashType::Sha224 => sha2::Sha224::digest(data).to_vec(),
+        HashType::Sha256 => sha2::Sha256::digest(data).to_vec(),
+        HashType::Sha384 => sha2::Sha384::digest(data).to_vec(),
+        HashType::Sha512 => sha2::Sha512::digest(data).to_vec(),
+        HashType::Sha3_224 => sha3::Sha3_224::digest(data).to_vec(),
+        HashType::Sha3_256 => sha3::Sha3_256::digest(data).to_vec(),
+        HashType::Sha3_384 => sha3::Sha3_384::digest(data).to_vec(),
+        HashType::Sha3_512 => sha3::Sha3_512::digest(data).to_vec(),
+        #[cfg(feature = "legacy-algorithms")]
+        HashType::Md5 => md5::Md5::digest(data).to_vec(),
+        #[cfg(feature = "legacy-algorithms")]
+        HashType::Ripemd160 => ripemd::Ripemd160::digest(data).to_vec(),
     }
-    let r = p256::FieldBytes::from_slice(&rs[..32]);
-    let s = p256::FieldBytes::from_slice(&rs[32..]);
+}
+
+/// Normalize a raw r||s ECDSA signature where each component may be
+/// padded (extra leading zeros) or truncated (missing leading zeros).
+/// Splits evenly, strips leading zeros, then left-pads each to `field_size`.
+fn normalize_raw_ecdsa(sig_bytes: &[u8], field_size: usize) -> Result<Vec<u8>, Error> {
+    if sig_bytes.len() % 2 != 0 {
+        return Err(Error::Crypto(format!(
+            "ECDSA signature has odd length {}, cannot split into r||s",
+            sig_bytes.len()
+        )));
+    }
+    let half = sig_bytes.len() / 2;
+    let mut out = vec![0u8; field_size * 2];
+
+    for (i, component) in [&sig_bytes[..half], &sig_bytes[half..]].iter().enumerate() {
+        let trimmed = match component.iter().position(|&b| b != 0) {
+            Some(pos) => &component[pos..],
+            None => &component[component.len().saturating_sub(1)..],
+        };
+        if trimmed.len() > field_size {
+            return Err(Error::Crypto(format!(
+                "ECDSA component {} too large: {} bytes (field size {})",
+                if i == 0 { "r" } else { "s" },
+                trimmed.len(),
+                field_size
+            )));
+        }
+        let offset = i * field_size + field_size - trimmed.len();
+        out[offset..offset + trimmed.len()].copy_from_slice(trimmed);
+    }
+    Ok(out)
+}
+
+/// Convert XML-DSig ECDSA signature to a typed Signature for P-256.
+/// Accepts raw r||s (64 bytes), DER/ASN.1, or padded/truncated raw formats.
+pub fn xmldsig_to_p256(sig_bytes: &[u8]) -> Result<p256::ecdsa::Signature, Error> {
+    const FIELD: usize = 32;
+    if sig_bytes.len() == FIELD * 2 {
+        let r = p256::FieldBytes::from_slice(&sig_bytes[..FIELD]);
+        let s = p256::FieldBytes::from_slice(&sig_bytes[FIELD..]);
+        return p256::ecdsa::Signature::from_scalars(*r, *s)
+            .map_err(|e| Error::Crypto(format!("invalid P-256 signature: {e}")));
+    }
+    if sig_bytes.first() == Some(&0x30) {
+        return p256::ecdsa::Signature::from_der(sig_bytes)
+            .map_err(|e| Error::Crypto(format!("invalid P-256 DER signature: {e}")));
+    }
+    let normalized = normalize_raw_ecdsa(sig_bytes, FIELD)?;
+    let r = p256::FieldBytes::from_slice(&normalized[..FIELD]);
+    let s = p256::FieldBytes::from_slice(&normalized[FIELD..]);
     p256::ecdsa::Signature::from_scalars(*r, *s)
         .map_err(|e| Error::Crypto(format!("invalid P-256 signature: {e}")))
 }
@@ -202,13 +322,23 @@ pub fn p256_to_xmldsig(sig: &p256::ecdsa::Signature) -> Vec<u8> {
     out
 }
 
-/// Convert XML-DSig ECDSA r||s to a typed Signature for P-384.
-pub fn xmldsig_to_p384(rs: &[u8]) -> Result<p384::ecdsa::Signature, Error> {
-    if rs.len() != 96 {
-        return Err(Error::Crypto(format!("P-384 signature must be 96 bytes, got {}", rs.len())));
+/// Convert XML-DSig ECDSA signature to a typed Signature for P-384.
+/// Accepts raw r||s (96 bytes), DER/ASN.1, or padded/truncated raw formats.
+pub fn xmldsig_to_p384(sig_bytes: &[u8]) -> Result<p384::ecdsa::Signature, Error> {
+    const FIELD: usize = 48;
+    if sig_bytes.len() == FIELD * 2 {
+        let r = p384::FieldBytes::from_slice(&sig_bytes[..FIELD]);
+        let s = p384::FieldBytes::from_slice(&sig_bytes[FIELD..]);
+        return p384::ecdsa::Signature::from_scalars(*r, *s)
+            .map_err(|e| Error::Crypto(format!("invalid P-384 signature: {e}")));
     }
-    let r = p384::FieldBytes::from_slice(&rs[..48]);
-    let s = p384::FieldBytes::from_slice(&rs[48..]);
+    if sig_bytes.first() == Some(&0x30) {
+        return p384::ecdsa::Signature::from_der(sig_bytes)
+            .map_err(|e| Error::Crypto(format!("invalid P-384 DER signature: {e}")));
+    }
+    let normalized = normalize_raw_ecdsa(sig_bytes, FIELD)?;
+    let r = p384::FieldBytes::from_slice(&normalized[..FIELD]);
+    let s = p384::FieldBytes::from_slice(&normalized[FIELD..]);
     p384::ecdsa::Signature::from_scalars(*r, *s)
         .map_err(|e| Error::Crypto(format!("invalid P-384 signature: {e}")))
 }
@@ -222,44 +352,114 @@ pub fn p384_to_xmldsig(sig: &p384::ecdsa::Signature) -> Vec<u8> {
     out
 }
 
+/// Convert XML-DSig ECDSA signature to a typed Signature for P-521.
+/// Accepts raw r||s (132 bytes), DER/ASN.1, or padded/truncated raw formats.
+pub fn xmldsig_to_p521(sig_bytes: &[u8]) -> Result<p521::ecdsa::Signature, Error> {
+    const FIELD: usize = 66;
+    if sig_bytes.len() == FIELD * 2 {
+        let r = p521::FieldBytes::from_slice(&sig_bytes[..FIELD]);
+        let s = p521::FieldBytes::from_slice(&sig_bytes[FIELD..]);
+        return p521::ecdsa::Signature::from_scalars(*r, *s)
+            .map_err(|e| Error::Crypto(format!("invalid P-521 signature: {e}")));
+    }
+    if sig_bytes.first() == Some(&0x30) {
+        return p521::ecdsa::Signature::from_der(sig_bytes)
+            .map_err(|e| Error::Crypto(format!("invalid P-521 DER signature: {e}")));
+    }
+    let normalized = normalize_raw_ecdsa(sig_bytes, FIELD)?;
+    let r = p521::FieldBytes::from_slice(&normalized[..FIELD]);
+    let s = p521::FieldBytes::from_slice(&normalized[FIELD..]);
+    p521::ecdsa::Signature::from_scalars(*r, *s)
+        .map_err(|e| Error::Crypto(format!("invalid P-521 signature: {e}")))
+}
+
+/// Convert P-521 signature to XML-DSig r||s format.
+pub fn p521_to_xmldsig(sig: &p521::ecdsa::Signature) -> Vec<u8> {
+    let (r, s) = sig.split_bytes();
+    let mut out = Vec::with_capacity(132);
+    out.extend_from_slice(&r);
+    out.extend_from_slice(&s);
+    out
+}
+
+/// Left-pad a prehash with zeros to match the EC field size.
+/// The ecdsa crate's `verify_prehash` requires the hash to be at least
+/// as long as the curve's scalar field. When using a shorter hash
+/// (e.g. SHA-1 with P-384), we must zero-pad on the left.
+fn pad_prehash(prehash: &[u8], field_size: usize) -> Vec<u8> {
+    if prehash.len() >= field_size {
+        return prehash.to_vec();
+    }
+    let mut padded = vec![0u8; field_size];
+    padded[field_size - prehash.len()..].copy_from_slice(prehash);
+    padded
+}
+
 impl SignatureAlgorithm for Ecdsa {
     fn uri(&self) -> &'static str { self.uri }
 
     fn sign(&self, key: &SigningKey, data: &[u8]) -> Result<Vec<u8>, Error> {
-        use signature::Signer;
+        use signature::hazmat::PrehashSigner;
+        let raw_hash = compute_hash(self.hash, data);
         match key {
             SigningKey::EcP256(sk) => {
-                let sig: p256::ecdsa::Signature = sk.sign(data);
+                let prehash = pad_prehash(&raw_hash, 32);
+                let sig: p256::ecdsa::Signature = sk.sign_prehash(&prehash)
+                    .map_err(|e| Error::Crypto(format!("ECDSA P-256 sign: {e}")))?;
                 Ok(p256_to_xmldsig(&sig))
             }
             SigningKey::EcP384(sk) => {
-                let sig: p384::ecdsa::Signature = sk.sign(data);
+                let prehash = pad_prehash(&raw_hash, 48);
+                let sig: p384::ecdsa::Signature = sk.sign_prehash(&prehash)
+                    .map_err(|e| Error::Crypto(format!("ECDSA P-384 sign: {e}")))?;
                 Ok(p384_to_xmldsig(&sig))
             }
-            _ => Err(Error::Key("ECDSA signing key required (P-256 or P-384)".into())),
+            SigningKey::EcP521(sk) => {
+                let prehash = pad_prehash(&raw_hash, 66);
+                let sig: p521::ecdsa::Signature = sk.sign_prehash(&prehash)
+                    .map_err(|e| Error::Crypto(format!("ECDSA P-521 sign: {e}")))?;
+                Ok(p521_to_xmldsig(&sig))
+            }
+            _ => Err(Error::Key("ECDSA signing key required (P-256, P-384, or P-521)".into())),
         }
     }
 
     fn verify(&self, key: &SigningKey, data: &[u8], sig_bytes: &[u8]) -> Result<bool, Error> {
-        use signature::Verifier;
+        use signature::hazmat::PrehashVerifier;
+        let raw_hash = compute_hash(self.hash, data);
         match key {
             SigningKey::EcP256(sk) => {
+                let prehash = pad_prehash(&raw_hash, 32);
                 let sig = xmldsig_to_p256(sig_bytes)?;
-                Ok(sk.verifying_key().verify(data, &sig).is_ok())
+                Ok(sk.verifying_key().verify_prehash(&prehash, &sig).is_ok())
             }
             SigningKey::EcP256Public(vk) => {
+                let prehash = pad_prehash(&raw_hash, 32);
                 let sig = xmldsig_to_p256(sig_bytes)?;
-                Ok(vk.verify(data, &sig).is_ok())
+                Ok(vk.verify_prehash(&prehash, &sig).is_ok())
             }
             SigningKey::EcP384(sk) => {
+                let prehash = pad_prehash(&raw_hash, 48);
                 let sig = xmldsig_to_p384(sig_bytes)?;
-                Ok(sk.verifying_key().verify(data, &sig).is_ok())
+                Ok(sk.verifying_key().verify_prehash(&prehash, &sig).is_ok())
             }
             SigningKey::EcP384Public(vk) => {
+                let prehash = pad_prehash(&raw_hash, 48);
                 let sig = xmldsig_to_p384(sig_bytes)?;
-                Ok(vk.verify(data, &sig).is_ok())
+                Ok(vk.verify_prehash(&prehash, &sig).is_ok())
             }
-            _ => Err(Error::Key("ECDSA key required (P-256 or P-384)".into())),
+            SigningKey::EcP521(sk) => {
+                let prehash = pad_prehash(&raw_hash, 66);
+                let sig = xmldsig_to_p521(sig_bytes)?;
+                let vk = p521::ecdsa::VerifyingKey::from(sk);
+                Ok(vk.verify_prehash(&prehash, &sig).is_ok())
+            }
+            SigningKey::EcP521Public(vk) => {
+                let prehash = pad_prehash(&raw_hash, 66);
+                let sig = xmldsig_to_p521(sig_bytes)?;
+                Ok(vk.verify_prehash(&prehash, &sig).is_ok())
+            }
+            _ => Err(Error::Key("ECDSA key required (P-256, P-384, or P-521)".into())),
         }
     }
 }
@@ -281,7 +481,7 @@ impl SignatureAlgorithm for DsaSign {
                 .map_err(|e| Error::Crypto(format!("DSA sign: {e}")))?,
             HashType::Sha256 => sk.try_sign_digest(sha2::Sha256::new_with_prefix(data))
                 .map_err(|e| Error::Crypto(format!("DSA sign: {e}")))?,
-            _ => return Err(Error::UnsupportedAlgorithm(format!("DSA with {:?}", self.hash))),
+            _ => return Err(Error::UnsupportedAlgorithm(format!("DSA signature with {:?}", self.hash))),
         };
         // XML-DSig format: r||s, each zero-padded to q byte length
         Ok(dsa_sig_to_xmldsig(sk.verifying_key(), &sig))
@@ -375,10 +575,21 @@ fn compute_hmac(hash: HashType, key: &[u8], data: &[u8]) -> Vec<u8> {
         HashType::Sha256 => hmac_compute!(sha2::Sha256),
         HashType::Sha384 => hmac_compute!(sha2::Sha384),
         HashType::Sha512 => hmac_compute!(sha2::Sha512),
+        HashType::Sha3_224 => hmac_compute!(sha3::Sha3_224),
+        HashType::Sha3_256 => hmac_compute!(sha3::Sha3_256),
+        HashType::Sha3_384 => hmac_compute!(sha3::Sha3_384),
+        HashType::Sha3_512 => hmac_compute!(sha3::Sha3_512),
+        #[cfg(feature = "legacy-algorithms")]
+        HashType::Md5 => hmac_compute!(md5::Md5),
+        #[cfg(feature = "legacy-algorithms")]
+        HashType::Ripemd160 => hmac_compute!(ripemd::Ripemd160),
     }
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if b.is_empty() || a.is_empty() {
+        return false;
+    }
     if b.len() < a.len() {
         // Truncated HMAC comparison
         return a[..b.len()].iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0;
@@ -387,4 +598,78 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         return false;
     }
     a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// Return the hash output size in bits for an HMAC algorithm URI.
+/// Returns `None` if the URI is not a recognized HMAC algorithm.
+pub fn hmac_hash_output_bits(uri: &str) -> Option<usize> {
+    match uri {
+        algorithm::HMAC_SHA1 => Some(160),
+        algorithm::HMAC_SHA224 => Some(224),
+        algorithm::HMAC_SHA256 => Some(256),
+        algorithm::HMAC_SHA384 => Some(384),
+        algorithm::HMAC_SHA512 => Some(512),
+        algorithm::HMAC_MD5 => Some(128),
+        algorithm::HMAC_RIPEMD160 => Some(160),
+        _ => None,
+    }
+}
+
+/// Returns `true` if the given URI is an HMAC signature algorithm.
+pub fn is_hmac_algorithm(uri: &str) -> bool {
+    hmac_hash_output_bits(uri).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_p384_sha1_verify() {
+        // P-384 public key (uncompressed point, 97 bytes)
+        let pk_bytes: Vec<u8> = vec![
+            0x04, 0xef, 0xf2, 0x77, 0xf3, 0x99, 0xcc, 0x37, 0xe3, 0x5f, 0x8a, 0xa2, 0xbc, 0x36,
+            0x3f, 0xbe, 0xc5, 0x08, 0xba, 0x1e, 0x8a, 0x58, 0x0c, 0x68, 0xc5, 0x6e, 0x4f, 0xe2,
+            0xe9, 0x2f, 0xc1, 0xdf, 0x93, 0xea, 0x95, 0x65, 0x8d, 0x6b, 0x17, 0xd9, 0x40, 0x49,
+            0x34, 0xdc, 0xb9, 0x31, 0xd8, 0x53, 0xc0, 0x1f, 0x1e, 0xd9, 0x8c, 0x01, 0xf2, 0x45,
+            0x1b, 0x27, 0x07, 0x6c, 0x01, 0x2f, 0xd7, 0x1a, 0x2f, 0xdf, 0xcf, 0xcb, 0xa7, 0x16,
+            0xbb, 0x3e, 0x95, 0x59, 0x40, 0x80, 0x8b, 0x3a, 0xb3, 0xfc, 0x41, 0x60, 0x56, 0xdf,
+            0x52, 0x84, 0x62, 0x01, 0xa7, 0x03, 0xd9, 0x2a, 0x55, 0x0d, 0xee, 0x97, 0x04,
+        ];
+
+        use p384::elliptic_curve::sec1::FromEncodedPoint;
+        let encoded = p384::EncodedPoint::from_bytes(&pk_bytes).unwrap();
+        let pk = p384::PublicKey::from_encoded_point(&encoded).unwrap();
+        let vk = p384::ecdsa::VerifyingKey::from(pk);
+
+        // Signature (96 bytes: r || s)
+        let sig_bytes: Vec<u8> = vec![
+            0x7f, 0x7f, 0x38, 0x89, 0xc4, 0x6a, 0x65, 0xa4, 0xa9, 0xc6, 0xfb, 0xa8, 0xdc, 0x93,
+            0x0a, 0x80, 0x9e, 0xdf, 0xb2, 0x7e, 0x0a, 0x10, 0x00, 0x37, 0xd6, 0x1f, 0x9b, 0xe5,
+            0xb3, 0xc0, 0x79, 0xfe, 0xca, 0x7c, 0xa1, 0x5c, 0xdf, 0xb8, 0xcb, 0xde, 0x29, 0xc0,
+            0x19, 0x6e, 0x9e, 0xe8, 0xa6, 0xac, 0x14, 0x3f, 0xe6, 0x06, 0x17, 0x96, 0xbc, 0xcd,
+            0xe2, 0x45, 0x78, 0x41, 0xc0, 0x00, 0x3d, 0xcd, 0xa8, 0xe1, 0xf2, 0x2e, 0xa4, 0xf6,
+            0x0b, 0xd0, 0xae, 0x1d, 0x6d, 0x2c, 0xa8, 0xec, 0x30, 0x25, 0x4e, 0xb2, 0x42, 0xbd,
+            0x70, 0x4d, 0x6f, 0xfd, 0x57, 0xaf, 0xcf, 0x54, 0xf6, 0xa7, 0x49, 0x4f,
+        ];
+        let sig = xmldsig_to_p384(&sig_bytes).unwrap();
+
+        // Canonicalized SignedInfo (SHA-1 prehash = e5a7073da63df89f5ad1c3be2fc00175463d0980)
+        let prehash_hex = "e5a7073da63df89f5ad1c3be2fc00175463d0980";
+        let prehash: Vec<u8> = (0..prehash_hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&prehash_hex[i..i+2], 16).unwrap())
+            .collect();
+
+        // SHA-1 prehash is 20 bytes - shorter than P-384 field size of 48 bytes
+        assert_eq!(prehash.len(), 20);
+
+        // pad_prehash should left-pad to 48 bytes
+        let padded = pad_prehash(&prehash, 48);
+        assert_eq!(padded.len(), 48);
+
+        use signature::hazmat::PrehashVerifier;
+        let result = vk.verify_prehash(&padded, &sig);
+        assert!(result.is_ok(), "P-384 with SHA-1 prehash (left-padded) should verify");
+    }
 }

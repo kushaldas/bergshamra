@@ -46,6 +46,11 @@ impl KeysManager {
         self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::EcP384 { .. }))
     }
 
+    /// Find the first key that has an EC P-521 key.
+    pub fn find_ec_p521(&self) -> Option<&Key> {
+        self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::EcP521 { .. }))
+    }
+
     /// Find the first HMAC key.
     pub fn find_hmac(&self) -> Option<&Key> {
         self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::Hmac(_)))
@@ -54,6 +59,32 @@ impl KeysManager {
     /// Find the first AES key.
     pub fn find_aes(&self) -> Option<&Key> {
         self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::Aes(_)))
+    }
+
+    /// Find an AES key with the specified byte length.
+    pub fn find_aes_by_size(&self, size_bytes: usize) -> Option<&Key> {
+        self.keys.iter().find(|k| {
+            if let crate::key::KeyData::Aes(ref bytes) = k.data {
+                bytes.len() == size_bytes
+            } else {
+                false
+            }
+        })
+    }
+
+    /// Find the first 3DES key.
+    pub fn find_des3(&self) -> Option<&Key> {
+        self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::Des3(_)))
+    }
+
+    /// Find an RSA key with a private key component.
+    pub fn find_rsa_private(&self) -> Option<&Key> {
+        self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::Rsa { private: Some(_), .. }))
+    }
+
+    /// Iterator over all keys.
+    pub fn keys(&self) -> impl Iterator<Item = &Key> {
+        self.keys.iter()
     }
 
     /// Get the first key available (for simple single-key scenarios).
