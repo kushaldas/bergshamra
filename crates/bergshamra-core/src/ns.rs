@@ -32,6 +32,9 @@ pub const XML: &str = "http://www.w3.org/XML/1998/namespace";
 /// XMLNS namespace
 pub const XMLNS: &str = "http://www.w3.org/2000/xmlns/";
 
+/// xmlsec post-quantum extensions namespace
+pub const XMLSEC_PQ: &str = "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#";
+
 /// OOXML Relationships namespace
 pub const RELATIONSHIPS: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
 
@@ -155,6 +158,10 @@ pub mod node {
     // AES/DES key value
     pub const AES_KEY_VALUE: &str = "AESKeyValue";
     pub const DES_KEY_VALUE: &str = "DESKeyValue";
+
+    // Post-quantum context string elements
+    pub const MLDSA_CONTEXT_STRING: &str = "MLDSAContextString";
+    pub const SLHDSA_CONTEXT_STRING: &str = "SLHDSAContextString";
 }
 
 // ── Attribute names ──────────────────────────────────────────────────

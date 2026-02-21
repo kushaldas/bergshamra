@@ -12,12 +12,16 @@ bergshamra-crypto.workspace = true
 rsa.workspace = true
 ecdsa.workspace = true
 dsa.workspace = true
+ml-dsa.workspace = true
+slh-dsa.workspace = true
 p256 = { workspace = true, features = ["ecdsa"] }
 p384 = { workspace = true, features = ["ecdsa"] }
 p521 = { workspace = true, features = ["ecdsa"] }
 pkcs1.workspace = true
 pkcs5.workspace = true
 pkcs8.workspace = true
+pkcs8-pq.workspace = true
+const-oid-pq.workspace = true
 spki.workspace = true
 der.workspace = true
 pem-rfc7468.workspace = true

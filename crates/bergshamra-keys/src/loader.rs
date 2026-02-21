@@ -179,7 +179,12 @@ fn load_private_key_pkcs8_der(der: &[u8]) -> Result<Key, Error> {
         }
     }
 
-    Err(Error::Key("unable to parse PKCS#8 DER private key (tried RSA, P-256, P-384, P-521, DSA)".into()))
+    // Try post-quantum (ML-DSA, SLH-DSA)
+    if let Some(key) = try_load_pq_private_key(der) {
+        return Ok(key);
+    }
+
+    Err(Error::Key("unable to parse PKCS#8 DER private key (tried RSA, P-256, P-384, P-521, DSA, ML-DSA, SLH-DSA)".into()))
 }
 
 /// Load keys from a PKCS#12 (.p12/.pfx) file.
@@ -257,7 +262,7 @@ fn load_encrypted_pem(pem_data: &[u8], password: &str) -> Result<Key, Error> {
         }
     }
 
-    Err(Error::Key("failed to decrypt encrypted PKCS#8 PEM (tried RSA, P-256, P-384, P-521, DSA)".into()))
+    Err(Error::Key("failed to decrypt encrypted PKCS#8 PEM (tried RSA, P-256, P-384, P-521, DSA, ML-DSA, SLH-DSA)".into()))
 }
 
 /// Auto-detect key format and load from PEM data.
@@ -464,6 +469,12 @@ pub fn load_x509_cert_der(data: &[u8]) -> Result<Key, Error> {
         }
     }
 
+    // Try post-quantum (ML-DSA, SLH-DSA)
+    if let Some(mut key) = try_load_pq_public_key(&spki_der) {
+        key.x509_chain = vec![data.to_vec()];
+        return Ok(key);
+    }
+
     Err(Error::Key("unsupported public key algorithm in X.509 certificate".into()))
 }
 
@@ -517,7 +528,233 @@ pub fn load_spki_der(spki_der: &[u8]) -> Result<Key, Error> {
         }
     }
 
+    // Try post-quantum (ML-DSA, SLH-DSA)
+    if let Some(key) = try_load_pq_public_key(spki_der) {
+        return Ok(key);
+    }
+
     Err(Error::Key("unsupported public key algorithm in SPKI DER".into()))
+}
+
+// ── Post-quantum key loading helpers ─────────────────────────────────
+
+/// Try to load a post-quantum private key from PKCS#8 DER bytes.
+///
+/// Handles both the RustCrypto format (seed in context-specific tag) and the
+/// OpenSSL format (seed in `SEQUENCE { OCTET STRING(seed), ... }`).
+fn try_load_pq_private_key(der: &[u8]) -> Option<Key> {
+    use bergshamra_crypto::sign::PqAlgorithm;
+    use ml_dsa::signature::Keypair;
+    use pkcs8_pq::DecodePrivateKey;
+    use pkcs8_pq::spki::EncodePublicKey;
+
+    // First try the standard from_pkcs8_der (works if key is in RustCrypto format)
+    macro_rules! try_standard {
+        (ml $paramset:ty, $algo:expr) => {
+            if let Ok(sk) = ml_dsa::SigningKey::<$paramset>::from_pkcs8_der(der) {
+                let vk = sk.verifying_key();
+                if let Ok(pub_doc) = vk.to_public_key_der() {
+                    return Some(Key::new(
+                        KeyData::PostQuantum {
+                            algorithm: $algo,
+                            private_der: Some(der.to_vec()),
+                            public_der: pub_doc.to_vec(),
+                        },
+                        KeyUsage::Any,
+                    ));
+                }
+            }
+        };
+        (slh $paramset:ty, $algo:expr) => {
+            if let Ok(sk) = slh_dsa::SigningKey::<$paramset>::from_pkcs8_der(der) {
+                let vk = sk.verifying_key();
+                if let Ok(pub_doc) = vk.to_public_key_der() {
+                    return Some(Key::new(
+                        KeyData::PostQuantum {
+                            algorithm: $algo,
+                            private_der: Some(der.to_vec()),
+                            public_der: pub_doc.to_vec(),
+                        },
+                        KeyUsage::Any,
+                    ));
+                }
+            }
+        };
+    }
+
+    try_standard!(ml ml_dsa::MlDsa44, PqAlgorithm::MlDsa44);
+    try_standard!(ml ml_dsa::MlDsa65, PqAlgorithm::MlDsa65);
+    try_standard!(ml ml_dsa::MlDsa87, PqAlgorithm::MlDsa87);
+    try_standard!(slh slh_dsa::Sha2_128f, PqAlgorithm::SlhDsaSha2_128f);
+    try_standard!(slh slh_dsa::Sha2_128s, PqAlgorithm::SlhDsaSha2_128s);
+    try_standard!(slh slh_dsa::Sha2_192f, PqAlgorithm::SlhDsaSha2_192f);
+    try_standard!(slh slh_dsa::Sha2_192s, PqAlgorithm::SlhDsaSha2_192s);
+    try_standard!(slh slh_dsa::Sha2_256f, PqAlgorithm::SlhDsaSha2_256f);
+    try_standard!(slh slh_dsa::Sha2_256s, PqAlgorithm::SlhDsaSha2_256s);
+
+    // Standard parsing failed. Try OpenSSL format where the private key content
+    // is wrapped in SEQUENCE { OCTET STRING(seed/key), [OCTET STRING(expanded)] }.
+    use pkcs8_pq::der::Decode;
+    let pki = pkcs8_pq::PrivateKeyInfoRef::from_der(der).ok()?;
+    let oid = pki.algorithm.oid;
+    let pk_bytes = pki.private_key.as_bytes();
+
+    // Extract the first OCTET STRING from SEQUENCE { OCTET STRING, ... }
+    let inner_bytes = extract_first_octet_string(pk_bytes)?;
+
+    // ML-DSA: seed is always 32 bytes
+    use const_oid_pq::db::fips204;
+    use const_oid_pq::db::fips205;
+
+    macro_rules! try_ml_dsa_from_seed {
+        ($oid_const:expr, $paramset:ty, $algo:expr) => {
+            if oid == $oid_const {
+                if inner_bytes.len() == 32 {
+                    let seed = ml_dsa::Seed::from_slice(&inner_bytes);
+                    let sk = ml_dsa::SigningKey::<$paramset>::from_seed(seed);
+                    let vk = sk.verifying_key();
+                    if let Ok(pub_doc) = vk.to_public_key_der() {
+                        // Store just the 32-byte seed — sign.rs will use from_seed()
+                        return Some(Key::new(
+                            KeyData::PostQuantum {
+                                algorithm: $algo,
+                                private_der: Some(inner_bytes.to_vec()),
+                                public_der: pub_doc.to_vec(),
+                            },
+                            KeyUsage::Any,
+                        ));
+                    }
+                }
+                return None;
+            }
+        };
+    }
+
+    macro_rules! try_slh_dsa_from_raw {
+        ($oid_const:expr, $paramset:ty, $algo:expr) => {
+            if oid == $oid_const {
+                if let Ok(sk) = slh_dsa::SigningKey::<$paramset>::try_from(inner_bytes) {
+                    let vk = sk.verifying_key();
+                    if let Ok(pub_doc) = vk.to_public_key_der() {
+                        // Store just the raw key bytes — sign.rs will use try_from()
+                        return Some(Key::new(
+                            KeyData::PostQuantum {
+                                algorithm: $algo,
+                                private_der: Some(inner_bytes.to_vec()),
+                                public_der: pub_doc.to_vec(),
+                            },
+                            KeyUsage::Any,
+                        ));
+                    }
+                }
+                return None;
+            }
+        };
+    }
+
+    try_ml_dsa_from_seed!(fips204::ID_ML_DSA_44, ml_dsa::MlDsa44, PqAlgorithm::MlDsa44);
+    try_ml_dsa_from_seed!(fips204::ID_ML_DSA_65, ml_dsa::MlDsa65, PqAlgorithm::MlDsa65);
+    try_ml_dsa_from_seed!(fips204::ID_ML_DSA_87, ml_dsa::MlDsa87, PqAlgorithm::MlDsa87);
+
+    try_slh_dsa_from_raw!(fips205::ID_SLH_DSA_SHA_2_128_F, slh_dsa::Sha2_128f, PqAlgorithm::SlhDsaSha2_128f);
+    try_slh_dsa_from_raw!(fips205::ID_SLH_DSA_SHA_2_128_S, slh_dsa::Sha2_128s, PqAlgorithm::SlhDsaSha2_128s);
+    try_slh_dsa_from_raw!(fips205::ID_SLH_DSA_SHA_2_192_F, slh_dsa::Sha2_192f, PqAlgorithm::SlhDsaSha2_192f);
+    try_slh_dsa_from_raw!(fips205::ID_SLH_DSA_SHA_2_192_S, slh_dsa::Sha2_192s, PqAlgorithm::SlhDsaSha2_192s);
+    try_slh_dsa_from_raw!(fips205::ID_SLH_DSA_SHA_2_256_F, slh_dsa::Sha2_256f, PqAlgorithm::SlhDsaSha2_256f);
+    try_slh_dsa_from_raw!(fips205::ID_SLH_DSA_SHA_2_256_S, slh_dsa::Sha2_256s, PqAlgorithm::SlhDsaSha2_256s);
+
+    None
+}
+
+/// Extract the first OCTET STRING from an ASN.1 SEQUENCE.
+///
+/// Handles OpenSSL-style PQ private key encoding:
+/// `SEQUENCE { OCTET STRING(key_data), ... }`
+fn extract_first_octet_string(data: &[u8]) -> Option<&[u8]> {
+    // Must start with SEQUENCE tag (0x30)
+    if data.first() != Some(&0x30) {
+        return None;
+    }
+    let (_, seq_content) = parse_asn1_length(&data[1..])?;
+    // First element should be OCTET STRING (0x04)
+    if seq_content.first() != Some(&0x04) {
+        return None;
+    }
+    let (octet_len, octet_content) = parse_asn1_length(&seq_content[1..])?;
+    Some(&octet_content[..octet_len])
+}
+
+/// Parse an ASN.1 length and return (length, rest_of_data).
+fn parse_asn1_length(data: &[u8]) -> Option<(usize, &[u8])> {
+    if data.is_empty() {
+        return None;
+    }
+    let first = data[0];
+    if first < 0x80 {
+        Some((first as usize, &data[1..]))
+    } else if first == 0x81 {
+        if data.len() < 2 { return None; }
+        Some((data[1] as usize, &data[2..]))
+    } else if first == 0x82 {
+        if data.len() < 3 { return None; }
+        let len = ((data[1] as usize) << 8) | (data[2] as usize);
+        Some((len, &data[3..]))
+    } else if first == 0x83 {
+        if data.len() < 4 { return None; }
+        let len = ((data[1] as usize) << 16) | ((data[2] as usize) << 8) | (data[3] as usize);
+        Some((len, &data[4..]))
+    } else {
+        None
+    }
+}
+
+/// Try to load a post-quantum public key from SPKI DER bytes.
+fn try_load_pq_public_key(spki_der: &[u8]) -> Option<Key> {
+    use bergshamra_crypto::sign::PqAlgorithm;
+    use pkcs8_pq::spki::DecodePublicKey;
+
+    macro_rules! try_ml_dsa {
+        ($paramset:ty, $algo:expr) => {
+            if ml_dsa::VerifyingKey::<$paramset>::from_public_key_der(spki_der).is_ok() {
+                return Some(Key::new(
+                    KeyData::PostQuantum {
+                        algorithm: $algo,
+                        private_der: None,
+                        public_der: spki_der.to_vec(),
+                    },
+                    KeyUsage::Verify,
+                ));
+            }
+        };
+    }
+
+    macro_rules! try_slh_dsa {
+        ($paramset:ty, $algo:expr) => {
+            if slh_dsa::VerifyingKey::<$paramset>::from_public_key_der(spki_der).is_ok() {
+                return Some(Key::new(
+                    KeyData::PostQuantum {
+                        algorithm: $algo,
+                        private_der: None,
+                        public_der: spki_der.to_vec(),
+                    },
+                    KeyUsage::Verify,
+                ));
+            }
+        };
+    }
+
+    try_ml_dsa!(ml_dsa::MlDsa44, PqAlgorithm::MlDsa44);
+    try_ml_dsa!(ml_dsa::MlDsa65, PqAlgorithm::MlDsa65);
+    try_ml_dsa!(ml_dsa::MlDsa87, PqAlgorithm::MlDsa87);
+
+    try_slh_dsa!(slh_dsa::Sha2_128f, PqAlgorithm::SlhDsaSha2_128f);
+    try_slh_dsa!(slh_dsa::Sha2_128s, PqAlgorithm::SlhDsaSha2_128s);
+    try_slh_dsa!(slh_dsa::Sha2_192f, PqAlgorithm::SlhDsaSha2_192f);
+    try_slh_dsa!(slh_dsa::Sha2_192s, PqAlgorithm::SlhDsaSha2_192s);
+    try_slh_dsa!(slh_dsa::Sha2_256f, PqAlgorithm::SlhDsaSha2_256f);
+    try_slh_dsa!(slh_dsa::Sha2_256s, PqAlgorithm::SlhDsaSha2_256s);
+
+    None
 }
 
 #[cfg(test)]
@@ -569,5 +806,17 @@ mod tests {
         let key = load_pkcs12(&data, "secret123").expect("load_pkcs12");
         assert!(matches!(key.data, KeyData::Rsa { .. }));
         assert!(!key.x509_chain.is_empty());
+    }
+
+    #[test]
+    fn test_load_pkcs12_mldsa44() {
+        let p12_path = std::path::Path::new("../../test-data/keys/ml-dsa/ml-dsa-44-key.p12");
+        if !p12_path.exists() {
+            eprintln!("skipping test: {p12_path:?} not found");
+            return;
+        }
+        let data = std::fs::read(p12_path).unwrap();
+        let key = load_pkcs12(&data, "secret123").expect("load_pkcs12 should succeed");
+        assert!(matches!(key.data, KeyData::PostQuantum { .. }));
     }
 }

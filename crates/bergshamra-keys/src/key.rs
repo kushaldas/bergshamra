@@ -37,6 +37,12 @@ pub enum KeyData {
     Hmac(Vec<u8>),
     Aes(Vec<u8>),
     Des3(Vec<u8>),
+    /// Post-quantum key (ML-DSA or SLH-DSA) stored as raw DER bytes.
+    PostQuantum {
+        algorithm: bergshamra_crypto::sign::PqAlgorithm,
+        private_der: Option<Vec<u8>>,
+        public_der: Vec<u8>,
+    },
 }
 
 impl std::fmt::Debug for KeyData {
@@ -80,6 +86,13 @@ impl std::fmt::Debug for KeyData {
             Self::Hmac(k) => write!(f, "HMAC key ({} bytes)", k.len()),
             Self::Aes(k) => write!(f, "AES key ({} bytes)", k.len()),
             Self::Des3(_) => write!(f, "3DES key"),
+            Self::PostQuantum { algorithm, private_der, .. } => {
+                if private_der.is_some() {
+                    write!(f, "{} private+public key", algorithm.name())
+                } else {
+                    write!(f, "{} public key", algorithm.name())
+                }
+            }
         }
     }
 }
@@ -96,6 +109,7 @@ impl KeyData {
             Self::Hmac(_) => "HMAC",
             Self::Aes(_) => "AES",
             Self::Des3(_) => "3DES",
+            Self::PostQuantum { algorithm, .. } => algorithm.name(),
         }
     }
 
@@ -120,6 +134,7 @@ impl KeyData {
                 let pk = p521::PublicKey::from_sec1_bytes(point.as_bytes()).ok()?;
                 pk.to_public_key_der().ok().map(|d| d.to_vec())
             }
+            Self::PostQuantum { public_der, .. } => Some(public_der.clone()),
             _ => None,
         }
     }
@@ -254,6 +269,13 @@ impl Key {
                 Some(bergshamra_crypto::sign::SigningKey::DsaPublic(public.clone()))
             }
             KeyData::Hmac(k) => Some(bergshamra_crypto::sign::SigningKey::Hmac(k.clone())),
+            KeyData::PostQuantum { algorithm, private_der, public_der } => {
+                Some(bergshamra_crypto::sign::SigningKey::PostQuantum {
+                    algorithm: *algorithm,
+                    private_der: private_der.clone(),
+                    public_der: public_der.clone(),
+                })
+            }
             _ => None,
         }
     }

@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-//! Signature algorithm implementations (RSA, ECDSA, HMAC).
+//! Signature algorithm implementations (RSA, ECDSA, HMAC, ML-DSA, SLH-DSA).
 
 use bergshamra_core::{algorithm, Error};
 use signature::SignatureEncoding;
@@ -18,6 +18,44 @@ pub enum SigningKey {
     Dsa(dsa::SigningKey),
     DsaPublic(dsa::VerifyingKey),
     Hmac(Vec<u8>),
+    /// Post-quantum key stored as raw DER bytes.
+    /// The algorithm variant determines how to parse them.
+    PostQuantum {
+        algorithm: PqAlgorithm,
+        private_der: Option<Vec<u8>>,
+        public_der: Vec<u8>,
+    },
+}
+
+/// Post-quantum algorithm variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PqAlgorithm {
+    MlDsa44,
+    MlDsa65,
+    MlDsa87,
+    SlhDsaSha2_128f,
+    SlhDsaSha2_128s,
+    SlhDsaSha2_192f,
+    SlhDsaSha2_192s,
+    SlhDsaSha2_256f,
+    SlhDsaSha2_256s,
+}
+
+impl PqAlgorithm {
+    /// Return a human-readable name.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::MlDsa44 => "ML-DSA-44",
+            Self::MlDsa65 => "ML-DSA-65",
+            Self::MlDsa87 => "ML-DSA-87",
+            Self::SlhDsaSha2_128f => "SLH-DSA-SHA2-128f",
+            Self::SlhDsaSha2_128s => "SLH-DSA-SHA2-128s",
+            Self::SlhDsaSha2_192f => "SLH-DSA-SHA2-192f",
+            Self::SlhDsaSha2_192s => "SLH-DSA-SHA2-192s",
+            Self::SlhDsaSha2_256f => "SLH-DSA-SHA2-256f",
+            Self::SlhDsaSha2_256s => "SLH-DSA-SHA2-256s",
+        }
+    }
 }
 
 /// Trait for signature algorithms.
@@ -27,8 +65,14 @@ pub trait SignatureAlgorithm: Send {
     fn verify(&self, key: &SigningKey, data: &[u8], signature: &[u8]) -> Result<bool, Error>;
 }
 
-/// Create a signature algorithm from its URI.
+/// Create a signature algorithm from its URI (no context string).
 pub fn from_uri(uri: &str) -> Result<Box<dyn SignatureAlgorithm>, Error> {
+    from_uri_with_context(uri, None)
+}
+
+/// Create a signature algorithm from its URI with an optional context string.
+/// Context strings are used by ML-DSA and SLH-DSA algorithms.
+pub fn from_uri_with_context(uri: &str, context: Option<Vec<u8>>) -> Result<Box<dyn SignatureAlgorithm>, Error> {
     match uri {
         algorithm::RSA_SHA1 => Ok(Box::new(RsaPkcs1v15 { uri: algorithm::RSA_SHA1, hash: HashType::Sha1 })),
         algorithm::RSA_SHA224 => Ok(Box::new(RsaPkcs1v15 { uri: algorithm::RSA_SHA224, hash: HashType::Sha224 })),
@@ -77,6 +121,17 @@ pub fn from_uri(uri: &str) -> Result<Box<dyn SignatureAlgorithm>, Error> {
         algorithm::HMAC_MD5 => Ok(Box::new(HmacSign { uri: algorithm::HMAC_MD5, hash: HashType::Md5 })),
         #[cfg(feature = "legacy-algorithms")]
         algorithm::HMAC_RIPEMD160 => Ok(Box::new(HmacSign { uri: algorithm::HMAC_RIPEMD160, hash: HashType::Ripemd160 })),
+
+        algorithm::ML_DSA_44 => Ok(Box::new(PqSign { uri: algorithm::ML_DSA_44, algorithm: PqAlgorithm::MlDsa44, context: context.unwrap_or_default() })),
+        algorithm::ML_DSA_65 => Ok(Box::new(PqSign { uri: algorithm::ML_DSA_65, algorithm: PqAlgorithm::MlDsa65, context: context.unwrap_or_default() })),
+        algorithm::ML_DSA_87 => Ok(Box::new(PqSign { uri: algorithm::ML_DSA_87, algorithm: PqAlgorithm::MlDsa87, context: context.unwrap_or_default() })),
+
+        algorithm::SLH_DSA_SHA2_128F => Ok(Box::new(PqSign { uri: algorithm::SLH_DSA_SHA2_128F, algorithm: PqAlgorithm::SlhDsaSha2_128f, context: context.unwrap_or_default() })),
+        algorithm::SLH_DSA_SHA2_128S => Ok(Box::new(PqSign { uri: algorithm::SLH_DSA_SHA2_128S, algorithm: PqAlgorithm::SlhDsaSha2_128s, context: context.unwrap_or_default() })),
+        algorithm::SLH_DSA_SHA2_192F => Ok(Box::new(PqSign { uri: algorithm::SLH_DSA_SHA2_192F, algorithm: PqAlgorithm::SlhDsaSha2_192f, context: context.unwrap_or_default() })),
+        algorithm::SLH_DSA_SHA2_192S => Ok(Box::new(PqSign { uri: algorithm::SLH_DSA_SHA2_192S, algorithm: PqAlgorithm::SlhDsaSha2_192s, context: context.unwrap_or_default() })),
+        algorithm::SLH_DSA_SHA2_256F => Ok(Box::new(PqSign { uri: algorithm::SLH_DSA_SHA2_256F, algorithm: PqAlgorithm::SlhDsaSha2_256f, context: context.unwrap_or_default() })),
+        algorithm::SLH_DSA_SHA2_256S => Ok(Box::new(PqSign { uri: algorithm::SLH_DSA_SHA2_256S, algorithm: PqAlgorithm::SlhDsaSha2_256s, context: context.unwrap_or_default() })),
 
         _ => Err(Error::UnsupportedAlgorithm(format!("signature algorithm: {uri}"))),
     }
@@ -618,6 +673,182 @@ pub fn hmac_hash_output_bits(uri: &str) -> Option<usize> {
 /// Returns `true` if the given URI is an HMAC signature algorithm.
 pub fn is_hmac_algorithm(uri: &str) -> bool {
     hmac_hash_output_bits(uri).is_some()
+}
+
+/// Returns `true` if the given URI is a post-quantum (ML-DSA or SLH-DSA) algorithm.
+pub fn is_pq_algorithm(uri: &str) -> bool {
+    matches!(
+        uri,
+        algorithm::ML_DSA_44
+            | algorithm::ML_DSA_65
+            | algorithm::ML_DSA_87
+            | algorithm::SLH_DSA_SHA2_128F
+            | algorithm::SLH_DSA_SHA2_128S
+            | algorithm::SLH_DSA_SHA2_192F
+            | algorithm::SLH_DSA_SHA2_192S
+            | algorithm::SLH_DSA_SHA2_256F
+            | algorithm::SLH_DSA_SHA2_256S
+    )
+}
+
+// ── Post-quantum (ML-DSA / SLH-DSA) ─────────────────────────────────
+
+struct PqSign {
+    uri: &'static str,
+    algorithm: PqAlgorithm,
+    context: Vec<u8>,
+}
+
+impl SignatureAlgorithm for PqSign {
+    fn uri(&self) -> &'static str { self.uri }
+
+    fn sign(&self, key: &SigningKey, data: &[u8]) -> Result<Vec<u8>, Error> {
+        let SigningKey::PostQuantum { algorithm, private_der, .. } = key else {
+            return Err(Error::Key(format!("{} signing key required", self.algorithm.name())));
+        };
+        if *algorithm != self.algorithm {
+            return Err(Error::Key(format!(
+                "key algorithm mismatch: key is {}, but signature requires {}",
+                algorithm.name(),
+                self.algorithm.name(),
+            )));
+        }
+        let private = private_der.as_ref().ok_or_else(|| {
+            Error::Key(format!("{} private key required for signing", self.algorithm.name()))
+        })?;
+
+        match self.algorithm {
+            PqAlgorithm::MlDsa44 => pq_ml_dsa_sign::<ml_dsa::MlDsa44>(private, data, &self.context),
+            PqAlgorithm::MlDsa65 => pq_ml_dsa_sign::<ml_dsa::MlDsa65>(private, data, &self.context),
+            PqAlgorithm::MlDsa87 => pq_ml_dsa_sign::<ml_dsa::MlDsa87>(private, data, &self.context),
+            PqAlgorithm::SlhDsaSha2_128f => pq_slh_dsa_sign::<slh_dsa::Sha2_128f>(private, data, &self.context),
+            PqAlgorithm::SlhDsaSha2_128s => pq_slh_dsa_sign::<slh_dsa::Sha2_128s>(private, data, &self.context),
+            PqAlgorithm::SlhDsaSha2_192f => pq_slh_dsa_sign::<slh_dsa::Sha2_192f>(private, data, &self.context),
+            PqAlgorithm::SlhDsaSha2_192s => pq_slh_dsa_sign::<slh_dsa::Sha2_192s>(private, data, &self.context),
+            PqAlgorithm::SlhDsaSha2_256f => pq_slh_dsa_sign::<slh_dsa::Sha2_256f>(private, data, &self.context),
+            PqAlgorithm::SlhDsaSha2_256s => pq_slh_dsa_sign::<slh_dsa::Sha2_256s>(private, data, &self.context),
+        }
+    }
+
+    fn verify(&self, key: &SigningKey, data: &[u8], sig_bytes: &[u8]) -> Result<bool, Error> {
+        let SigningKey::PostQuantum { algorithm, public_der, .. } = key else {
+            return Err(Error::Key(format!("{} key required", self.algorithm.name())));
+        };
+        if *algorithm != self.algorithm {
+            return Err(Error::Key(format!(
+                "key algorithm mismatch: key is {}, but signature requires {}",
+                algorithm.name(),
+                self.algorithm.name(),
+            )));
+        }
+
+        match self.algorithm {
+            PqAlgorithm::MlDsa44 => pq_ml_dsa_verify::<ml_dsa::MlDsa44>(public_der, data, sig_bytes, &self.context),
+            PqAlgorithm::MlDsa65 => pq_ml_dsa_verify::<ml_dsa::MlDsa65>(public_der, data, sig_bytes, &self.context),
+            PqAlgorithm::MlDsa87 => pq_ml_dsa_verify::<ml_dsa::MlDsa87>(public_der, data, sig_bytes, &self.context),
+            PqAlgorithm::SlhDsaSha2_128f => pq_slh_dsa_verify::<slh_dsa::Sha2_128f>(public_der, data, sig_bytes, &self.context),
+            PqAlgorithm::SlhDsaSha2_128s => pq_slh_dsa_verify::<slh_dsa::Sha2_128s>(public_der, data, sig_bytes, &self.context),
+            PqAlgorithm::SlhDsaSha2_192f => pq_slh_dsa_verify::<slh_dsa::Sha2_192f>(public_der, data, sig_bytes, &self.context),
+            PqAlgorithm::SlhDsaSha2_192s => pq_slh_dsa_verify::<slh_dsa::Sha2_192s>(public_der, data, sig_bytes, &self.context),
+            PqAlgorithm::SlhDsaSha2_256f => pq_slh_dsa_verify::<slh_dsa::Sha2_256f>(public_der, data, sig_bytes, &self.context),
+            PqAlgorithm::SlhDsaSha2_256s => pq_slh_dsa_verify::<slh_dsa::Sha2_256s>(public_der, data, sig_bytes, &self.context),
+        }
+    }
+}
+
+/// Sign with ML-DSA (FIPS 204).
+///
+/// `private_der` may be either a full PKCS#8 DER document (from RustCrypto format)
+/// or just the 32-byte seed (from OpenSSL format, extracted by the loader).
+fn pq_ml_dsa_sign<P>(private_der: &[u8], data: &[u8], context: &[u8]) -> Result<Vec<u8>, Error>
+where
+    P: ml_dsa::MlDsaParams + ml_dsa::KeyGen,
+    P: pkcs8_pq::spki::AssociatedAlgorithmIdentifier<Params = pkcs8_pq::der::AnyRef<'static>>,
+{
+    let sk = load_ml_dsa_signing_key::<P>(private_der)?;
+    let sig = sk.sign_deterministic(data, context)
+        .map_err(|e| Error::Crypto(format!("ML-DSA sign failed: {e}")))?;
+    Ok(sig.encode().to_vec())
+}
+
+/// Verify with ML-DSA (FIPS 204).
+fn pq_ml_dsa_verify<P>(public_der: &[u8], data: &[u8], sig_bytes: &[u8], context: &[u8]) -> Result<bool, Error>
+where
+    P: ml_dsa::MlDsaParams + ml_dsa::KeyGen,
+    P: pkcs8_pq::spki::AssociatedAlgorithmIdentifier<Params = pkcs8_pq::der::AnyRef<'static>>,
+{
+    use pkcs8_pq::spki::DecodePublicKey;
+    let vk = ml_dsa::VerifyingKey::<P>::from_public_key_der(public_der)
+        .map_err(|e| Error::Key(format!("failed to parse ML-DSA public key: {e}")))?;
+    let encoded_sig = ml_dsa::EncodedSignature::<P>::try_from(sig_bytes)
+        .map_err(|_| Error::Crypto("invalid ML-DSA signature length".into()))?;
+    let sig = ml_dsa::Signature::<P>::decode(&encoded_sig)
+        .ok_or_else(|| Error::Crypto("failed to decode ML-DSA signature".into()))?;
+    Ok(vk.verify_with_context(data, context, &sig))
+}
+
+/// Sign with SLH-DSA (FIPS 205).
+///
+/// `private_der` may be either a full PKCS#8 DER document (from RustCrypto format)
+/// or just the raw key bytes (from OpenSSL format, extracted by the loader).
+fn pq_slh_dsa_sign<P>(private_der: &[u8], data: &[u8], context: &[u8]) -> Result<Vec<u8>, Error>
+where
+    P: slh_dsa::ParameterSet,
+{
+    let sk = load_slh_dsa_signing_key::<P>(private_der)?;
+    let sig = sk.try_sign_with_context(data, context, None)
+        .map_err(|e| Error::Crypto(format!("SLH-DSA sign failed: {e}")))?;
+    Ok(sig.to_bytes().to_vec())
+}
+
+/// Verify with SLH-DSA (FIPS 205).
+fn pq_slh_dsa_verify<P>(public_der: &[u8], data: &[u8], sig_bytes: &[u8], context: &[u8]) -> Result<bool, Error>
+where
+    P: slh_dsa::ParameterSet,
+{
+    use pkcs8_pq::spki::DecodePublicKey;
+    let vk = slh_dsa::VerifyingKey::<P>::from_public_key_der(public_der)
+        .map_err(|e| Error::Key(format!("failed to parse SLH-DSA public key: {e}")))?;
+    let sig = slh_dsa::Signature::<P>::try_from(sig_bytes)
+        .map_err(|e| Error::Crypto(format!("invalid SLH-DSA signature: {e}")))?;
+    Ok(vk.try_verify_with_context(data, context, &sig).is_ok())
+}
+
+/// Load an ML-DSA signing key from either PKCS#8 DER or a 32-byte seed.
+fn load_ml_dsa_signing_key<P>(private_der: &[u8]) -> Result<ml_dsa::SigningKey<P>, Error>
+where
+    P: ml_dsa::MlDsaParams + ml_dsa::KeyGen,
+    P: pkcs8_pq::spki::AssociatedAlgorithmIdentifier<Params = pkcs8_pq::der::AnyRef<'static>>,
+{
+    // Try full PKCS#8 DER first (RustCrypto format)
+    use pkcs8_pq::DecodePrivateKey;
+    if let Ok(sk) = ml_dsa::SigningKey::<P>::from_pkcs8_der(private_der) {
+        return Ok(sk);
+    }
+    // Fall back to 32-byte seed (from OpenSSL format, extracted by loader)
+    if private_der.len() == 32 {
+        let seed = ml_dsa::Seed::from_slice(private_der);
+        return Ok(ml_dsa::SigningKey::<P>::from_seed(seed));
+    }
+    Err(Error::Key(format!(
+        "failed to parse ML-DSA private key: expected PKCS#8 DER or 32-byte seed, got {} bytes",
+        private_der.len()
+    )))
+}
+
+/// Load an SLH-DSA signing key from either PKCS#8 DER or raw key bytes.
+fn load_slh_dsa_signing_key<P>(private_der: &[u8]) -> Result<slh_dsa::SigningKey<P>, Error>
+where
+    P: slh_dsa::ParameterSet,
+{
+    // Try full PKCS#8 DER first (RustCrypto format)
+    use pkcs8_pq::DecodePrivateKey;
+    if let Ok(sk) = slh_dsa::SigningKey::<P>::from_pkcs8_der(private_der) {
+        return Ok(sk);
+    }
+    // Fall back to raw key bytes (from OpenSSL format, extracted by loader)
+    slh_dsa::SigningKey::<P>::try_from(private_der)
+        .map_err(|e| Error::Key(format!("failed to parse SLH-DSA private key: {e}")))
 }
 
 #[cfg(test)]

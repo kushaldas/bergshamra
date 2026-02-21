@@ -101,6 +101,28 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
         None
     };
 
+    // Extract PQ context string from <MLDSAContextString> or <SLHDSAContextString>
+    let pq_context: Option<Vec<u8>> = if bergshamra_crypto::sign::is_pq_algorithm(sig_method_uri) {
+        let ctx_node = find_child_element(sig_method_node, ns::XMLSEC_PQ, ns::node::MLDSA_CONTEXT_STRING)
+            .or_else(|| find_child_element(sig_method_node, ns::XMLSEC_PQ, ns::node::SLHDSA_CONTEXT_STRING));
+        if let Some(cn) = ctx_node {
+            let b64 = cn.text().unwrap_or("").trim();
+            if b64.is_empty() {
+                None
+            } else {
+                use base64::Engine;
+                let engine = base64::engine::general_purpose::STANDARD;
+                let decoded = engine.decode(b64)
+                    .map_err(|e| Error::Base64(format!("PQ context string: {e}")))?;
+                Some(decoded)
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // Read exc-C14N PrefixList if applicable
     let inclusive_prefixes = read_inclusive_prefixes(c14n_method_node);
 
@@ -193,7 +215,7 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
         .to_signing_key()
         .ok_or_else(|| Error::Key("no signing key available".into()))?;
 
-    let sig_alg = bergshamra_crypto::sign::from_uri(sig_method_uri)?;
+    let sig_alg = bergshamra_crypto::sign::from_uri_with_context(sig_method_uri, pq_context)?;
     let valid = sig_alg.verify(&signing_key, &c14n_signed_info, &sig_value)?;
 
     if valid {

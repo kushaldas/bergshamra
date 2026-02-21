@@ -79,6 +79,21 @@ pub const HMAC_SHA512: &str = "http://www.w3.org/2001/04/xmldsig-more#hmac-sha51
 pub const HMAC_MD5: &str = "http://www.w3.org/2001/04/xmldsig-more#hmac-md5";
 pub const HMAC_RIPEMD160: &str = "http://www.w3.org/2001/04/xmldsig-more#hmac-ripemd160";
 
+// ── ML-DSA (FIPS-204) signature algorithms ────────────────────────────
+
+pub const ML_DSA_44: &str = "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#ml-dsa-44";
+pub const ML_DSA_65: &str = "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#ml-dsa-65";
+pub const ML_DSA_87: &str = "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#ml-dsa-87";
+
+// ── SLH-DSA (FIPS-205) signature algorithms ───────────────────────────
+
+pub const SLH_DSA_SHA2_128F: &str = "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#slh-dsa-sha2-128f";
+pub const SLH_DSA_SHA2_128S: &str = "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#slh-dsa-sha2-128s";
+pub const SLH_DSA_SHA2_192F: &str = "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#slh-dsa-sha2-192f";
+pub const SLH_DSA_SHA2_192S: &str = "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#slh-dsa-sha2-192s";
+pub const SLH_DSA_SHA2_256F: &str = "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#slh-dsa-sha2-256f";
+pub const SLH_DSA_SHA2_256S: &str = "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#slh-dsa-sha2-256s";
+
 // ── Block cipher algorithms ──────────────────────────────────────────
 
 pub const AES128_CBC: &str = "http://www.w3.org/2001/04/xmlenc#aes128-cbc";

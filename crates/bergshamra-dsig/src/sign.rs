@@ -175,7 +175,29 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
         .to_signing_key()
         .ok_or_else(|| Error::Key("no signing key".into()))?;
 
-    let sig_alg = bergshamra_crypto::sign::from_uri(sig_method_uri)?;
+    // Extract PQ context string for ML-DSA/SLH-DSA signing
+    let pq_context: Option<Vec<u8>> = if bergshamra_crypto::sign::is_pq_algorithm(sig_method_uri) {
+        let ctx_node = find_child_element(sig_method, ns::XMLSEC_PQ, ns::node::MLDSA_CONTEXT_STRING)
+            .or_else(|| find_child_element(sig_method, ns::XMLSEC_PQ, ns::node::SLHDSA_CONTEXT_STRING));
+        if let Some(cn) = ctx_node {
+            let b64 = cn.text().unwrap_or("").trim();
+            if b64.is_empty() {
+                None
+            } else {
+                use base64::Engine as _;
+                let engine = base64::engine::general_purpose::STANDARD;
+                let decoded = engine.decode(b64)
+                    .map_err(|e| Error::Base64(format!("PQ context string: {e}")))?;
+                Some(decoded)
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let sig_alg = bergshamra_crypto::sign::from_uri_with_context(sig_method_uri, pq_context)?;
     let mut signature = sig_alg.sign(&signing_key, &c14n_signed_info)?;
 
     // Truncate HMAC output if HMACOutputLength is specified

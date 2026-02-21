@@ -22,6 +22,9 @@ hmac.workspace = true
 rsa.workspace = true
 ecdsa.workspace = true
 dsa.workspace = true
+ml-dsa.workspace = true
+slh-dsa.workspace = true
+pkcs8-pq.workspace = true
 p256 = { workspace = true, features = ["ecdsa"] }
 p384 = { workspace = true, features = ["ecdsa"] }
 p521 = { workspace = true, features = ["ecdsa"] }
