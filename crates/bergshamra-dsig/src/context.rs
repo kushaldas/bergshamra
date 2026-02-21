@@ -18,6 +18,16 @@ pub struct DsigContext {
     pub debug: bool,
     /// Base directory for resolving relative external URI references.
     pub base_dir: Option<String>,
+    /// Insecure mode: skip all certificate validation.
+    pub insecure: bool,
+    /// Verify keys: validate certificates for keys loaded from files.
+    pub verify_keys: bool,
+    /// Override verification time (format: "YYYY-MM-DD+HH:MM:SS").
+    pub verification_time: Option<String>,
+    /// Skip X.509 time checks (NotBefore/NotAfter).
+    pub skip_time_checks: bool,
+    /// Whether --enabled-key-data includes x509.
+    pub enabled_key_data_x509: bool,
 }
 
 impl DsigContext {
@@ -30,6 +40,11 @@ impl DsigContext {
             hmac_min_out_len: 0,
             debug: false,
             base_dir: None,
+            insecure: false,
+            verify_keys: false,
+            verification_time: None,
+            skip_time_checks: false,
+            enabled_key_data_x509: false,
         }
     }
 

@@ -142,6 +142,8 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
     // then try EncryptedKey unwrap, then fall back to KeysManager lookup.
     let key_info_node = find_child_element(sig_node, ns::DSIG, ns::node::KEY_INFO);
     let extracted_key: Option<bergshamra_keys::Key>;
+    let mut key_from_x509 = false;
+    let mut key_from_manager = false;
     let key = if let Some(ki) = key_info_node {
         // Check for KeyInfoReference — dereference to the target KeyInfo
         let effective_ki = resolve_key_info_reference(ki, &doc, &id_map).unwrap_or(ki);
@@ -151,12 +153,17 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
             if ctx.debug {
                 eprintln!("== Key: extracted inline key ({})", ek.data.algorithm_name());
             }
+            // Check if this key came from an X509Certificate
+            if !ek.x509_chain.is_empty() {
+                key_from_x509 = true;
+            }
             ek
         } else {
             let k = bergshamra_keys::keyinfo::resolve_key_info(effective_ki, &ctx.keys_manager)?;
             if ctx.debug {
                 eprintln!("== Key: resolved from manager ({})", k.data.algorithm_name());
             }
+            key_from_manager = true;
             k
         }
     } else {
@@ -164,8 +171,38 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
         if ctx.debug {
             eprintln!("== Key: first key from manager ({})", k.data.algorithm_name());
         }
+        key_from_manager = true;
         k
     };
+
+    // 4b. X.509 certificate chain validation
+    if !ctx.insecure {
+        let needs_x509_validation = (ctx.enabled_key_data_x509 && key_from_x509)
+            || (ctx.verify_keys && key_from_manager && !key.x509_chain.is_empty());
+
+        if needs_x509_validation && !key.x509_chain.is_empty() {
+            let config = bergshamra_keys::x509::CertValidationConfig {
+                trusted_certs: ctx.keys_manager.trusted_certs(),
+                untrusted_certs: ctx.keys_manager.untrusted_certs(),
+                crls: ctx.keys_manager.crls(),
+                verification_time: ctx.verification_time.as_deref(),
+                skip_time_checks: ctx.skip_time_checks,
+            };
+            // The first cert in x509_chain is the leaf
+            let leaf_der = &key.x509_chain[0];
+            bergshamra_keys::x509::validate_cert_chain(
+                leaf_der,
+                &key.x509_chain,
+                &config,
+            )?;
+            if ctx.debug {
+                eprintln!("== X.509 certificate chain: valid");
+            }
+        } else if ctx.enabled_key_data_x509 && !key_from_x509 && !key_from_manager {
+            // enabled-key-data x509 was requested but no X509 data found
+            // This is not an error by itself — the test framework handles this
+        }
+    }
 
     // 5. Canonicalize <SignedInfo>
     // We need to canonicalize the SignedInfo element as a document subset

@@ -78,6 +78,34 @@ enum Commands {
         /// Verbose output
         #[arg(short, long)]
         verbose: bool,
+
+        /// Skip X.509 certificate validation (insecure mode)
+        #[arg(long)]
+        insecure: bool,
+
+        /// Verify keys loaded from cert files (validate their certificates)
+        #[arg(long = "verify-keys")]
+        verify_keys: bool,
+
+        /// Override verification time (format: YYYY-MM-DD+HH:MM:SS)
+        #[arg(long = "verification-gmt-time")]
+        verification_gmt_time: Option<String>,
+
+        /// Skip X.509 certificate time checks
+        #[arg(long = "x509-skip-time-checks")]
+        x509_skip_time_checks: bool,
+
+        /// Specify enabled key data types (e.g., x509, key-value, key-name)
+        #[arg(long = "enabled-key-data")]
+        enabled_key_data: Option<String>,
+
+        /// Load untrusted intermediate certificate(s)
+        #[arg(long)]
+        untrusted: Vec<PathBuf>,
+
+        /// Load CRL file (DER or PEM)
+        #[arg(long)]
+        crl: Vec<PathBuf>,
     },
 
     /// Sign an XML template
@@ -265,7 +293,14 @@ fn main() {
             hmac_min_out_len,
             debug,
             verbose,
-        } => cmd_verify(file, key, key_name, cert, trusted, pkcs12, pwd, hmac_key, keys_file, url_map, id_attr, hmac_min_out_len, debug, verbose),
+            insecure,
+            verify_keys,
+            verification_gmt_time,
+            x509_skip_time_checks,
+            enabled_key_data,
+            untrusted,
+            crl,
+        } => cmd_verify(file, key, key_name, cert, trusted, pkcs12, pwd, hmac_key, keys_file, url_map, id_attr, hmac_min_out_len, debug, verbose, insecure, verify_keys, verification_gmt_time, x509_skip_time_checks, enabled_key_data, untrusted, crl),
 
         Commands::Sign {
             template,
@@ -339,9 +374,44 @@ fn cmd_verify(
     hmac_min_out_len: Option<usize>,
     debug: bool,
     verbose: bool,
+    insecure: bool,
+    verify_keys: bool,
+    verification_gmt_time: Option<String>,
+    x509_skip_time_checks: bool,
+    enabled_key_data: Option<String>,
+    untrusted: Vec<PathBuf>,
+    crl: Vec<PathBuf>,
 ) -> Result<(), Error> {
     let xml = read_file(&file)?;
-    let mgr = build_keys_manager(key, key_name, certs, trusted, pkcs12, pwd.as_deref(), hmac_key, None, keys_file)?;
+    // Pass untrusted certs as additional cert keys (loaded before trusted certs)
+    // so they're available for key resolution by X509Digest, IssuerSerial, etc.
+    let mut all_certs = certs;
+    all_certs.extend(untrusted.iter().cloned());
+    let mut mgr = build_keys_manager(key, key_name, all_certs, trusted.clone(), pkcs12, pwd.as_deref(), hmac_key, None, keys_file)?;
+
+    // Load trusted certs as DER into the manager's trusted cert store
+    for path in &trusted {
+        let der_certs = load_certs_as_der(path)?;
+        for der in der_certs {
+            mgr.add_trusted_cert(der);
+        }
+    }
+
+    // Load untrusted intermediate certs into the cert store for chain building
+    for path in &untrusted {
+        let der_certs = load_certs_as_der(path)?;
+        for der in der_certs {
+            mgr.add_untrusted_cert(der);
+        }
+    }
+
+    // Load CRLs
+    for path in &crl {
+        let der_crls = load_crl_as_der(path)?;
+        for der in der_crls {
+            mgr.add_crl(der);
+        }
+    }
 
     let mut ctx = bergshamra_dsig::DsigContext::new(mgr);
     for attr in &id_attr {
@@ -359,6 +429,14 @@ fn cmd_verify(
     if let Some(parent) = file.parent() {
         ctx.base_dir = Some(parent.to_string_lossy().into_owned());
     }
+    ctx.insecure = insecure;
+    ctx.verify_keys = verify_keys;
+    ctx.verification_time = verification_gmt_time;
+    ctx.skip_time_checks = x509_skip_time_checks;
+    ctx.enabled_key_data_x509 = enabled_key_data
+        .as_deref()
+        .map(|s| s.split(',').any(|part| part.trim() == "x509"))
+        .unwrap_or(false);
 
     if verbose {
         eprintln!("Verifying: {}", file.display());
@@ -592,6 +670,82 @@ fn cmd_info() -> Result<(), Error> {
 fn read_file(path: &PathBuf) -> Result<String, Error> {
     std::fs::read_to_string(path)
         .map_err(|e| Error::Other(format!("{}: {e}", path.display())))
+}
+
+/// Load certificate(s) from a PEM or DER file and return as DER-encoded bytes.
+fn load_certs_as_der(path: &PathBuf) -> Result<Vec<Vec<u8>>, Error> {
+    let data = std::fs::read(path)
+        .map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
+
+    // Try PEM first
+    if data.starts_with(b"-----") {
+        let text = std::str::from_utf8(&data)
+            .map_err(|e| Error::Other(format!("{}: invalid UTF-8: {e}", path.display())))?;
+        let certs = pem_decode_all(text, "CERTIFICATE")?;
+        if certs.is_empty() {
+            return Err(Error::Other(format!(
+                "{}: no CERTIFICATE found in PEM",
+                path.display()
+            )));
+        }
+        Ok(certs)
+    } else {
+        // Assume DER
+        Ok(vec![data])
+    }
+}
+
+/// Load CRL(s) from a PEM or DER file and return as DER-encoded bytes.
+fn load_crl_as_der(path: &PathBuf) -> Result<Vec<Vec<u8>>, Error> {
+    let data = std::fs::read(path)
+        .map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
+
+    // Try PEM first
+    if data.starts_with(b"-----") {
+        let text = std::str::from_utf8(&data)
+            .map_err(|e| Error::Other(format!("{}: invalid UTF-8: {e}", path.display())))?;
+        let crls = pem_decode_all(text, "X509 CRL")?;
+        if crls.is_empty() {
+            return Err(Error::Other(format!(
+                "{}: no X509 CRL found in PEM",
+                path.display()
+            )));
+        }
+        Ok(crls)
+    } else {
+        // Assume DER
+        Ok(vec![data])
+    }
+}
+
+/// Parse all PEM blocks with the given label from a text string.
+fn pem_decode_all(text: &str, label: &str) -> Result<Vec<Vec<u8>>, Error> {
+    use base64::Engine;
+    let engine = base64::engine::general_purpose::STANDARD;
+    let begin_marker = format!("-----BEGIN {}-----", label);
+    let end_marker = format!("-----END {}-----", label);
+
+    let mut results = Vec::new();
+    let mut remaining = text;
+
+    while let Some(start) = remaining.find(&begin_marker) {
+        let after_begin = &remaining[start + begin_marker.len()..];
+        if let Some(end) = after_begin.find(&end_marker) {
+            let b64_content: String = after_begin[..end]
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            let der = engine
+                .decode(&b64_content)
+                .map_err(|e| Error::Other(format!("PEM base64 decode error: {e}")))?;
+            results.push(der);
+            remaining = &after_begin[end + end_marker.len()..];
+        } else {
+            break;
+        }
+    }
+
+    Ok(results)
 }
 
 fn write_output(path: Option<PathBuf>, data: &[u8]) -> Result<(), Error> {

@@ -8,12 +8,23 @@ use bergshamra_core::Error;
 /// Manages a collection of keys for lookup during signature/encryption processing.
 pub struct KeysManager {
     keys: Vec<Key>,
+    /// Trusted CA certificates (DER-encoded).
+    trusted_certs: Vec<Vec<u8>>,
+    /// Untrusted intermediate certificates (DER-encoded).
+    untrusted_certs: Vec<Vec<u8>>,
+    /// Certificate Revocation Lists (DER-encoded).
+    crls: Vec<Vec<u8>>,
 }
 
 impl KeysManager {
     /// Create an empty keys manager.
     pub fn new() -> Self {
-        Self { keys: Vec::new() }
+        Self {
+            keys: Vec::new(),
+            trusted_certs: Vec::new(),
+            untrusted_certs: Vec::new(),
+            crls: Vec::new(),
+        }
     }
 
     /// Add a key to the manager.
@@ -105,6 +116,41 @@ impl KeysManager {
     /// Check if empty.
     pub fn is_empty(&self) -> bool {
         self.keys.is_empty()
+    }
+
+    /// Add a trusted CA certificate (DER-encoded).
+    pub fn add_trusted_cert(&mut self, der: Vec<u8>) {
+        self.trusted_certs.push(der);
+    }
+
+    /// Add an untrusted intermediate certificate (DER-encoded).
+    pub fn add_untrusted_cert(&mut self, der: Vec<u8>) {
+        self.untrusted_certs.push(der);
+    }
+
+    /// Add a CRL (DER-encoded).
+    pub fn add_crl(&mut self, der: Vec<u8>) {
+        self.crls.push(der);
+    }
+
+    /// Get the trusted CA certificates.
+    pub fn trusted_certs(&self) -> &[Vec<u8>] {
+        &self.trusted_certs
+    }
+
+    /// Get the untrusted intermediate certificates.
+    pub fn untrusted_certs(&self) -> &[Vec<u8>] {
+        &self.untrusted_certs
+    }
+
+    /// Get the CRLs.
+    pub fn crls(&self) -> &[Vec<u8>] {
+        &self.crls
+    }
+
+    /// Check if any trusted certificates are loaded.
+    pub fn has_trusted_certs(&self) -> bool {
+        !self.trusted_certs.is_empty()
     }
 }
 

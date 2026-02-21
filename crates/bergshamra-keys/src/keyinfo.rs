@@ -388,7 +388,10 @@ fn extract_x509_certificate(x509_data_node: roxmltree::Node<'_, '_>) -> Option<K
 
     let leaf_idx = find_leaf_cert(&parsed_certs);
     let leaf = &parsed_certs[leaf_idx];
-    crate::loader::load_x509_cert_der(&leaf.der).ok()
+    let mut key = crate::loader::load_x509_cert_der(&leaf.der).ok()?;
+    // Populate x509_chain with ALL certs from the XML (not just the leaf)
+    key.x509_chain = parsed_certs.iter().map(|c| c.der.clone()).collect();
+    Some(key)
 }
 
 /// Parse a `<dsig11:DEREncodedKeyValue>` element containing base64-encoded SPKI DER.

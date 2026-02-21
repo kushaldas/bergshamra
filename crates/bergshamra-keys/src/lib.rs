@@ -10,6 +10,7 @@ pub mod keyinfo;
 pub mod keysxml;
 pub mod loader;
 pub mod manager;
+pub mod x509;
 
 pub use key::{Key, KeyData, KeyUsage};
 pub use manager::KeysManager;
