@@ -157,6 +157,10 @@ enum Commands {
         #[arg(long = "id-attr")]
         id_attr: Vec<String>,
 
+        /// Generate a random session key (e.g. hmac-192, aes-128, des-192)
+        #[arg(long = "session-key")]
+        session_key: Option<String>,
+
         /// Debug: print pre-digest and pre-signature data to stderr
         #[arg(long)]
         debug: bool,
@@ -315,9 +319,10 @@ fn main() {
             url_map,
             output,
             id_attr,
+            session_key,
             debug,
             verbose,
-        } => cmd_sign(template, key, key_name, cert, trusted, pkcs12, pwd, hmac_key, keys_file, url_map, output, id_attr, debug, verbose),
+        } => cmd_sign(template, key, key_name, cert, trusted, pkcs12, pwd, hmac_key, keys_file, url_map, output, id_attr, session_key, debug, verbose),
 
         Commands::Decrypt {
             file,
@@ -468,11 +473,19 @@ fn cmd_sign(
     url_map: Vec<String>,
     output: Option<PathBuf>,
     id_attr: Vec<String>,
+    session_key: Option<String>,
     debug: bool,
     verbose: bool,
 ) -> Result<(), Error> {
     let template_xml = read_file(&template)?;
-    let mgr = build_keys_manager(key, key_name, certs, trusted, pkcs12, pwd.as_deref(), hmac_key, None, keys_file)?;
+    let mut mgr = build_keys_manager(key, key_name, certs, trusted, pkcs12, pwd.as_deref(), hmac_key, None, keys_file)?;
+
+    // Generate a random session key if requested (e.g. "hmac-192", "aes-128")
+    // Insert it first so it takes priority for signing
+    if let Some(ref spec) = session_key {
+        let key = generate_session_key(spec)?;
+        mgr.insert_key_first(key);
+    }
 
     let mut ctx = bergshamra_dsig::DsigContext::new(mgr);
     for attr in &id_attr {
@@ -761,6 +774,32 @@ fn write_output(path: Option<PathBuf>, data: &[u8]) -> Result<(), Error> {
                 .map_err(|e| Error::Other(format!("stdout: {e}")))
         }
     }
+}
+
+/// Generate a random session key from a spec like "hmac-192", "aes-128", "des-192".
+fn generate_session_key(spec: &str) -> Result<Key, Error> {
+    use rand::RngCore;
+    let parts: Vec<&str> = spec.splitn(2, '-').collect();
+    if parts.len() != 2 {
+        return Err(Error::Other(format!("invalid session-key spec: {spec} (expected TYPE-BITS, e.g. hmac-192)")));
+    }
+    let key_type = parts[0];
+    let bits: usize = parts[1].parse()
+        .map_err(|_| Error::Other(format!("invalid bit size in session-key spec: {spec}")))?;
+    if bits % 8 != 0 || bits == 0 {
+        return Err(Error::Other(format!("session-key bit size must be a positive multiple of 8: {bits}")));
+    }
+    let byte_len = bits / 8;
+    let mut key_bytes = vec![0u8; byte_len];
+    rand::thread_rng().fill_bytes(&mut key_bytes);
+
+    let key_data = match key_type {
+        "hmac" => KeyData::Hmac(key_bytes),
+        "aes" => KeyData::Aes(key_bytes),
+        "des" | "des3" | "tripledes" => KeyData::Des3(key_bytes),
+        _ => return Err(Error::Other(format!("unsupported session-key type: {key_type}"))),
+    };
+    Ok(Key::new(key_data, KeyUsage::Any))
 }
 
 fn build_keys_manager(

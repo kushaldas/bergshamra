@@ -32,6 +32,11 @@ impl KeysManager {
         self.keys.push(key);
     }
 
+    /// Insert a key at the front of the manager (takes priority for first_key).
+    pub fn insert_key_first(&mut self, key: Key) {
+        self.keys.insert(0, key);
+    }
+
     /// Find a key by name.
     pub fn find_by_name(&self, name: &str) -> Option<&Key> {
         self.keys.iter().find(|k| k.name.as_deref() == Some(name))

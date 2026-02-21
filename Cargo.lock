@@ -134,6 +134,7 @@ dependencies = [
  "bergshamra-transforms",
  "bergshamra-xml",
  "clap",
+ "rand",
  "roxmltree",
 ]
 
@@ -198,8 +199,13 @@ dependencies = [
  "bergshamra-transforms",
  "bergshamra-xml",
  "der 0.7.10",
+ "dsa",
+ "p256",
+ "p384",
+ "p521",
  "quick-xml",
  "roxmltree",
+ "rsa",
  "x509-cert",
 ]
 

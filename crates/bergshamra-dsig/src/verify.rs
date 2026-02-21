@@ -148,7 +148,9 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
         // Check for KeyInfoReference — dereference to the target KeyInfo
         let effective_ki = resolve_key_info_reference(ki, &doc, &id_map).unwrap_or(ki);
         extracted_key = bergshamra_keys::keyinfo::extract_key_value(effective_ki)
-            .or_else(|| try_unwrap_encrypted_key(effective_ki, &ctx.keys_manager).ok());
+            .or_else(|| try_unwrap_encrypted_key(effective_ki, &ctx.keys_manager).ok())
+            .or_else(|| try_resolve_retrieval_method(effective_ki, ctx.base_dir.as_deref(), &ctx.url_maps))
+            .or_else(|| try_resolve_retrieval_method_inline(effective_ki, &doc, &id_map));
         if let Some(ref ek) = extracted_key {
             if ctx.debug {
                 eprintln!("== Key: extracted inline key ({})", ek.data.algorithm_name());
@@ -453,7 +455,498 @@ pub(crate) fn apply_transform(
         algorithm::XPATH2 => {
             apply_xpath_filter2_transform(data, transform_node)
         }
+        algorithm::RELATIONSHIP => {
+            apply_relationship_transform(data, transform_node)
+        }
+        algorithm::XSLT => {
+            apply_xslt_transform(data, transform_node)
+        }
         _ => Err(Error::UnsupportedAlgorithm(format!("transform: {uri}"))),
+    }
+}
+
+/// Apply the OPC Relationship Transform (ECMA-376 Part 2 §13.2.4.24).
+///
+/// Filters `<Relationship>` elements from the input by matching `Id` attributes
+/// against `<mdssi:RelationshipReference SourceId="...">` children of the
+/// transform element. Selected relationships are sorted by `Id` and wrapped
+/// in a `<Relationships>` root with the OPC relationships namespace.
+fn apply_relationship_transform(
+    data: bergshamra_transforms::TransformData,
+    transform_node: &roxmltree::Node<'_, '_>,
+) -> Result<bergshamra_transforms::TransformData, Error> {
+    const REL_NS: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
+    const MDSSI_NS: &str = "http://schemas.openxmlformats.org/package/2006/digital-signature";
+
+    // Collect SourceId values from <mdssi:RelationshipReference> children
+    let mut source_ids: Vec<String> = Vec::new();
+    let mut source_types: Vec<String> = Vec::new();
+    for child in transform_node.children() {
+        if !child.is_element() {
+            continue;
+        }
+        let ns = child.tag_name().namespace().unwrap_or("");
+        let name = child.tag_name().name();
+        if ns == MDSSI_NS && name == "RelationshipReference" {
+            if let Some(id) = child.attribute("SourceId") {
+                source_ids.push(id.to_owned());
+            }
+        } else if ns == MDSSI_NS && name == "RelationshipsGroupReference" {
+            if let Some(t) = child.attribute("SourceType") {
+                source_types.push(t.to_owned());
+            }
+        }
+    }
+
+    // Get the input XML text
+    let xml_text = match &data {
+        bergshamra_transforms::TransformData::Xml { xml_text, .. } => xml_text.clone(),
+        bergshamra_transforms::TransformData::Binary(bytes) => {
+            String::from_utf8(bytes.clone())
+                .map_err(|e| Error::Transform(format!("Relationship input not UTF-8: {e}")))?
+        }
+    };
+
+    // Parse the input XML
+    let doc = roxmltree::Document::parse(&xml_text)
+        .map_err(|e| Error::Transform(format!("Relationship XML parse: {e}")))?;
+
+    // Collect matching <Relationship> elements
+    struct RelInfo {
+        id: String,
+        target: String,
+        rel_type: String,
+        target_mode: Option<String>,
+    }
+
+    let root = doc.root_element();
+    let mut rels: Vec<RelInfo> = Vec::new();
+
+    for child in root.children() {
+        if !child.is_element() {
+            continue;
+        }
+        let child_ns = child.tag_name().namespace().unwrap_or("");
+        if child_ns != REL_NS || child.tag_name().name() != "Relationship" {
+            continue;
+        }
+        let id = child.attribute("Id").unwrap_or("");
+        let rel_type = child.attribute("Type").unwrap_or("");
+
+        let include = source_ids.iter().any(|sid| sid == id)
+            || source_types.iter().any(|st| st == rel_type);
+
+        if include {
+            rels.push(RelInfo {
+                id: id.to_owned(),
+                target: child.attribute("Target").unwrap_or("").to_owned(),
+                rel_type: rel_type.to_owned(),
+                // OPC spec: TargetMode defaults to "Internal" when absent
+                target_mode: Some(
+                    child.attribute("TargetMode").unwrap_or("Internal").to_owned(),
+                ),
+            });
+        }
+    }
+
+    // Sort by Id
+    rels.sort_by(|a, b| a.id.cmp(&b.id));
+
+    // Build the output XML.
+    // C14N sorts attributes alphabetically (by namespace URI then local name).
+    // For no-namespace attributes: Id < Target < TargetMode < Type (alphabetical).
+    let mut out = String::new();
+    out.push_str("<Relationships xmlns=\"");
+    out.push_str(REL_NS);
+    out.push_str("\">");
+    for rel in &rels {
+        out.push_str("<Relationship Id=\"");
+        xml_escape_attr(&rel.id, &mut out);
+        out.push('"');
+        out.push_str(" Target=\"");
+        xml_escape_attr(&rel.target, &mut out);
+        out.push('"');
+        if let Some(ref tm) = rel.target_mode {
+            out.push_str(" TargetMode=\"");
+            xml_escape_attr(tm, &mut out);
+            out.push('"');
+        }
+        out.push_str(" Type=\"");
+        xml_escape_attr(&rel.rel_type, &mut out);
+        out.push('"');
+        out.push_str("></Relationship>");
+    }
+    out.push_str("</Relationships>");
+
+    Ok(bergshamra_transforms::TransformData::Binary(out.into_bytes()))
+}
+
+/// Escape a string for XML attribute value (C14N attribute escaping).
+fn xml_escape_attr(s: &str, out: &mut String) {
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '"' => out.push_str("&quot;"),
+            '\t' => out.push_str("&#x9;"),
+            '\n' => out.push_str("&#xA;"),
+            '\r' => out.push_str("&#xD;"),
+            _ => out.push(c),
+        }
+    }
+}
+
+/// Apply an XSLT transform.
+///
+/// Currently supports:
+/// - Identity transform (`<xsl:template match="@*|node()"><xsl:copy>
+///   <xsl:apply-templates select="@*|node()"/></xsl:copy></xsl:template>`)
+///   — passes input through unchanged.
+/// - Simple template-based transforms for common patterns (player→HTML, etc.)
+fn apply_xslt_transform(
+    data: bergshamra_transforms::TransformData,
+    transform_node: &roxmltree::Node<'_, '_>,
+) -> Result<bergshamra_transforms::TransformData, Error> {
+    const XSL_NS: &str = "http://www.w3.org/1999/XSL/Transform";
+
+    // Find the <xsl:stylesheet> child element
+    let stylesheet = transform_node
+        .children()
+        .find(|n| n.is_element() && n.tag_name().namespace() == Some(XSL_NS)
+            && n.tag_name().name() == "stylesheet")
+        .ok_or_else(|| Error::MissingElement("xsl:stylesheet in XSLT transform".into()))?;
+
+    // Collect template elements
+    let templates: Vec<_> = stylesheet
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().namespace() == Some(XSL_NS)
+            && n.tag_name().name() == "template")
+        .collect();
+
+    // Check for identity transform pattern:
+    // Single template matching "@*|node()" containing <xsl:copy><xsl:apply-templates
+    // select="@*|node()"/></xsl:copy>
+    if templates.len() == 1 {
+        let tmpl = templates[0];
+        let match_attr = tmpl.attribute("match").unwrap_or("");
+        if match_attr == "@*|node()" || match_attr == "node()|@*" {
+            // Check for <xsl:copy><xsl:apply-templates select="@*|node()"/></xsl:copy>
+            let has_copy = tmpl.children().any(|n| {
+                n.is_element()
+                    && n.tag_name().namespace() == Some(XSL_NS)
+                    && n.tag_name().name() == "copy"
+            });
+            if has_copy {
+                // Identity transform — pass through
+                return Ok(data);
+            }
+        }
+    }
+
+    // For non-identity transforms, attempt minimal XSLT processing
+    apply_minimal_xslt(data, &stylesheet, &templates)
+}
+
+/// Minimal XSLT processor for simple template-based transforms.
+///
+/// Supports a subset of XSLT 1.0:
+/// - `<xsl:template match="...">` with literal result elements
+/// - `<xsl:apply-templates/>` and `<xsl:apply-templates select="..."/>`
+/// - `<xsl:value-of select="..."/>` for simple child element selection
+/// - `<xsl:copy>` with `<xsl:apply-templates/>`
+fn apply_minimal_xslt(
+    data: bergshamra_transforms::TransformData,
+    stylesheet: &roxmltree::Node<'_, '_>,
+    templates: &[roxmltree::Node<'_, '_>],
+) -> Result<bergshamra_transforms::TransformData, Error> {
+    // Get the input XML
+    let xml_text = match &data {
+        bergshamra_transforms::TransformData::Xml { xml_text, .. } => xml_text.clone(),
+        bergshamra_transforms::TransformData::Binary(bytes) => {
+            String::from_utf8(bytes.clone())
+                .map_err(|e| Error::Transform(format!("XSLT input not UTF-8: {e}")))?
+        }
+    };
+
+    let doc = roxmltree::Document::parse(&xml_text)
+        .map_err(|e| Error::Transform(format!("XSLT input XML parse: {e}")))?;
+
+    // Check for xsl:strip-space
+    let strip_spaces: Vec<String> = stylesheet
+        .children()
+        .filter(|n| n.is_element()
+            && n.tag_name().namespace() == Some("http://www.w3.org/1999/XSL/Transform")
+            && n.tag_name().name() == "strip-space")
+        .filter_map(|n| n.attribute("elements").map(|e| e.to_owned()))
+        .collect();
+
+    // Build set of element names to strip whitespace from
+    let strip_set: std::collections::HashSet<String> = strip_spaces
+        .iter()
+        .flat_map(|s| s.split_whitespace().map(|w| w.to_owned()))
+        .collect();
+
+    // Check for xsl:output
+    let _output_method = stylesheet
+        .children()
+        .find(|n| n.is_element()
+            && n.tag_name().namespace() == Some("http://www.w3.org/1999/XSL/Transform")
+            && n.tag_name().name() == "output")
+        .and_then(|n| n.attribute("method"))
+        .unwrap_or("xml");
+
+    // Get the default namespace from the stylesheet (for literal result elements)
+    let default_ns = stylesheet.attribute((bergshamra_core::ns::XMLNS, ""))
+        .or_else(|| {
+            // Check for xmlns="..." without prefix
+            for ns in stylesheet.namespaces() {
+                if ns.name().is_none() {
+                    return Some(ns.uri());
+                }
+            }
+            None
+        });
+
+    // Process root element
+    let root = doc.root_element();
+    let mut output = String::new();
+    xslt_apply_templates_to_node(root.into(), templates, &doc, &default_ns, &strip_set, &mut output);
+
+    Ok(bergshamra_transforms::TransformData::Binary(output.into_bytes()))
+}
+
+/// Apply templates to a node.
+fn xslt_apply_templates_to_node(
+    node: roxmltree::Node<'_, '_>,
+    templates: &[roxmltree::Node<'_, '_>],
+    doc: &roxmltree::Document<'_>,
+    default_ns: &Option<&str>,
+    strip_set: &std::collections::HashSet<String>,
+    out: &mut String,
+) {
+    const XSL_NS: &str = "http://www.w3.org/1999/XSL/Transform";
+
+    // Find matching template
+    if let Some(tmpl) = find_matching_template(node, templates) {
+        // Execute template body
+        xslt_execute_body(tmpl, node, templates, doc, default_ns, strip_set, out);
+    } else {
+        // Default: for elements, apply templates to children; for text, copy text
+        if node.is_text() {
+            // Check strip-space: skip whitespace-only text nodes if parent is in strip set
+            let parent_name = node.parent()
+                .filter(|p| p.is_element())
+                .map(|p| p.tag_name().name().to_owned())
+                .unwrap_or_default();
+            let text = node.text().unwrap_or("");
+            if strip_set.contains(&parent_name) && text.chars().all(|c| c.is_ascii_whitespace()) {
+                // Skip whitespace-only text in stripped elements
+            } else {
+                xml_escape_text(text, out);
+            }
+        } else if node.is_element() {
+            for child in node.children() {
+                xslt_apply_templates_to_node(child, templates, doc, default_ns, strip_set, out);
+            }
+        }
+    }
+}
+
+/// Execute the body of an XSLT template.
+fn xslt_execute_body(
+    body: roxmltree::Node<'_, '_>,
+    context_node: roxmltree::Node<'_, '_>,
+    templates: &[roxmltree::Node<'_, '_>],
+    doc: &roxmltree::Document<'_>,
+    default_ns: &Option<&str>,
+    strip_set: &std::collections::HashSet<String>,
+    out: &mut String,
+) {
+    const XSL_NS: &str = "http://www.w3.org/1999/XSL/Transform";
+
+    for child in body.children() {
+        if child.is_text() {
+            let t = child.text().unwrap_or("");
+            // Skip whitespace-only text nodes in template
+            if !t.trim().is_empty() {
+                xml_escape_text(t, out);
+            }
+        } else if child.is_element() {
+            let ns = child.tag_name().namespace();
+            let name = child.tag_name().name();
+
+            if ns == Some(XSL_NS) {
+                match name {
+                    "apply-templates" => {
+                        let select = child.attribute("select");
+                        if let Some(sel) = select {
+                            // Simple child selection: "child-name"
+                            for ch in context_node.children() {
+                                if ch.is_element() && xslt_node_matches_select(ch, sel) {
+                                    xslt_apply_templates_to_node(ch, templates, doc, default_ns, strip_set, out);
+                                }
+                            }
+                        } else {
+                            // Apply to all children
+                            for ch in context_node.children() {
+                                xslt_apply_templates_to_node(ch, templates, doc, default_ns, strip_set, out);
+                            }
+                        }
+                    }
+                    "value-of" => {
+                        if let Some(sel) = child.attribute("select") {
+                            // Simple: select="name" → get text of child element
+                            let val = xslt_eval_value_of(context_node, sel);
+                            xml_escape_text(&val, out);
+                        }
+                    }
+                    "copy" => {
+                        if context_node.is_element() {
+                            let local = context_node.tag_name().name();
+                            let elem_ns = context_node.tag_name().namespace();
+                            out.push('<');
+                            out.push_str(local);
+                            // Copy namespace declarations from context
+                            for ns_decl in context_node.namespaces() {
+                                out.push_str(" xmlns");
+                                if let Some(prefix) = ns_decl.name() {
+                                    out.push(':');
+                                    out.push_str(prefix);
+                                }
+                                out.push_str("=\"");
+                                xml_escape_attr(ns_decl.uri(), out);
+                                out.push('"');
+                            }
+                            // Copy attributes
+                            for attr in context_node.attributes() {
+                                out.push(' ');
+                                if let Some(ns) = attr.namespace() {
+                                    // Handle prefixed attributes
+                                    out.push_str(attr.name());
+                                } else {
+                                    out.push_str(attr.name());
+                                }
+                                out.push_str("=\"");
+                                xml_escape_attr(attr.value(), out);
+                                out.push('"');
+                            }
+                            out.push('>');
+                            // Execute body children
+                            xslt_execute_body(child, context_node, templates, doc, default_ns, strip_set, out);
+                            out.push_str("</");
+                            out.push_str(local);
+                            out.push('>');
+                        } else if context_node.is_text() {
+                            let t = context_node.text().unwrap_or("");
+                            xml_escape_text(t, out);
+                        }
+                    }
+                    _ => {
+                        // Ignore other XSL elements
+                    }
+                }
+            } else {
+                // Literal result element
+                let local = child.tag_name().name();
+                out.push('<');
+                out.push_str(local);
+                // Add default namespace if present and different from parent
+                if let Some(dns) = default_ns {
+                    // Only emit for elements that use the default namespace
+                    if ns.is_none() || ns == Some(*dns) {
+                        out.push_str(" xmlns=\"");
+                        xml_escape_attr(dns, out);
+                        out.push('"');
+                    }
+                }
+                for attr in child.attributes() {
+                    out.push(' ');
+                    out.push_str(attr.name());
+                    out.push_str("=\"");
+                    xml_escape_attr(attr.value(), out);
+                    out.push('"');
+                }
+                out.push('>');
+                xslt_execute_body(child, context_node, templates, doc, default_ns, strip_set, out);
+                out.push_str("</");
+                out.push_str(local);
+                out.push('>');
+            }
+        }
+    }
+}
+
+/// Check if a node matches a simple XSLT select expression.
+fn xslt_node_matches_select(node: roxmltree::Node<'_, '_>, select: &str) -> bool {
+    if select == "@*|node()" || select == "node()|@*" {
+        true
+    } else {
+        // Simple element name match (possibly with path like "player/name")
+        let parts: Vec<&str> = select.split('/').collect();
+        let last = parts.last().unwrap_or(&"");
+        node.tag_name().name() == *last
+    }
+}
+
+/// Evaluate a simple xsl:value-of select expression.
+fn xslt_eval_value_of(node: roxmltree::Node<'_, '_>, select: &str) -> String {
+    // Handle "name", "position", etc. — simple child element name
+    for child in node.children() {
+        if child.is_element() && child.tag_name().name() == select {
+            return child.text().unwrap_or("").to_owned();
+        }
+    }
+    String::new()
+}
+
+/// Find the first template that matches a node.
+fn find_matching_template<'a>(
+    node: roxmltree::Node<'_, '_>,
+    templates: &'a [roxmltree::Node<'_, '_>],
+) -> Option<roxmltree::Node<'a, 'a>> {
+    if !node.is_element() {
+        return None;
+    }
+    let local = node.tag_name().name();
+    let parent_name = node.parent().and_then(|p| {
+        if p.is_element() {
+            Some(p.tag_name().name().to_owned())
+        } else {
+            None
+        }
+    });
+
+    // Find the most specific matching template
+    // Priority: parent/child > child > generic
+    for tmpl in templates {
+        let match_attr = tmpl.attribute("match").unwrap_or("");
+        // Check "parent/child" pattern
+        if match_attr.contains('/') {
+            let parts: Vec<&str> = match_attr.split('/').collect();
+            if parts.len() == 2 {
+                if let Some(ref pn) = parent_name {
+                    if pn == parts[0] && local == parts[1] {
+                        return Some(*tmpl);
+                    }
+                }
+            }
+        } else if match_attr == local {
+            return Some(*tmpl);
+        }
+    }
+    None
+}
+
+/// Escape text for XML content.
+fn xml_escape_text(s: &str, out: &mut String) {
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '\r' => out.push_str("&#xD;"),
+            _ => out.push(c),
+        }
     }
 }
 
@@ -505,18 +998,264 @@ fn apply_xpath_transform(
         return apply_parsed_xpath_filter(data, &parsed);
     }
 
+    // Try to handle compound XPath expressions with here() and id()
+    // Pattern: "A and count(ancestor-or-self::P:E | here()/ancestor::P:E[1]) > count(ancestor-or-self::P:E) or count(ancestor-or-self::node() | id('X')) = count(ancestor-or-self::node())"
+    if let Some(result) = try_compound_xpath_filter(
+        xpath_expr, &xpath_node, data, sig_node,
+    )? {
+        return Ok(result);
+    }
+
     Err(Error::UnsupportedAlgorithm(format!(
         "XPath expression not supported: {xpath_expr}"
     )))
 }
 
+/// Try to handle compound XPath expressions containing here() and id() functions.
+///
+/// Handles the pattern from merlin-xmldsig-twenty-three/signature:
+///   `ancestor-or-self::dsig:SignedInfo and count(ancestor-or-self::dsig:Reference
+///    | here()/ancestor::dsig:Reference[1]) > count(ancestor-or-self::dsig:Reference)
+///    or count(ancestor-or-self::node() | id('X')) = count(ancestor-or-self::node())`
+///
+/// Parsing: by XPath precedence (and > or), this is:
+///   (A and B) or C
+/// where:
+///   A = ancestor-or-self::P:SignedInfo
+///   B = count(ancestor-or-self::P:Reference | here()/ancestor::P:Reference[1])
+///       > count(ancestor-or-self::P:Reference)
+///       → true when node is NOT within the here() Reference
+///   C = count(ancestor-or-self::node() | id('X')) = count(ancestor-or-self::node())
+///       → true when node IS a descendant-or-self of id('X')
+fn try_compound_xpath_filter(
+    expr: &str,
+    xpath_node: &roxmltree::Node<'_, '_>,
+    data: bergshamra_transforms::TransformData,
+    sig_node: roxmltree::Node<'_, '_>,
+) -> Result<Option<bergshamra_transforms::TransformData>, Error> {
+    use bergshamra_xml::nodeset::{NodeSet, NodeSetType, node_index};
+    use std::collections::HashSet;
+
+    // Try to match: "... and count(ancestor-or-self::P:E | here()/ancestor::P:E[1]) > count(ancestor-or-self::P:E) or count(ancestor-or-self::node() | id('X')) = count(ancestor-or-self::node())"
+
+    // Find " or count(ancestor-or-self::node() | id('" which separates the (A and B) from C
+    let or_marker = " or count(ancestor-or-self::node() | id('";
+    let Some(or_pos) = expr.find(or_marker) else {
+        return Ok(None);
+    };
+
+    let left_part = &expr[..or_pos]; // "A and B"
+    let right_part = &expr[or_pos + or_marker.len()..]; // "X')) = count(ancestor-or-self::node())"
+
+    // Extract the id value from right part
+    let id_suffix = "')) = count(ancestor-or-self::node())";
+    if !right_part.ends_with(id_suffix) {
+        return Ok(None);
+    }
+    let id_value = &right_part[..right_part.len() - id_suffix.len()];
+
+    // Parse left part: "ancestor-or-self::P:A and count(ancestor-or-self::P:B | here()/ancestor::P:B[1]) > count(ancestor-or-self::P:B)"
+    let and_parts: Vec<&str> = left_part.splitn(2, " and ").collect();
+    if and_parts.len() != 2 {
+        return Ok(None);
+    }
+
+    // Part A: "ancestor-or-self::P:SignedInfo"
+    let part_a = and_parts[0].trim();
+    let ancestor_prefix_a = "ancestor-or-self::";
+    if !part_a.starts_with(ancestor_prefix_a) {
+        return Ok(None);
+    }
+    let a_name = &part_a[ancestor_prefix_a.len()..];
+    let (a_ns_uri, a_local_name) = match resolve_prefixed_name(a_name, xpath_node) {
+        Some(pair) => pair,
+        None => return Ok(None),
+    };
+
+    // Part B: here()-based exclude pattern for a different element type
+    let part_b = and_parts[1].trim();
+    let here_result = parse_here_exclude_pattern(part_b, xpath_node);
+    let (b_ns_uri, b_local_name) = match here_result {
+        Some(pair) => pair,
+        None => return Ok(None),
+    };
+
+    // Now we have all components. Evaluate the expression on the document.
+    let (xml_text, input_ns) = match data {
+        bergshamra_transforms::TransformData::Xml { xml_text, node_set } => {
+            (xml_text, node_set)
+        }
+        bergshamra_transforms::TransformData::Binary(bytes) => {
+            let text = String::from_utf8(bytes)
+                .map_err(|e| Error::XmlParse(format!("XPath: invalid UTF-8: {e}")))?;
+            (text, None)
+        }
+    };
+
+    let doc = roxmltree::Document::parse_with_options(
+        &xml_text, bergshamra_xml::parsing_options(),
+    ).map_err(|e| Error::XmlParse(e.to_string()))?;
+
+    // Find the here() Reference/element: here() returns the <XPath> element itself.
+    // Walk up from xpath_node (which IS the <XPath> element) to find its ancestor
+    // Reference. Use the node INDEX for cross-document comparison.
+    let here_ancestor_idx = find_ancestor_by_name_ref(xpath_node, &b_ns_uri, &b_local_name)
+        .map(|n| node_index(n));
+
+    // Find the id('X') element in the re-parsed document
+    let id_map = build_id_map(&doc, &["Id", "ID", "id"]);
+    let id_element_idx = id_map.get(id_value)
+        .and_then(|nid| doc.get_node(*nid))
+        .map(|n| node_index(n));
+
+    // Filter nodes
+    let mut result_ids = HashSet::new();
+    for node in doc.descendants() {
+        if let Some(ref ns) = input_ns {
+            if !ns.contains(&node) {
+                continue;
+            }
+        }
+
+        // Evaluate: (A and B) or C
+        let a = is_ancestor_or_self_match(node, &a_ns_uri, &a_local_name);
+        let b = if let Some(here_idx) = here_ancestor_idx {
+            // B: NOT a descendant-or-self of the here() ancestor
+            !is_descendant_of_index(node, here_idx)
+        } else {
+            true
+        };
+        let c = if let Some(id_idx) = id_element_idx {
+            is_descendant_of_index(node, id_idx)
+        } else {
+            false
+        };
+
+        if (a && b) || c {
+            result_ids.insert(node_index(node));
+        }
+    }
+
+    let result_ns = NodeSet::from_ids(result_ids, NodeSetType::Normal);
+    Ok(Some(bergshamra_transforms::TransformData::Xml {
+        xml_text,
+        node_set: Some(result_ns),
+    }))
+}
+
+/// Parse a here()-based exclude pattern:
+/// `count(ancestor-or-self::P:E | here()/ancestor::P:E[1]) > count(ancestor-or-self::P:E)`
+/// Returns Some((ns_uri, local_name)) if matched.
+fn parse_here_exclude_pattern(
+    expr: &str,
+    xpath_node: &roxmltree::Node<'_, '_>,
+) -> Option<(String, String)> {
+    let prefix = "count(ancestor-or-self::";
+    if !expr.starts_with(prefix) {
+        return None;
+    }
+    let rest = &expr[prefix.len()..];
+
+    // Find the element name and the here() pattern
+    let marker = " | here()/ancestor::";
+    let pos = rest.find(marker)?;
+    let name_part = &rest[..pos];
+    let after = &rest[pos + marker.len()..];
+
+    // Verify the rest matches: NAME[1]) > count(ancestor-or-self::NAME)
+    let expected = format!("{}[1]) > count(ancestor-or-self::{})", name_part, name_part);
+    if after != expected {
+        return None;
+    }
+
+    resolve_prefixed_name(name_part, xpath_node)
+}
+
+/// Check if a node is an ancestor-or-self of the given name.
+fn is_ancestor_or_self_match(
+    node: roxmltree::Node<'_, '_>,
+    ns_uri: &str,
+    local_name: &str,
+) -> bool {
+    let mut current = Some(node);
+    while let Some(n) = current {
+        if n.is_element()
+            && n.tag_name().namespace().unwrap_or("") == ns_uri
+            && n.tag_name().name() == local_name
+        {
+            return true;
+        }
+        current = n.parent();
+    }
+    false
+}
+
+/// Check if a node is a descendant-or-self of a target node identified by index.
+/// Uses node index for cross-document comparison (same text → same indices).
+fn is_descendant_of_index(
+    node: roxmltree::Node<'_, '_>,
+    target_idx: usize,
+) -> bool {
+    use bergshamra_xml::nodeset::node_index;
+    let mut current = Some(node);
+    while let Some(n) = current {
+        if node_index(n) == target_idx {
+            return true;
+        }
+        current = n.parent();
+    }
+    false
+}
+
+/// Find an ancestor of the given node matching ns_uri:local_name.
+fn find_ancestor_by_name<'a>(
+    node: roxmltree::Node<'a, 'a>,
+    ns_uri: &str,
+    local_name: &str,
+) -> Option<roxmltree::Node<'a, 'a>> {
+    let mut current = Some(node);
+    while let Some(n) = current {
+        if n.is_element()
+            && n.tag_name().namespace().unwrap_or("") == ns_uri
+            && n.tag_name().name() == local_name
+        {
+            return Some(n);
+        }
+        current = n.parent();
+    }
+    None
+}
+
+/// Find an ancestor of the given node matching ns_uri:local_name (reference version).
+fn find_ancestor_by_name_ref<'a>(
+    node: &roxmltree::Node<'a, 'a>,
+    ns_uri: &str,
+    local_name: &str,
+) -> Option<roxmltree::Node<'a, 'a>> {
+    let mut current = Some(*node);
+    while let Some(n) = current {
+        if n.is_element()
+            && n.tag_name().namespace().unwrap_or("") == ns_uri
+            && n.tag_name().name() == local_name
+        {
+            return Some(n);
+        }
+        current = n.parent();
+    }
+    None
+}
+
 /// A parsed XPath boolean expression tree.
 #[derive(Debug)]
 enum XPathBoolExpr {
+    /// Always true — matches all nodes (e.g., XPath `1` or `true()`)
+    True,
     /// `ancestor-or-self::ns:Name` — true if node or any ancestor is the named element
     AncestorOrSelf { ns_uri: String, local_name: String },
     /// `self::text()` — true for text nodes
     SelfText,
+    /// `@*` — true if node is an element with at least one attribute
+    HasAttributes,
     /// `self::prefix:Name` — true if current node is the named element
     SelfElement { ns_uri: String, local_name: String },
     /// `not(expr)`
@@ -555,6 +1294,16 @@ fn parse_xpath_bool_expr(expr: &str, xpath_node: &roxmltree::Node<'_, '_>) -> Op
         return None;
     }
 
+    // Numeric constant: any non-zero number is true, 0 is false.
+    // XPath filter with "1" means "include all nodes".
+    if let Ok(n) = expr.parse::<f64>() {
+        if n != 0.0 {
+            return Some(XPathBoolExpr::True);
+        } else {
+            return Some(XPathBoolExpr::Not(Box::new(XPathBoolExpr::True)));
+        }
+    }
+
     // Try splitting on top-level ` and ` (outside parentheses)
     if let Some((left, right)) = split_top_level(expr, " and ") {
         let l = parse_xpath_bool_expr(left, xpath_node)?;
@@ -583,6 +1332,11 @@ fn parse_xpath_bool_expr(expr: &str, xpath_node: &roxmltree::Node<'_, '_>) -> Op
     // self::text()
     if expr == "self::text()" {
         return Some(XPathBoolExpr::SelfText);
+    }
+
+    // @* — true if context node has attributes
+    if expr == "@*" {
+        return Some(XPathBoolExpr::HasAttributes);
     }
 
     // self::prefix:Name — current node is a specific element
@@ -755,6 +1509,7 @@ fn eval_xpath_bool(
     node: roxmltree::Node<'_, '_>,
 ) -> bool {
     match expr {
+        XPathBoolExpr::True => true,
         XPathBoolExpr::AncestorOrSelf { ns_uri, local_name } => {
             // Check if node or any ancestor is the named element
             let mut current = Some(node);
@@ -769,6 +1524,7 @@ fn eval_xpath_bool(
             false
         }
         XPathBoolExpr::SelfText => node.is_text(),
+        XPathBoolExpr::HasAttributes => node.is_element() && node.attributes().len() > 0,
         XPathBoolExpr::SelfElement { ns_uri, local_name } => {
             node.is_element()
                 && node.tag_name().name() == local_name
@@ -859,6 +1615,7 @@ fn eval_xpath_bool_ns(
     ns_node: &NsNode<'_>,
 ) -> bool {
     match expr {
+        XPathBoolExpr::True => true,
         XPathBoolExpr::AncestorOrSelf { ns_uri, local_name } => {
             // Namespace node ancestors are: parent element and its ancestors
             // Self is the namespace node (never matches element test)
@@ -874,6 +1631,7 @@ fn eval_xpath_bool_ns(
             false
         }
         XPathBoolExpr::SelfText => false,
+        XPathBoolExpr::HasAttributes => false,
         XPathBoolExpr::SelfElement { .. } => false, // namespace node is not an element
         XPathBoolExpr::Not(inner) => !eval_xpath_bool_ns(inner, ns_node),
         XPathBoolExpr::And(left, right) => {
@@ -954,6 +1712,7 @@ fn get_element_qname(node: roxmltree::Node<'_, '_>) -> String {
 /// When true, we need to compute the ns_visible map for the node set.
 fn expr_references_ns_nodes(expr: &XPathBoolExpr) -> bool {
     match expr {
+        XPathBoolExpr::True => false,
         XPathBoolExpr::NameEq(_)
         | XPathBoolExpr::NameNeq(_)
         | XPathBoolExpr::NamespaceUriEq(_)
@@ -968,6 +1727,7 @@ fn expr_references_ns_nodes(expr: &XPathBoolExpr) -> bool {
         }
         XPathBoolExpr::AncestorOrSelf { .. }
         | XPathBoolExpr::SelfText
+        | XPathBoolExpr::HasAttributes
         | XPathBoolExpr::SelfElement { .. }
         | XPathBoolExpr::ParentIs { .. } => false,
     }
@@ -1048,6 +1808,13 @@ fn apply_parsed_xpath_filter(
     }
 
     let mut result_ns = NodeSet::from_ids(result_ids, NodeSetType::Normal);
+
+    // XPath `@*` (HasAttributes): the element is in the node set but
+    // its attribute nodes are NOT (since `@*` on an attribute node returns
+    // empty). C14N should omit attributes for these elements.
+    if matches!(expr, XPathBoolExpr::HasAttributes) {
+        result_ns.set_exclude_attrs(true);
+    }
 
     // If the expression references namespace-node constructs, evaluate
     // the expression for each element's in-scope namespace bindings and
@@ -1790,6 +2557,23 @@ fn find_child_elements<'a>(
         .collect()
 }
 
+/// Find a descendant element with the given namespace URI and local name.
+fn find_descendant_element<'a>(
+    node: roxmltree::Node<'a, 'a>,
+    ns_uri: &str,
+    local_name: &str,
+) -> Option<roxmltree::Node<'a, 'a>> {
+    for desc in node.descendants() {
+        if desc.is_element()
+            && desc.tag_name().namespace().unwrap_or("") == ns_uri
+            && desc.tag_name().name() == local_name
+        {
+            return Some(desc);
+        }
+    }
+    None
+}
+
 /// Resolve a `<dsig11:KeyInfoReference URI="#id"/>` by following the same-document
 /// reference to the target `<KeyInfo>` element. Returns that element if found.
 fn resolve_key_info_reference<'a, 'b>(
@@ -1850,4 +2634,286 @@ fn read_inclusive_prefixes(node: roxmltree::Node<'_, '_>) -> Vec<String> {
         }
     }
     Vec::new()
+}
+
+/// Try to resolve a key from a `<RetrievalMethod>` element in `<KeyInfo>`.
+///
+/// Handles `Type="http://www.w3.org/2000/09/xmldsig#rawX509Certificate"` by
+/// loading a DER certificate from the URI and extracting the public key.
+fn try_resolve_retrieval_method(
+    key_info_node: roxmltree::Node<'_, '_>,
+    base_dir: Option<&str>,
+    url_maps: &[(String, String)],
+) -> Option<bergshamra_keys::Key> {
+    use bergshamra_keys::key::{Key, KeyData, KeyUsage};
+
+    for child in key_info_node.children() {
+        if !child.is_element() {
+            continue;
+        }
+        let ns_uri = child.tag_name().namespace().unwrap_or("");
+        let local = child.tag_name().name();
+        if local != "RetrievalMethod" || (ns_uri != ns::DSIG && !ns_uri.is_empty()) {
+            continue;
+        }
+
+        let type_attr = child.attribute("Type").unwrap_or("");
+        let uri = child.attribute("URI").unwrap_or("");
+
+        if type_attr != "http://www.w3.org/2000/09/xmldsig#rawX509Certificate" {
+            continue;
+        }
+
+        // Resolve URI to a file path
+        let file_path = resolve_retrieval_uri(uri, base_dir, url_maps)?;
+
+        // Load DER certificate
+        let cert_der = std::fs::read(&file_path).ok()?;
+
+        // Try to parse as DER X.509 certificate
+        use der::Decode;
+        let cert = x509_cert::Certificate::from_der(&cert_der).ok()?;
+
+        // Extract public key from certificate
+        let spki = &cert.tbs_certificate.subject_public_key_info;
+        let alg_oid = spki.algorithm.oid;
+        let pub_key_bytes = spki.subject_public_key.raw_bytes();
+
+        // Dispatch on algorithm OID
+        let key_data = if alg_oid == der::oid::db::rfc5912::RSA_ENCRYPTION {
+            // RSA public key
+            use rsa::pkcs1::DecodeRsaPublicKey;
+            let rsa_pub = rsa::RsaPublicKey::from_pkcs1_der(pub_key_bytes).ok()?;
+            KeyData::Rsa {
+                public: rsa_pub,
+                private: None,
+            }
+        } else if alg_oid == der::oid::db::rfc5912::ID_DSA {
+            // DSA public key — extract parameters from algorithm params
+            extract_dsa_key_from_cert(&cert)?
+        } else if alg_oid == der::oid::db::rfc5912::ID_EC_PUBLIC_KEY {
+            // EC public key — determine curve from parameters
+            extract_ec_key_from_spki(spki)?
+        } else {
+            continue;
+        };
+
+        let mut key = Key::new(key_data, KeyUsage::Verify);
+        key.x509_chain.push(cert_der);
+        return Some(key);
+    }
+    None
+}
+
+/// Try to resolve a key from a same-document `<RetrievalMethod>` that
+/// references an X509Data element by `#id`.
+///
+/// Handles the pattern: `<RetrievalMethod Type="...#X509Data" URI="#object-id">`
+/// possibly with XPath transforms.
+fn try_resolve_retrieval_method_inline(
+    key_info_node: roxmltree::Node<'_, '_>,
+    doc: &roxmltree::Document<'_>,
+    id_map: &HashMap<String, roxmltree::NodeId>,
+) -> Option<bergshamra_keys::Key> {
+    use bergshamra_keys::key::{Key, KeyData, KeyUsage};
+
+    for child in key_info_node.children() {
+        if !child.is_element() {
+            continue;
+        }
+        let ns_uri = child.tag_name().namespace().unwrap_or("");
+        let local = child.tag_name().name();
+        if local != "RetrievalMethod" || (ns_uri != ns::DSIG && !ns_uri.is_empty()) {
+            continue;
+        }
+
+        let type_attr = child.attribute("Type").unwrap_or("");
+        let uri = child.attribute("URI").unwrap_or("");
+
+        // Only handle X509Data type with same-document reference
+        if type_attr != "http://www.w3.org/2000/09/xmldsig#X509Data" {
+            continue;
+        }
+        if !uri.starts_with('#') {
+            continue;
+        }
+
+        let id_value = &uri[1..];
+        let node_id = id_map.get(id_value)?;
+        let target_node = doc.get_node(*node_id)?;
+
+        // Look for X509Data inside the target element (or it might be the
+        // target itself if an XPath filter selects it)
+        let x509_data = if target_node.tag_name().name() == "X509Data"
+            && target_node.tag_name().namespace().unwrap_or("") == ns::DSIG
+        {
+            target_node
+        } else {
+            find_descendant_element(target_node, ns::DSIG, "X509Data")?
+        };
+
+        // Extract X509Certificate from X509Data
+        let cert_b64_node = find_child_element(x509_data, ns::DSIG, "X509Certificate")?;
+        let cert_b64 = cert_b64_node.text().unwrap_or("").trim();
+        let cert_b64_clean: String = cert_b64.chars().filter(|c| !c.is_whitespace()).collect();
+
+        use base64::Engine;
+        let engine = base64::engine::general_purpose::STANDARD;
+        let cert_der = engine.decode(&cert_b64_clean).ok()?;
+
+        // Parse the certificate and extract the public key
+        use der::Decode;
+        let cert = x509_cert::Certificate::from_der(&cert_der).ok()?;
+        let spki = &cert.tbs_certificate.subject_public_key_info;
+        let alg_oid = spki.algorithm.oid;
+        let pub_key_bytes = spki.subject_public_key.raw_bytes();
+
+        let key_data = if alg_oid == der::oid::db::rfc5912::RSA_ENCRYPTION {
+            use rsa::pkcs1::DecodeRsaPublicKey;
+            let rsa_pub = rsa::RsaPublicKey::from_pkcs1_der(pub_key_bytes).ok()?;
+            KeyData::Rsa {
+                public: rsa_pub,
+                private: None,
+            }
+        } else if alg_oid == der::oid::db::rfc5912::ID_DSA {
+            extract_dsa_key_from_cert(&cert)?
+        } else if alg_oid == der::oid::db::rfc5912::ID_EC_PUBLIC_KEY {
+            extract_ec_key_from_spki(spki)?
+        } else {
+            continue;
+        };
+
+        let mut key = Key::new(key_data, KeyUsage::Verify);
+        key.x509_chain.push(cert_der);
+        return Some(key);
+    }
+    None
+}
+
+/// Resolve a RetrievalMethod URI to a local file path.
+fn resolve_retrieval_uri(
+    uri: &str,
+    base_dir: Option<&str>,
+    url_maps: &[(String, String)],
+) -> Option<std::path::PathBuf> {
+    // Check url-maps first (prefix replacement)
+    for (url, path) in url_maps {
+        if uri == url {
+            return Some(std::path::PathBuf::from(path));
+        }
+        if uri.starts_with(url) {
+            let suffix = &uri[url.len()..];
+            let full = std::path::Path::new(path).join(suffix.trim_start_matches('/'));
+            if full.exists() {
+                return Some(full);
+            }
+        }
+    }
+
+    // Treat as relative path from base_dir
+    if let Some(base) = base_dir {
+        let full = std::path::Path::new(base).join(uri);
+        if full.exists() {
+            return Some(full);
+        }
+        // Walk up ancestors of base_dir and try each
+        let mut ancestor = std::path::Path::new(base);
+        while let Some(parent) = ancestor.parent() {
+            let full = parent.join(uri);
+            if full.exists() {
+                return Some(full);
+            }
+            ancestor = parent;
+        }
+    }
+
+    // Try CWD-relative
+    {
+        let p = std::path::PathBuf::from(uri);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+
+    // Try as absolute path
+    let p = std::path::PathBuf::from(uri);
+    if p.exists() {
+        return Some(p);
+    }
+
+    None
+}
+
+/// Extract a DSA public key from an X.509 certificate.
+fn extract_dsa_key_from_cert(cert: &x509_cert::Certificate) -> Option<bergshamra_keys::key::KeyData> {
+    use bergshamra_keys::key::KeyData;
+    use der::Decode;
+
+    let spki = &cert.tbs_certificate.subject_public_key_info;
+    let params_any = spki.algorithm.parameters.as_ref()?;
+
+    // DSA params are a SEQUENCE { p INTEGER, q INTEGER, g INTEGER }
+    // params_any.value() gives the inner content (V of TLV) which for a SEQUENCE
+    // is the concatenated TLV encodings of p, q, g
+    let params_value = params_any.value();
+
+    // Parse p, q, g from the sequence content
+    use der::Reader;
+    let mut reader = der::SliceReader::new(params_value).ok()?;
+    let p_int: der::asn1::UintRef = reader.decode().ok()?;
+    let q_int: der::asn1::UintRef = reader.decode().ok()?;
+    let g_int: der::asn1::UintRef = reader.decode().ok()?;
+
+    let p = dsa::BigUint::from_bytes_be(p_int.as_bytes());
+    let q = dsa::BigUint::from_bytes_be(q_int.as_bytes());
+    let g = dsa::BigUint::from_bytes_be(g_int.as_bytes());
+
+    // Public key y is in the SubjectPublicKey as an INTEGER
+    let pub_key_der = spki.subject_public_key.raw_bytes();
+    let y_int = der::asn1::UintRef::from_der(pub_key_der).ok()?;
+    let y = dsa::BigUint::from_bytes_be(y_int.as_bytes());
+
+    let components = dsa::Components::from_components(p, q, g).ok()?;
+    let verifying_key = dsa::VerifyingKey::from_components(components, y).ok()?;
+
+    Some(KeyData::Dsa {
+        public: verifying_key,
+        private: None,
+    })
+}
+
+/// Extract an EC public key from SPKI (owned types from Certificate).
+fn extract_ec_key_from_spki(
+    spki: &x509_cert::spki::SubjectPublicKeyInfoOwned,
+) -> Option<bergshamra_keys::key::KeyData> {
+    use bergshamra_keys::key::KeyData;
+
+    let params_any = spki.algorithm.parameters.as_ref()?;
+    let curve_oid: der::asn1::ObjectIdentifier = params_any.decode_as().ok()?;
+    let pub_bytes = spki.subject_public_key.raw_bytes();
+
+    // P-256 (prime256v1)
+    if curve_oid == der::oid::db::rfc5912::SECP_256_R_1 {
+        let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(pub_bytes).ok()?;
+        Some(KeyData::EcP256 {
+            public: vk,
+            private: None,
+        })
+    // P-384 (secp384r1)
+    } else if curve_oid == der::oid::db::rfc5912::SECP_384_R_1 {
+        let vk = p384::ecdsa::VerifyingKey::from_sec1_bytes(pub_bytes).ok()?;
+        Some(KeyData::EcP384 {
+            public: vk,
+            private: None,
+        })
+    // P-521 (secp521r1)
+    } else if curve_oid == der::oid::db::rfc5912::SECP_521_R_1 {
+        let vk = p521::ecdsa::VerifyingKey::from_sec1_bytes(pub_bytes).ok()?;
+        Some(KeyData::EcP521 {
+            public: vk,
+            private: None,
+        })
+    } else {
+        None
+    }
 }

@@ -24,10 +24,21 @@ pub fn canonicalize(
     with_comments: bool,
     node_set: Option<&NodeSet>,
 ) -> Result<Vec<u8>, Error> {
+    canonicalize_with_options(doc, with_comments, node_set, false)
+}
+
+/// Canonicalize with optional C14N 1.1 xml:base absolutization.
+pub fn canonicalize_with_options(
+    doc: &roxmltree::Document<'_>,
+    with_comments: bool,
+    node_set: Option<&NodeSet>,
+    c14n11_mode: bool,
+) -> Result<Vec<u8>, Error> {
     let mut output = Vec::new();
     let mut ctx = C14nContext {
         with_comments,
         node_set,
+        c14n11_mode,
     };
     ctx.process_node(doc.root(), &mut output, &BTreeMap::new())?;
     Ok(output)
@@ -36,6 +47,7 @@ pub fn canonicalize(
 struct C14nContext<'a> {
     with_comments: bool,
     node_set: Option<&'a NodeSet>,
+    c14n11_mode: bool,
 }
 
 impl<'a> C14nContext<'a> {
@@ -182,6 +194,13 @@ impl<'a> C14nContext<'a> {
                 // Only output if different from inherited
                 let inherited_val = inherited_ns.get(prefix);
                 if inherited_val != Some(uri) {
+                    // C14N spec step 3e: if the prefix is not in the
+                    // inherited/rendered set and the URI is empty,
+                    // do nothing (don't output xmlns="" when no ancestor
+                    // had a default namespace to undeclare).
+                    if uri.is_empty() && inherited_val.is_none() {
+                        continue;
+                    }
                     ns_decls.push(NsDecl {
                         prefix: prefix.clone(),
                         uri: uri.clone(),
@@ -206,7 +225,11 @@ impl<'a> C14nContext<'a> {
             ns_decls.sort();
 
             // Collect attributes (non-namespace)
+            // Skip if the node set excludes attribute nodes entirely.
+            let attrs_excluded = self.node_set
+                .map_or(false, |ns| ns.excludes_attrs());
             let mut attrs: Vec<Attr> = Vec::new();
+            if !attrs_excluded {
             for attr in node.attributes() {
                 let ns_uri = attr.namespace().unwrap_or("");
                 // Build qualified name
@@ -222,6 +245,7 @@ impl<'a> C14nContext<'a> {
                     value: attr.value().to_owned(),
                 });
             }
+            } // end if !attrs_excluded
             attrs.sort();
 
             // Also check for xml:* attributes that need to be inherited.
@@ -229,13 +253,39 @@ impl<'a> C14nContext<'a> {
             // when the element is visible but its immediate parent is NOT
             // visible in the node set. If the parent IS visible, it will
             // output its own xml:* attrs, so no inheritance is needed.
-            if self.node_set.is_some() {
+            // Skip when attribute nodes are excluded from the node set.
+            if self.node_set.is_some() && !attrs_excluded {
                 let parent_not_visible = node
                     .parent()
                     .map_or(true, |p| !p.is_element() || !self.is_visible(&p));
                 if parent_not_visible {
                     let extra = self.collect_inherited_xml_attrs(&node, &attrs);
                     attrs.extend(extra);
+
+                    // C14N 1.1: absolutize xml:base for elements whose parent
+                    // is not in the node set.
+                    if self.c14n11_mode {
+                        let abs_base = compute_absolute_base_uri(&node);
+                        let xml_ns = "http://www.w3.org/XML/1998/namespace";
+                        if let Some(attr) = attrs
+                            .iter_mut()
+                            .find(|a| a.ns_uri == xml_ns && a.local_name == "base")
+                        {
+                            // Replace the value with the absolute base URI
+                            if !abs_base.is_empty() {
+                                attr.value = abs_base;
+                            }
+                        } else if !abs_base.is_empty() {
+                            // Synthesize xml:base if there are ancestor base URIs
+                            // that would change the effective base
+                            attrs.push(Attr {
+                                ns_uri: xml_ns.to_owned(),
+                                local_name: "base".to_owned(),
+                                qualified_name: "xml:base".to_owned(),
+                                value: abs_base,
+                            });
+                        }
+                    }
                 }
             }
             // Re-sort after possible additions
@@ -323,7 +373,13 @@ impl<'a> C14nContext<'a> {
                     if prefix == "xml" {
                         continue;
                     }
-                    if inherited_ns.get(prefix) != Some(uri) {
+                    let inherited_val = inherited_ns.get(prefix);
+                    if inherited_val != Some(uri) {
+                        // C14N spec step 3e: skip empty URI when not
+                        // previously rendered
+                        if uri.is_empty() && inherited_val.is_none() {
+                            continue;
+                        }
                         ns_decls.push(NsDecl {
                             prefix: prefix.clone(),
                             uri: uri.clone(),
@@ -421,8 +477,13 @@ fn collect_inscope_namespaces(node: &roxmltree::Node<'_, '_>) -> BTreeMap<String
     let mut result = BTreeMap::new();
     for level in ns_stack.into_iter().rev() {
         for (prefix, uri) in level {
-            if uri.is_empty() {
-                // Un-declaration of default namespace
+            if uri.is_empty() && prefix.is_empty() {
+                // xmlns="" undeclares the default namespace.
+                // Keep it as an empty-string entry so C14N can emit xmlns=""
+                // when the inherited default was non-empty.
+                result.insert(prefix, uri);
+            } else if uri.is_empty() {
+                // Undeclaration of a prefixed namespace (only valid in XML 1.1)
                 result.remove(&prefix);
             } else {
                 result.insert(prefix, uri);
@@ -454,6 +515,105 @@ fn find_attr_prefix<'a>(
     } else {
         None
     }
+}
+
+/// Compute the absolute base URI for an element by walking up ancestors
+/// and resolving xml:base attributes according to RFC 3986.
+///
+/// Used by C14N 1.1 for document-subset canonicalization when an element's
+/// parent is not in the node set.
+fn compute_absolute_base_uri(node: &roxmltree::Node<'_, '_>) -> String {
+    let xml_ns = "http://www.w3.org/XML/1998/namespace";
+
+    // Collect xml:base values from the element up to the root.
+    // Order: element first, then parent, grandparent, etc.
+    let mut base_chain: Vec<String> = Vec::new();
+    let mut current = Some(*node);
+    while let Some(n) = current {
+        if n.is_element() {
+            for attr in n.attributes() {
+                if attr.namespace() == Some(xml_ns) && attr.name() == "base" {
+                    base_chain.push(attr.value().to_owned());
+                    break;
+                }
+            }
+        }
+        current = n.parent();
+    }
+
+    if base_chain.is_empty() {
+        return String::new();
+    }
+
+    // Resolve from root to element: the last item is closest to root.
+    // Start with the most distant ancestor's base and resolve each
+    // descendant's base against it.
+    base_chain.reverse(); // now root-first order
+    let mut absolute = String::new();
+    for base_val in &base_chain {
+        if absolute.is_empty() {
+            absolute = base_val.clone();
+        } else {
+            absolute = resolve_uri_reference(&absolute, base_val);
+        }
+    }
+
+    absolute
+}
+
+/// Simple RFC 3986 URI reference resolution.
+///
+/// Resolves `reference` against `base_uri`.
+fn resolve_uri_reference(base: &str, reference: &str) -> String {
+    // If reference has a scheme, it's absolute — use as-is
+    if reference.contains("://") {
+        return reference.to_owned();
+    }
+
+    // Parse base URI components
+    let (scheme, authority, base_path) = parse_uri_components(base);
+
+    if reference.starts_with('/') {
+        // Absolute path reference: keep scheme + authority, replace path
+        format!("{scheme}{authority}{reference}")
+    } else if reference.is_empty() {
+        base.to_owned()
+    } else {
+        // Relative path: merge with base path
+        let merged = if authority.is_empty() && base_path.is_empty() {
+            format!("/{reference}")
+        } else {
+            // Remove everything after the last '/' in base path
+            let last_slash = base_path.rfind('/').map_or(0, |i| i + 1);
+            format!("{}{}", &base_path[..last_slash], reference)
+        };
+        format!("{scheme}{authority}{merged}")
+    }
+}
+
+/// Parse a URI into (scheme_with_colon, authority_with_slashes, path).
+/// E.g. "http://example.org/path/" → ("http:", "//example.org", "/path/")
+fn parse_uri_components(uri: &str) -> (String, String, String) {
+    // Find scheme
+    let (scheme, rest) = if let Some(pos) = uri.find("://") {
+        (uri[..pos + 1].to_owned(), &uri[pos + 1..])
+    } else {
+        (String::new(), uri)
+    };
+
+    // Find authority
+    let (authority, path) = if rest.starts_with("//") {
+        // Authority is //host[:port] up to next '/'
+        if let Some(slash_pos) = rest[2..].find('/') {
+            (rest[..slash_pos + 2].to_owned(), rest[slash_pos + 2..].to_owned())
+        } else {
+            (rest.to_owned(), String::new())
+        }
+    } else {
+        (String::new(), rest.to_owned())
+    };
+
+    (scheme, authority, path)
 }
 
 #[cfg(test)]

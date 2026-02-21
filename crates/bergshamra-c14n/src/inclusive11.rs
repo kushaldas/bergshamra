@@ -24,10 +24,8 @@ pub fn canonicalize(
     node_set: Option<&NodeSet>,
 ) -> Result<Vec<u8>, Error> {
     // C14N 1.1 is a superset of C14N 1.0.
-    // The main differences are:
-    // 1. xml:id processing: xml:id attributes are treated specially
-    // 2. xml:base URI processing: relative xml:base URIs are resolved
-    //
-    // For now, delegate to C14N 1.0 which handles most cases correctly.
-    crate::inclusive::canonicalize(doc, with_comments, node_set)
+    // The main difference is xml:base URI absolutization for document subsets:
+    // when an element's parent is not in the node set, the xml:base value
+    // must be replaced by the computed absolute base URI.
+    crate::inclusive::canonicalize_with_options(doc, with_comments, node_set, true)
 }

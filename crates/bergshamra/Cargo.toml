@@ -26,3 +26,4 @@ bergshamra-enc.workspace = true
 clap.workspace = true
 base64.workspace = true
 roxmltree.workspace = true
+rand.workspace = true

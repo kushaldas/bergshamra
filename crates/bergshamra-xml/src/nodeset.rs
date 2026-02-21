@@ -48,6 +48,14 @@ pub struct NodeSet {
     /// The prefix is "" for the default namespace.
     /// When `None`, all namespace nodes are considered visible (default).
     ns_visible: Option<HashMap<(usize, String), bool>>,
+
+    /// Whether attribute nodes are excluded from this node set.
+    ///
+    /// When `true`, C14N should not render element attributes even for
+    /// elements that are in the node set. This happens when an XPath filter
+    /// like `@*` includes elements-with-attributes but not the attribute
+    /// nodes themselves (since `@*` on an attribute node returns empty).
+    exclude_attrs: bool,
 }
 
 impl NodeSet {
@@ -57,6 +65,7 @@ impl NodeSet {
             nodes: HashSet::new(),
             set_type: NodeSetType::Normal,
             ns_visible: None,
+            exclude_attrs: false,
         }
     }
 
@@ -66,6 +75,7 @@ impl NodeSet {
             nodes: ids,
             set_type,
             ns_visible: None,
+            exclude_attrs: false,
         }
     }
 
@@ -76,6 +86,7 @@ impl NodeSet {
             nodes,
             set_type: NodeSetType::Normal,
             ns_visible: None,
+            exclude_attrs: false,
         }
     }
 
@@ -90,6 +101,7 @@ impl NodeSet {
             nodes,
             set_type: NodeSetType::Normal,
             ns_visible: None,
+            exclude_attrs: false,
         }
     }
 
@@ -101,6 +113,7 @@ impl NodeSet {
             nodes,
             set_type: NodeSetType::Normal,
             ns_visible: None,
+            exclude_attrs: false,
         }
     }
 
@@ -112,6 +125,7 @@ impl NodeSet {
             nodes,
             set_type: NodeSetType::Normal,
             ns_visible: None,
+            exclude_attrs: false,
         }
     }
 
@@ -158,6 +172,7 @@ impl NodeSet {
             nodes: self.nodes.intersection(&other.nodes).copied().collect(),
             set_type: NodeSetType::Normal,
             ns_visible,
+            exclude_attrs: self.exclude_attrs || other.exclude_attrs,
         }
     }
 
@@ -168,6 +183,7 @@ impl NodeSet {
             nodes: self.nodes.union(&other.nodes).copied().collect(),
             set_type: NodeSetType::Normal,
             ns_visible,
+            exclude_attrs: self.exclude_attrs && other.exclude_attrs,
         }
     }
 
@@ -178,6 +194,7 @@ impl NodeSet {
             nodes: self.nodes.difference(&other.nodes).copied().collect(),
             set_type: NodeSetType::Normal,
             ns_visible,
+            exclude_attrs: self.exclude_attrs,
         }
     }
 
@@ -211,6 +228,16 @@ impl NodeSet {
     /// Check if this node set has a namespace visibility map.
     pub fn has_ns_visible(&self) -> bool {
         self.ns_visible.is_some()
+    }
+
+    /// Set the exclude_attrs flag.
+    pub fn set_exclude_attrs(&mut self, val: bool) {
+        self.exclude_attrs = val;
+    }
+
+    /// Check if attribute nodes are excluded from this node set.
+    pub fn excludes_attrs(&self) -> bool {
+        self.exclude_attrs
     }
 }
 

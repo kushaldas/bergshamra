@@ -233,6 +233,9 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
     // Populate empty DEREncodedKeyValue with SPKI DER
     result_xml = populate_der_encoded_key_value(&result_xml, &key.data)?;
 
+    // Encrypt session key into EncryptedKey elements with empty CipherValue
+    result_xml = encrypt_session_key_in_template(&result_xml, key, &ctx.keys_manager)?;
+
     Ok(result_xml)
 }
 
@@ -774,4 +777,131 @@ fn read_inclusive_prefixes(node: roxmltree::Node<'_, '_>) -> Vec<String> {
         }
     }
     Vec::new()
+}
+
+/// Encrypt a session key into empty EncryptedKey CipherValue in the signed template.
+///
+/// When `--session-key` is used, the template may contain `<EncryptedKey>` elements
+/// with empty `<CipherValue>`. This function encrypts the session key (used for signing)
+/// using the key wrap algorithm and wrapping key specified in each EncryptedKey.
+fn encrypt_session_key_in_template(
+    xml: &str,
+    signing_key: &bergshamra_keys::Key,
+    manager: &bergshamra_keys::KeysManager,
+) -> Result<String, Error> {
+    // Only relevant for symmetric signing keys (HMAC)
+    let session_bytes = match signing_key.symmetric_key_bytes() {
+        Some(b) => b.to_vec(),
+        None => return Ok(xml.to_owned()),
+    };
+
+    let doc = roxmltree::Document::parse_with_options(xml, bergshamra_xml::parsing_options())
+        .map_err(|e| Error::XmlParse(e.to_string()))?;
+
+    // Find EncryptedKey elements with empty CipherValue
+    let mut replacements: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+
+    for node in doc.descendants() {
+        if !node.is_element() { continue; }
+        let ns_uri = node.tag_name().namespace().unwrap_or("");
+        let local = node.tag_name().name();
+
+        if local != "EncryptedKey" || (ns_uri != ns::ENC && !ns_uri.is_empty()) {
+            continue;
+        }
+
+        // Check for empty CipherValue
+        let cipher_value_node = find_descendant_element(node, "CipherValue");
+        let cv_node = match cipher_value_node {
+            Some(n) => n,
+            None => continue,
+        };
+        let cv_text = cv_node.text().unwrap_or("").trim();
+        if !cv_text.is_empty() {
+            continue; // Already filled
+        }
+
+        // Get EncryptionMethod algorithm
+        let enc_method = match find_child_element(node, ns::ENC, "EncryptionMethod") {
+            Some(n) => n,
+            None => continue,
+        };
+        let alg_uri = match enc_method.attribute(ns::attr::ALGORITHM) {
+            Some(u) => u,
+            None => continue,
+        };
+
+        // Find the wrapping key via KeyName in EncryptedKey's KeyInfo
+        let ki = find_child_element(node, ns::DSIG, ns::node::KEY_INFO);
+        let wrap_key = if let Some(ki_node) = ki {
+            let key_name_node = find_child_element(ki_node, ns::DSIG, ns::node::KEY_NAME);
+            if let Some(kn) = key_name_node {
+                let name = kn.text().unwrap_or("").trim();
+                manager.find_by_name(name)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let wrap_key = match wrap_key {
+            Some(k) => k,
+            None => continue,
+        };
+
+        let kek_bytes = match wrap_key.symmetric_key_bytes() {
+            Some(b) => b,
+            None => continue,
+        };
+
+        // Perform key wrapping
+        let kw = bergshamra_crypto::keywrap::from_uri(alg_uri)?;
+        let wrapped = kw.wrap(kek_bytes, &session_bytes)?;
+
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&wrapped);
+
+        // Record range of CipherValue to replace
+        replacements.push((cv_node.range(), format_cipher_value_element(xml, cv_node, &b64)));
+    }
+
+    if replacements.is_empty() {
+        return Ok(xml.to_owned());
+    }
+
+    // Apply replacements in reverse order (to preserve offsets)
+    let mut result = xml.to_owned();
+    replacements.sort_by(|a, b| b.0.start.cmp(&a.0.start));
+    for (range, replacement) in replacements {
+        result.replace_range(range, &replacement);
+    }
+
+    Ok(result)
+}
+
+/// Format a CipherValue element replacement preserving its tag structure.
+fn format_cipher_value_element(xml: &str, node: roxmltree::Node<'_, '_>, b64_content: &str) -> String {
+    let raw_tag = &xml[node.range().start..node.range().end];
+    let open_tag = extract_open_tag(raw_tag);
+    let prefix = extract_tag_prefix(raw_tag, "CipherValue");
+    let closing_tag = if prefix.is_empty() {
+        "</CipherValue>".to_string()
+    } else {
+        format!("</{prefix}:CipherValue>")
+    };
+    format!("{open_tag}\n          {b64_content}\n        {closing_tag}")
+}
+
+/// Find a descendant element by local name (any namespace).
+fn find_descendant_element<'a>(
+    node: roxmltree::Node<'a, '_>,
+    local_name: &str,
+) -> Option<roxmltree::Node<'a, 'a>> {
+    for desc in node.descendants() {
+        if desc.is_element() && desc.tag_name().name() == local_name {
+            return Some(desc);
+        }
+    }
+    None
 }
