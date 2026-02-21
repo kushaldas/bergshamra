@@ -154,12 +154,27 @@ impl<'a> C14nContext<'a> {
             // and all ancestors that haven't been overridden.
             let current_ns = collect_inscope_namespaces(&node);
 
+            // If the node set has namespace node visibility filtering,
+            // restrict in-scope namespaces to only those whose namespace
+            // node is in the node-set (per C14N spec section 2.3).
+            let has_ns_filter = self.node_set
+                .map_or(false, |ns| ns.has_ns_visible());
+            let visible_ns: BTreeMap<String, String> = if has_ns_filter {
+                let eid = bergshamra_xml::nodeset::node_index(node);
+                let ns = self.node_set.unwrap();
+                current_ns.into_iter()
+                    .filter(|(prefix, _)| ns.is_ns_visible(eid, prefix))
+                    .collect()
+            } else {
+                current_ns
+            };
+
             // Determine which namespace declarations to output:
             // Output a namespace declaration if:
             // 1. It's not the xml namespace (never output xmlns:xml=...)
             // 2. It's new or different from what was inherited
             let mut ns_decls: Vec<NsDecl> = Vec::new();
-            for (prefix, uri) in &current_ns {
+            for (prefix, uri) in &visible_ns {
                 // Skip xml namespace
                 if prefix == "xml" {
                     continue;
@@ -173,6 +188,21 @@ impl<'a> C14nContext<'a> {
                     });
                 }
             }
+
+            // C14N spec: if the nearest visible ancestor had a non-empty
+            // default namespace but this element's default namespace node
+            // is NOT in the node set, output xmlns="" to undeclare it.
+            if has_ns_filter {
+                if let Some(inherited_default) = inherited_ns.get("") {
+                    if !inherited_default.is_empty() && !visible_ns.contains_key("") {
+                        ns_decls.push(NsDecl {
+                            prefix: String::new(),
+                            uri: String::new(),
+                        });
+                    }
+                }
+            }
+
             ns_decls.sort();
 
             // Collect attributes (non-namespace)
@@ -194,13 +224,19 @@ impl<'a> C14nContext<'a> {
             }
             attrs.sort();
 
-            // Also check for xml:* attributes that need to be inherited
-            // and output when first appearing in the subset
+            // Also check for xml:* attributes that need to be inherited.
+            // Per C14N 1.0 spec (and libxml2): xml:* inheritance only happens
+            // when the element is visible but its immediate parent is NOT
+            // visible in the node set. If the parent IS visible, it will
+            // output its own xml:* attrs, so no inheritance is needed.
             if self.node_set.is_some() {
-                // For document subset: we may need to inherit xml:* attributes
-                // from non-visible ancestors
-                let extra = self.collect_inherited_xml_attrs(&node, &attrs);
-                attrs.extend(extra);
+                let parent_not_visible = node
+                    .parent()
+                    .map_or(true, |p| !p.is_element() || !self.is_visible(&p));
+                if parent_not_visible {
+                    let extra = self.collect_inherited_xml_attrs(&node, &attrs);
+                    attrs.extend(extra);
+                }
             }
             // Re-sort after possible additions
             attrs.sort();
@@ -219,13 +255,33 @@ impl<'a> C14nContext<'a> {
             }
             output.push(b'>');
 
-            // Process children with updated namespace context
-            let mut child_ns = inherited_ns.clone();
-            for (prefix, uri) in &current_ns {
-                if prefix != "xml" {
-                    child_ns.insert(prefix.clone(), uri.clone());
+            // Process children with updated namespace context.
+            // Per C14N spec (section 2.3): the "nearest ancestor element in
+            // the node-set" check for namespace output means children should
+            // only see namespace declarations that this element has in its
+            // namespace node-set. When ns filtering is active, child_ns is
+            // set to this element's visible_ns (not accumulated from ancestors).
+            let child_ns = if has_ns_filter {
+                // With namespace node filtering: children see only this
+                // element's visible namespace nodes. This ensures that when
+                // a child has a namespace node in its set that the parent
+                // didn't, it correctly outputs a new declaration.
+                let mut cn = BTreeMap::new();
+                for (prefix, uri) in &visible_ns {
+                    if prefix != "xml" {
+                        cn.insert(prefix.clone(), uri.clone());
+                    }
                 }
-            }
+                cn
+            } else {
+                let mut cn = inherited_ns.clone();
+                for (prefix, uri) in &visible_ns {
+                    if prefix != "xml" {
+                        cn.insert(prefix.clone(), uri.clone());
+                    }
+                }
+                cn
+            };
 
             for child in node.children() {
                 self.process_node(child, output, &child_ns)?;
@@ -236,7 +292,55 @@ impl<'a> C14nContext<'a> {
             output.extend_from_slice(elem_name.as_bytes());
             output.push(b'>');
         } else {
-            // Element not visible, but children might be
+            // Element not visible, but per C14N 1.0 spec (section 2.3):
+            // "If the element is not in the node-set, then the result is
+            // obtained by processing the namespace axis, then the attribute
+            // axis, then the child nodes of the element that are in the
+            // node-set."
+            //
+            // When namespace node filtering is active, visible namespace
+            // nodes on invisible elements are output as text (not attached
+            // to an element tag). This produces the ` xmlns:prefix="URI"`
+            // text that appears "floating" in the canonical form.
+            let has_ns_filter = self.node_set
+                .map_or(false, |ns| ns.has_ns_visible());
+            if has_ns_filter {
+                let eid = bergshamra_xml::nodeset::node_index(node);
+                let ns = self.node_set.unwrap();
+
+                // Collect this element's in-scope namespaces
+                let current_ns = collect_inscope_namespaces(&node);
+
+                // Filter by ns_visible
+                let visible_ns: BTreeMap<String, String> = current_ns.into_iter()
+                    .filter(|(prefix, _)| ns.is_ns_visible(eid, prefix))
+                    .collect();
+
+                // Output namespace declarations for visible ns nodes
+                // that differ from what was inherited (nearest visible ancestor).
+                let mut ns_decls: Vec<NsDecl> = Vec::new();
+                for (prefix, uri) in &visible_ns {
+                    if prefix == "xml" {
+                        continue;
+                    }
+                    if inherited_ns.get(prefix) != Some(uri) {
+                        ns_decls.push(NsDecl {
+                            prefix: prefix.clone(),
+                            uri: uri.clone(),
+                        });
+                    }
+                }
+                ns_decls.sort();
+                for ns_decl in &ns_decls {
+                    output.extend_from_slice(ns_decl.render().as_bytes());
+                }
+            }
+
+            // Children inherit the SAME inherited_ns (not the invisible
+            // element's visible_ns). Per C14N spec, the "nearest ancestor
+            // element in the node-set" check is based on visible ancestors
+            // only. Invisible element ns output does not affect what
+            // visible descendants render.
             for child in node.children() {
                 self.process_node(child, output, inherited_ns)?;
             }
@@ -244,8 +348,11 @@ impl<'a> C14nContext<'a> {
         Ok(())
     }
 
-    /// For document-subset C14N: collect xml:* attributes inherited from
-    /// non-visible ancestors that aren't already present.
+    /// For document-subset C14N 1.0: collect xml:* attributes inherited from
+    /// ancestors. Called only when the element's immediate parent is NOT
+    /// visible. Per the spec and libxml2, we walk ALL ancestors (regardless
+    /// of visibility) collecting xml:* attrs, then remove any already
+    /// present on the element's own attribute axis.
     fn collect_inherited_xml_attrs(
         &self,
         node: &roxmltree::Node<'_, '_>,
@@ -260,7 +367,8 @@ impl<'a> C14nContext<'a> {
                 for attr in ancestor.attributes() {
                     if attr.namespace() == Some(xml_ns) {
                         let name = attr.name();
-                        if !inherited_xml.contains_key(name) && !self.is_visible(&ancestor) {
+                        // Nearest ancestor value wins (first occurrence)
+                        if !inherited_xml.contains_key(name) {
                             inherited_xml.insert(name.to_owned(), attr.value().to_owned());
                         }
                     }

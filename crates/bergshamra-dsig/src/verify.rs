@@ -420,11 +420,21 @@ fn apply_xpath_transform(
         .find(|n| n.is_element() && n.tag_name().name() == "XPath")
         .ok_or_else(|| Error::MissingElement("XPath expression element".into()))?;
 
-    let xpath_expr = xpath_node.text().unwrap_or("").trim();
+    let xpath_raw = xpath_node.text().unwrap_or("").trim();
+
+    // Normalize whitespace: collapse runs of whitespace (including newlines,
+    // tabs, and multi-space indentation) into a single space so that the parser
+    // can split on ` and `, ` or `, etc.
+    let xpath_expr: String = xpath_raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let xpath_expr = xpath_expr.as_str();
 
     // Check if this is the enveloped-signature pattern:
     // not(ancestor-or-self::PREFIX:Signature)
-    if is_enveloped_xpath(xpath_expr, &xpath_node) {
+    // OR the here()-based variant:
+    // count(ancestor-or-self::PREFIX:Signature | here()/ancestor::PREFIX:Signature[1]) > count(ancestor-or-self::PREFIX:Signature)
+    if is_enveloped_xpath(xpath_expr, &xpath_node)
+        || is_enveloped_xpath_here(xpath_expr, &xpath_node)
+    {
         // Apply enveloped signature transform (same as the dedicated one)
         use bergshamra_transforms::pipeline::Transform;
         let t = bergshamra_transforms::enveloped::EnvelopedSignatureTransform::from_node(sig_node);
@@ -448,12 +458,32 @@ enum XPathBoolExpr {
     AncestorOrSelf { ns_uri: String, local_name: String },
     /// `self::text()` — true for text nodes
     SelfText,
+    /// `self::prefix:Name` — true if current node is the named element
+    SelfElement { ns_uri: String, local_name: String },
     /// `not(expr)`
     Not(Box<XPathBoolExpr>),
     /// `expr and expr`
     And(Box<XPathBoolExpr>, Box<XPathBoolExpr>),
     /// `expr or expr`
     Or(Box<XPathBoolExpr>, Box<XPathBoolExpr>),
+    /// `name() = "str"` or `name() != "str"` — compare node name (QName/prefix)
+    NameEq(String),
+    NameNeq(String),
+    /// `namespace-uri() != "str"` or `namespace-uri() = "str"`
+    NamespaceUriEq(String),
+    NamespaceUriNeq(String),
+    /// `parent::prefix:Name` — true if parent is the named element
+    ParentIs { ns_uri: String, local_name: String },
+    /// `string(self::node()) = namespace-uri(parent::node())` — for namespace node testing
+    StringSelfEqNsUriParent,
+    /// `count(parent::node()/namespace::*) != count(parent::node()/namespace::* | self::node())`
+    /// True for nodes that are NOT namespace nodes of their parent.
+    IsNotParentNsNode,
+    /// `count(parent::node()/namespace::*) = count(parent::node()/namespace::* | self::node())`
+    /// True for nodes that ARE namespace nodes of their parent.
+    IsParentNsNode,
+    /// `(count(ancestor-or-self::node()) mod 2) = 1` — odd depth
+    DepthOdd,
 }
 
 /// Parse a limited subset of XPath 1.0 boolean expressions.
@@ -496,10 +526,85 @@ fn parse_xpath_bool_expr(expr: &str, xpath_node: &roxmltree::Node<'_, '_>) -> Op
         return Some(XPathBoolExpr::SelfText);
     }
 
+    // self::prefix:Name — current node is a specific element
+    if let Some(name_part) = expr.strip_prefix("self::") {
+        if name_part != "text()" && name_part != "node()" {
+            let (ns_uri, local_name) = resolve_prefixed_name(name_part, xpath_node)?;
+            return Some(XPathBoolExpr::SelfElement { ns_uri, local_name });
+        }
+    }
+
     // ancestor-or-self::prefix:Name or ancestor-or-self::Name
     if let Some(name_part) = expr.strip_prefix("ancestor-or-self::") {
         let (ns_uri, local_name) = resolve_prefixed_name(name_part, xpath_node)?;
         return Some(XPathBoolExpr::AncestorOrSelf { ns_uri, local_name });
+    }
+
+    // parent::prefix:Name — parent is a specific element
+    if let Some(name_part) = expr.strip_prefix("parent::") {
+        if name_part != "node()" {
+            let (ns_uri, local_name) = resolve_prefixed_name(name_part, xpath_node)?;
+            return Some(XPathBoolExpr::ParentIs { ns_uri, local_name });
+        }
+    }
+
+    // name() = "str" or name() != "str"
+    {
+        let norm: String = expr.split_whitespace().collect::<Vec<_>>().join(" ");
+        if let Some(rest) = norm.strip_prefix("name()") {
+            let rest = rest.trim();
+            if let Some(val) = rest.strip_prefix("!=") {
+                let val = val.trim().trim_matches('"').trim_matches('\'');
+                return Some(XPathBoolExpr::NameNeq(val.to_string()));
+            }
+            if let Some(val) = rest.strip_prefix('=') {
+                let val = val.trim().trim_matches('"').trim_matches('\'');
+                return Some(XPathBoolExpr::NameEq(val.to_string()));
+            }
+        }
+    }
+
+    // namespace-uri() = "str" or namespace-uri() != "str"
+    {
+        let norm: String = expr.split_whitespace().collect::<Vec<_>>().join(" ");
+        if let Some(rest) = norm.strip_prefix("namespace-uri()") {
+            let rest = rest.trim();
+            if let Some(val) = rest.strip_prefix("!=") {
+                let val = val.trim().trim_matches('"').trim_matches('\'');
+                return Some(XPathBoolExpr::NamespaceUriNeq(val.to_string()));
+            }
+            if let Some(val) = rest.strip_prefix('=') {
+                let val = val.trim().trim_matches('"').trim_matches('\'');
+                return Some(XPathBoolExpr::NamespaceUriEq(val.to_string()));
+            }
+        }
+    }
+
+    // string(self::node()) = namespace-uri(parent::node())
+    {
+        let norm: String = expr.split_whitespace().collect::<Vec<_>>().join(" ");
+        if norm == "string(self::node()) = namespace-uri(parent::node())" {
+            return Some(XPathBoolExpr::StringSelfEqNsUriParent);
+        }
+    }
+
+    // count(parent::node()/namespace::*) != count(parent::node()/namespace::* | self::node())
+    {
+        let norm: String = expr.split_whitespace().collect::<Vec<_>>().join(" ");
+        if norm == "count(parent::node()/namespace::*) != count(parent::node()/namespace::* | self::node())" {
+            return Some(XPathBoolExpr::IsNotParentNsNode);
+        }
+        if norm == "count(parent::node()/namespace::*) = count(parent::node()/namespace::* | self::node())" {
+            return Some(XPathBoolExpr::IsParentNsNode);
+        }
+    }
+
+    // (count(ancestor-or-self::node()) mod 2) = 1
+    {
+        let norm: String = expr.split_whitespace().collect::<Vec<_>>().join(" ");
+        if norm == "(count(ancestor-or-self::node()) mod 2) = 1" {
+            return Some(XPathBoolExpr::DepthOdd);
+        }
     }
 
     None
@@ -526,11 +631,23 @@ fn split_top_level<'a>(expr: &'a str, sep: &str) -> Option<(&'a str, &'a str)> {
 }
 
 /// Strip `not(...)` wrapper and return inner expression.
+/// Handles both `not(expr)` and `not (expr)` (space before opening paren).
 fn strip_not(expr: &str) -> Option<&str> {
     let expr = expr.trim();
-    if expr.starts_with("not(") && expr.ends_with(')') {
+    // Handle "not(" and "not (" variants
+    let prefix_len = if expr.starts_with("not(") {
+        4
+    } else if expr.starts_with("not (") {
+        5
+    } else {
+        return None;
+    };
+    if !expr.ends_with(')') {
+        return None;
+    }
+    {
         // Check that the closing paren matches the opening one after "not("
-        let inner = &expr[4..expr.len()-1];
+        let inner = &expr[prefix_len..expr.len()-1];
         // Verify balanced parentheses
         let mut depth = 0i32;
         for c in inner.chars() {
@@ -559,7 +676,21 @@ fn resolve_prefixed_name(name: &str, xpath_node: &roxmltree::Node<'_, '_>) -> Op
     }
 }
 
-/// Evaluate a parsed XPath boolean expression for a given node.
+/// A virtual namespace node for XPath evaluation.
+///
+/// In the XPath data model, namespace nodes are children of elements but
+/// roxmltree doesn't model them as separate nodes. This struct represents
+/// a namespace node with its properties.
+struct NsNode<'a> {
+    /// The prefix (empty string for default namespace)
+    prefix: String,
+    /// The namespace URI
+    uri: String,
+    /// The parent element node
+    parent: roxmltree::Node<'a, 'a>,
+}
+
+/// Evaluate a parsed XPath boolean expression for a given regular node.
 fn eval_xpath_bool(
     expr: &XPathBoolExpr,
     node: roxmltree::Node<'_, '_>,
@@ -579,6 +710,11 @@ fn eval_xpath_bool(
             false
         }
         XPathBoolExpr::SelfText => node.is_text(),
+        XPathBoolExpr::SelfElement { ns_uri, local_name } => {
+            node.is_element()
+                && node.tag_name().name() == local_name
+                && (ns_uri.is_empty() || node.tag_name().namespace().unwrap_or("") == ns_uri)
+        }
         XPathBoolExpr::Not(inner) => !eval_xpath_bool(inner, node),
         XPathBoolExpr::And(left, right) => {
             eval_xpath_bool(left, node) && eval_xpath_bool(right, node)
@@ -586,7 +722,229 @@ fn eval_xpath_bool(
         XPathBoolExpr::Or(left, right) => {
             eval_xpath_bool(left, node) || eval_xpath_bool(right, node)
         }
+        XPathBoolExpr::NameEq(s) => {
+            // For elements, name() returns QName (prefix:local or just local)
+            if node.is_element() {
+                let qname = get_element_qname(node);
+                qname == *s
+            } else if node.is_text() {
+                s.is_empty()
+            } else {
+                false
+            }
+        }
+        XPathBoolExpr::NameNeq(s) => {
+            if node.is_element() {
+                let qname = get_element_qname(node);
+                qname != *s
+            } else if node.is_text() {
+                !s.is_empty()
+            } else {
+                true
+            }
+        }
+        XPathBoolExpr::NamespaceUriEq(s) => {
+            if node.is_element() {
+                node.tag_name().namespace().unwrap_or("") == s.as_str()
+            } else {
+                s.is_empty()
+            }
+        }
+        XPathBoolExpr::NamespaceUriNeq(s) => {
+            if node.is_element() {
+                node.tag_name().namespace().unwrap_or("") != s.as_str()
+            } else {
+                !s.is_empty()
+            }
+        }
+        XPathBoolExpr::ParentIs { ns_uri, local_name } => {
+            if let Some(parent) = node.parent() {
+                parent.is_element()
+                    && parent.tag_name().name() == local_name
+                    && (ns_uri.is_empty() || parent.tag_name().namespace().unwrap_or("") == ns_uri)
+            } else {
+                false
+            }
+        }
+        XPathBoolExpr::StringSelfEqNsUriParent => {
+            // For regular nodes, this compares string value to parent's namespace URI
+            // Text nodes: string value is the text content
+            // Elements: string value is concatenation of descendant text
+            // This is mainly meaningful for namespace nodes; for regular nodes, rarely true
+            false
+        }
+        XPathBoolExpr::IsNotParentNsNode => {
+            // For regular document nodes (elements, text), they're never namespace nodes
+            true
+        }
+        XPathBoolExpr::IsParentNsNode => {
+            // Regular nodes are never namespace nodes
+            false
+        }
+        XPathBoolExpr::DepthOdd => {
+            // Count ancestors-or-self: root=1, root-child=2, etc.
+            let mut depth = 0usize;
+            let mut current = Some(node);
+            while let Some(n) = current {
+                depth += 1;
+                current = n.parent();
+            }
+            depth % 2 == 1
+        }
     }
+}
+
+/// Evaluate a parsed XPath boolean expression for a virtual namespace node.
+fn eval_xpath_bool_ns(
+    expr: &XPathBoolExpr,
+    ns_node: &NsNode<'_>,
+) -> bool {
+    match expr {
+        XPathBoolExpr::AncestorOrSelf { ns_uri, local_name } => {
+            // Namespace node ancestors are: parent element and its ancestors
+            // Self is the namespace node (never matches element test)
+            let mut current = Some(ns_node.parent);
+            while let Some(n) = current {
+                if n.is_element() && n.tag_name().name() == local_name
+                    && (ns_uri.is_empty() || n.tag_name().namespace().unwrap_or("") == ns_uri)
+                {
+                    return true;
+                }
+                current = n.parent();
+            }
+            false
+        }
+        XPathBoolExpr::SelfText => false,
+        XPathBoolExpr::SelfElement { .. } => false, // namespace node is not an element
+        XPathBoolExpr::Not(inner) => !eval_xpath_bool_ns(inner, ns_node),
+        XPathBoolExpr::And(left, right) => {
+            eval_xpath_bool_ns(left, ns_node) && eval_xpath_bool_ns(right, ns_node)
+        }
+        XPathBoolExpr::Or(left, right) => {
+            eval_xpath_bool_ns(left, ns_node) || eval_xpath_bool_ns(right, ns_node)
+        }
+        XPathBoolExpr::NameEq(s) => {
+            // For namespace nodes, name() returns the prefix
+            ns_node.prefix == *s
+        }
+        XPathBoolExpr::NameNeq(s) => {
+            ns_node.prefix != *s
+        }
+        XPathBoolExpr::NamespaceUriEq(s) => {
+            // namespace-uri() for namespace nodes returns empty string per XPath spec
+            // (namespace-uri is defined on elements/attributes, not namespace nodes)
+            // But the W3C tests seem to use it to mean the URI value
+            // Actually: namespace-uri() on namespace nodes is "" per XPath 1.0 spec §4.1
+            s.is_empty()
+        }
+        XPathBoolExpr::NamespaceUriNeq(s) => {
+            !s.is_empty()
+        }
+        XPathBoolExpr::ParentIs { ns_uri, local_name } => {
+            let parent = ns_node.parent;
+            parent.is_element()
+                && parent.tag_name().name() == local_name
+                && (ns_uri.is_empty() || parent.tag_name().namespace().unwrap_or("") == ns_uri)
+        }
+        XPathBoolExpr::StringSelfEqNsUriParent => {
+            // string(self::node()) for namespace nodes = the namespace URI
+            // namespace-uri(parent::node()) = parent element's namespace URI
+            let parent_ns = ns_node.parent.tag_name().namespace().unwrap_or("");
+            ns_node.uri == parent_ns
+        }
+        XPathBoolExpr::IsNotParentNsNode => {
+            // Namespace nodes ARE parent's namespace nodes
+            false
+        }
+        XPathBoolExpr::IsParentNsNode => {
+            // Namespace nodes ARE parent's namespace nodes
+            true
+        }
+        XPathBoolExpr::DepthOdd => {
+            // Namespace node depth = parent depth + 1
+            let mut depth = 1usize; // for the namespace node itself
+            let mut current = Some(ns_node.parent);
+            while let Some(n) = current {
+                depth += 1;
+                current = n.parent();
+            }
+            depth % 2 == 1
+        }
+    }
+}
+
+/// Get the QName of an element (prefix:local or just local if no prefix).
+fn get_element_qname(node: roxmltree::Node<'_, '_>) -> String {
+    // roxmltree doesn't directly expose the prefix, but we can reconstruct it
+    // from the namespace and namespace declarations
+    if let Some(ns_uri) = node.tag_name().namespace() {
+        // Find the prefix for this namespace URI
+        for ns in node.namespaces() {
+            if ns.uri() == ns_uri {
+                if let Some(prefix) = ns.name() {
+                    return format!("{}:{}", prefix, node.tag_name().name());
+                }
+            }
+        }
+    }
+    node.tag_name().name().to_string()
+}
+
+/// Check if an XPath boolean expression references namespace-node-specific
+/// constructs (name(), namespace-uri(), IsNotParentNsNode, etc.).
+/// When true, we need to compute the ns_visible map for the node set.
+fn expr_references_ns_nodes(expr: &XPathBoolExpr) -> bool {
+    match expr {
+        XPathBoolExpr::NameEq(_)
+        | XPathBoolExpr::NameNeq(_)
+        | XPathBoolExpr::NamespaceUriEq(_)
+        | XPathBoolExpr::NamespaceUriNeq(_)
+        | XPathBoolExpr::StringSelfEqNsUriParent
+        | XPathBoolExpr::IsNotParentNsNode
+        | XPathBoolExpr::IsParentNsNode
+        | XPathBoolExpr::DepthOdd => true,
+        XPathBoolExpr::Not(inner) => expr_references_ns_nodes(inner),
+        XPathBoolExpr::And(l, r) | XPathBoolExpr::Or(l, r) => {
+            expr_references_ns_nodes(l) || expr_references_ns_nodes(r)
+        }
+        XPathBoolExpr::AncestorOrSelf { .. }
+        | XPathBoolExpr::SelfText
+        | XPathBoolExpr::SelfElement { .. }
+        | XPathBoolExpr::ParentIs { .. } => false,
+    }
+}
+
+/// Collect all in-scope namespace bindings for an element by walking the
+/// ancestor chain. Returns a map of prefix → URI.
+fn collect_inscope_namespaces_raw(
+    node: &roxmltree::Node<'_, '_>,
+) -> std::collections::BTreeMap<String, String> {
+    use std::collections::BTreeMap;
+    let mut ns_stack: Vec<BTreeMap<String, String>> = Vec::new();
+    let mut current = Some(*node);
+    while let Some(n) = current {
+        if n.is_element() {
+            let mut level = BTreeMap::new();
+            for ns in n.namespaces() {
+                let prefix = ns.name().unwrap_or("").to_owned();
+                let uri = ns.uri().to_owned();
+                level.insert(prefix, uri);
+            }
+            ns_stack.push(level);
+        }
+        current = n.parent();
+    }
+    let mut result = BTreeMap::new();
+    for level in ns_stack.into_iter().rev() {
+        for (prefix, uri) in level {
+            if uri.is_empty() {
+                result.remove(&prefix);
+            } else {
+                result.insert(prefix, uri);
+            }
+        }
+    }
+    result
 }
 
 /// Apply a parsed XPath boolean expression as a node filter.
@@ -630,9 +988,36 @@ fn apply_parsed_xpath_filter(
         }
     }
 
+    let mut result_ns = NodeSet::from_ids(result_ids, NodeSetType::Normal);
+
+    // If the expression references namespace-node constructs, evaluate
+    // the expression for each element's in-scope namespace bindings and
+    // build the ns_visible map.
+    if expr_references_ns_nodes(expr) {
+        use std::collections::HashMap;
+        let mut ns_map: HashMap<(usize, String), bool> = HashMap::new();
+        for node in doc.descendants() {
+            if !node.is_element() {
+                continue;
+            }
+            let eid = node_index(node);
+            let inscope = collect_inscope_namespaces_raw(&node);
+            for (prefix, uri) in &inscope {
+                let ns_node = NsNode {
+                    prefix: prefix.clone(),
+                    uri: uri.clone(),
+                    parent: node,
+                };
+                let visible = eval_xpath_bool_ns(expr, &ns_node);
+                ns_map.insert((eid, prefix.clone()), visible);
+            }
+        }
+        result_ns.set_ns_visible(ns_map);
+    }
+
     Ok(bergshamra_transforms::TransformData::Xml {
         xml_text,
-        node_set: Some(NodeSet::from_ids(result_ids, NodeSetType::Normal)),
+        node_set: Some(result_ns),
     })
 }
 
@@ -656,6 +1041,52 @@ fn is_enveloped_xpath(expr: &str, xpath_node: &roxmltree::Node<'_, '_>) -> bool 
     // Check namespace declarations on the XPath element and ancestors
     xpath_node.namespaces().any(|ns_decl| {
         ns_decl.name() == Some(inner) && ns_decl.uri() == dsig_ns
+    })
+}
+
+/// Check if an XPath expression is the here()-based enveloped-signature pattern.
+///
+/// Matches:
+/// ```text
+/// count(ancestor-or-self::PREFIX:Signature |
+///   here()/ancestor::PREFIX:Signature[1]) >
+///   count(ancestor-or-self::PREFIX:Signature)
+/// ```
+/// where PREFIX is bound to the XML-DSig namespace.
+/// This is semantically equivalent to the enveloped-signature transform.
+fn is_enveloped_xpath_here(expr: &str, xpath_node: &roxmltree::Node<'_, '_>) -> bool {
+    // Normalize whitespace for matching
+    let norm: String = expr.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    // Pattern: count(ancestor-or-self::P:Signature | here()/ancestor::P:Signature[1]) > count(ancestor-or-self::P:Signature)
+    let prefix = "count(ancestor-or-self::";
+    if !norm.starts_with(prefix) {
+        return false;
+    }
+
+    let rest = &norm[prefix.len()..];
+
+    // Extract PREFIX:Signature from the first part
+    let sig_marker = ":Signature | here()/ancestor::";
+    let Some(pos) = rest.find(sig_marker) else {
+        return false;
+    };
+
+    let pfx = &rest[..pos];
+    let after_marker = &rest[pos + sig_marker.len()..];
+
+    // Verify the rest matches: PREFIX:Signature[1]) > count(ancestor-or-self::PREFIX:Signature)
+    let expected_tail = format!(
+        "{pfx}:Signature[1]) > count(ancestor-or-self::{pfx}:Signature)"
+    );
+    if after_marker != expected_tail {
+        return false;
+    }
+
+    // Verify the prefix is bound to the DSIG namespace
+    let dsig_ns = ns::DSIG;
+    xpath_node.namespaces().any(|ns_decl| {
+        ns_decl.name() == Some(pfx) && ns_decl.uri() == dsig_ns
     })
 }
 
@@ -725,6 +1156,10 @@ fn apply_xpath_filter2_transform(
 /// - `/` — the document root (all nodes)
 /// - `//ElementName` — all descendant elements with the given local name
 /// - `//prefix:ElementName` — namespace-qualified element selection
+/// - `/a/b[@attr="val"]/c` — absolute paths with predicates
+/// - `*` — wildcard element names
+/// - `[not(@attr)]` — negated attribute predicates
+/// - `expr | expr` — union of two path expressions
 fn evaluate_simple_xpath(
     doc: &roxmltree::Document<'_>,
     expr: &str,
@@ -736,6 +1171,14 @@ fn evaluate_simple_xpath(
     // `/` — selects the entire document
     if expr == "/" {
         return Ok(NodeSet::all(doc));
+    }
+
+    // Handle top-level union: `expr1 | expr2`
+    // Split on top-level `|` (outside brackets)
+    if let Some((left, right)) = split_xpath_union(expr) {
+        let left_ns = evaluate_simple_xpath(doc, left.trim(), xpath_node)?;
+        let right_ns = evaluate_simple_xpath(doc, right.trim(), xpath_node)?;
+        return Ok(left_ns.union(&right_ns));
     }
 
     // `//name` or `//prefix:name` — descendant-or-self element selection
@@ -771,9 +1214,266 @@ fn evaluate_simple_xpath(
         return Ok(NodeSet::from_ids(nodes, bergshamra_xml::nodeset::NodeSetType::Normal));
     }
 
+    // Absolute path: `/step1/step2/step3[pred]`
+    if expr.starts_with('/') {
+        let steps = parse_xpath_path_steps(&expr[1..])?;
+        let mut nodes = HashSet::new();
+        let matches = evaluate_path_steps(doc, &steps, xpath_node)?;
+        for node in &matches {
+            collect_subtree_ids(*node, &mut nodes);
+        }
+        return Ok(NodeSet::from_ids(nodes, bergshamra_xml::nodeset::NodeSetType::Normal));
+    }
+
     Err(Error::UnsupportedAlgorithm(format!(
         "XPath Filter 2.0 expression not supported: {expr}"
     )))
+}
+
+/// Split an XPath expression at the top-level `|` (union) operator.
+/// Only splits outside brackets `[]` and parentheses `()`.
+fn split_xpath_union(expr: &str) -> Option<(&str, &str)> {
+    let mut bracket_depth = 0i32;
+    let mut paren_depth = 0i32;
+    let bytes = expr.as_bytes();
+    for i in 0..bytes.len() {
+        match bytes[i] {
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth -= 1,
+            b'(' => paren_depth += 1,
+            b')' => paren_depth -= 1,
+            b'|' if bracket_depth == 0 && paren_depth == 0 => {
+                let left = expr[..i].trim();
+                let right = expr[i + 1..].trim();
+                if !left.is_empty() && !right.is_empty() {
+                    return Some((left, right));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// A parsed XPath path step: element name (or wildcard) plus optional predicate.
+struct PathStep {
+    /// Element local name, or "*" for wildcard
+    name: String,
+    /// Namespace URI if prefix was provided
+    ns_uri: Option<String>,
+    /// Optional predicate (the content inside [...])
+    predicate: Option<String>,
+}
+
+/// Parse a `/`-separated path into steps.
+/// Input is the path WITHOUT the leading `/`, e.g., `XFDL/page[@sid="PAGE1"]/*`.
+fn parse_xpath_path_steps(path: &str) -> Result<Vec<PathStep>, Error> {
+    let mut steps = Vec::new();
+    let mut remaining = path;
+
+    while !remaining.is_empty() {
+        // Find the next `/` that's not inside a predicate `[...]`
+        let mut bracket_depth = 0i32;
+        let mut slash_pos = None;
+        for (i, b) in remaining.bytes().enumerate() {
+            match b {
+                b'[' => bracket_depth += 1,
+                b']' => bracket_depth -= 1,
+                b'/' if bracket_depth == 0 => {
+                    slash_pos = Some(i);
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        let step_str = match slash_pos {
+            Some(pos) => {
+                let s = &remaining[..pos];
+                remaining = &remaining[pos + 1..];
+                s
+            }
+            None => {
+                let s = remaining;
+                remaining = "";
+                s
+            }
+        };
+
+        // Parse step: "name" or "name[predicate]" or "*[predicate]"
+        let (name_part, predicate) = if let Some(bracket_start) = step_str.find('[') {
+            if !step_str.ends_with(']') {
+                return Err(Error::XmlStructure(format!(
+                    "XPath step with unclosed predicate: {step_str}"
+                )));
+            }
+            let name = &step_str[..bracket_start];
+            let pred = &step_str[bracket_start + 1..step_str.len() - 1];
+            (name, Some(pred.to_string()))
+        } else {
+            (step_str, None)
+        };
+
+        // Resolve prefix:local or just local or *
+        let (ns_uri, local_name) = if name_part == "*" {
+            (None, "*".to_string())
+        } else if let Some((prefix, local)) = name_part.split_once(':') {
+            // We'll resolve the prefix later when we have the xpath_node context
+            (Some(prefix.to_string()), local.to_string())
+        } else {
+            (None, name_part.to_string())
+        };
+
+        steps.push(PathStep {
+            name: local_name,
+            ns_uri,
+            predicate,
+        });
+    }
+
+    Ok(steps)
+}
+
+/// Evaluate path steps against the document, returning the matching leaf nodes.
+fn evaluate_path_steps<'a>(
+    doc: &'a roxmltree::Document<'a>,
+    steps: &[PathStep],
+    xpath_node: &roxmltree::Node<'_, '_>,
+) -> Result<Vec<roxmltree::Node<'a, 'a>>, Error> {
+    if steps.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Resolve any namespace prefixes stored as strings
+    let resolved_steps: Vec<(Option<&str>, &str, &Option<String>)> = steps.iter().map(|s| {
+        let ns = match &s.ns_uri {
+            Some(prefix) => {
+                xpath_node.namespaces()
+                    .find(|ns| ns.name() == Some(prefix.as_str()))
+                    .map(|ns| ns.uri())
+            }
+            None => None,
+        };
+        (ns, s.name.as_str(), &s.predicate)
+    }).collect();
+
+    // Start from the root's children (since we already consumed the leading `/`)
+    let mut current_nodes: Vec<roxmltree::Node<'a, 'a>> = doc.root().children()
+        .filter(|n| n.is_element())
+        .collect();
+
+    for (step_idx, (ns_uri, local_name, predicate)) in resolved_steps.iter().enumerate() {
+        let mut matched = Vec::new();
+
+        for node in &current_nodes {
+            // Check children of current node (except for first step which is already root children)
+            let candidates: Box<dyn Iterator<Item = roxmltree::Node<'a, 'a>>> = if step_idx == 0 {
+                Box::new(std::iter::once(*node))
+            } else {
+                Box::new(node.children().filter(|n| n.is_element()))
+            };
+
+            for candidate in candidates {
+                // Match element name
+                let name_matches = if *local_name == "*" {
+                    candidate.is_element()
+                } else {
+                    candidate.is_element() && candidate.tag_name().name() == *local_name
+                };
+
+                // Match namespace
+                let ns_matches = match ns_uri {
+                    Some(uri) => candidate.tag_name().namespace().unwrap_or("") == *uri,
+                    None => true,
+                };
+
+                if name_matches && ns_matches {
+                    // Check predicate
+                    if let Some(pred) = predicate {
+                        if evaluate_xpath_predicate(&candidate, pred) {
+                            matched.push(candidate);
+                        }
+                    } else {
+                        matched.push(candidate);
+                    }
+                }
+            }
+        }
+
+        current_nodes = matched;
+    }
+
+    Ok(current_nodes)
+}
+
+/// Evaluate a simple XPath predicate on a node.
+///
+/// Supports:
+/// - `@attr="value"` — attribute equals value
+/// - `@attr="val1" or @attr="val2" or ...` — disjunction of attribute checks
+/// - `not(@attr)` — attribute does not exist
+fn evaluate_xpath_predicate(node: &roxmltree::Node<'_, '_>, pred: &str) -> bool {
+    let pred = pred.trim();
+
+    // Handle `not(@attr)` or `not(@prefix:attr)`
+    if pred.starts_with("not(") && pred.ends_with(')') {
+        let inner = pred[4..pred.len() - 1].trim();
+        if let Some(attr_name) = inner.strip_prefix('@') {
+            return node.attribute(attr_name).is_none();
+        }
+    }
+
+    // Handle `@attr="value"` or disjunction `@attr="val1" or @attr="val2"`
+    // Split on top-level ` or `
+    let parts: Vec<&str> = split_predicate_or(pred);
+    if parts.iter().all(|p| is_attr_eq_predicate(p.trim())) {
+        return parts.iter().any(|p| evaluate_attr_eq(node, p.trim()));
+    }
+
+    false
+}
+
+/// Split predicate on ` or ` at top level (outside quotes and parens).
+fn split_predicate_or(pred: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut in_quote = false;
+    let mut quote_char = b'"';
+    let bytes = pred.as_bytes();
+    let or_bytes = b" or ";
+    let or_len = or_bytes.len();
+
+    for i in 0..bytes.len() {
+        if !in_quote && (bytes[i] == b'"' || bytes[i] == b'\'') {
+            in_quote = true;
+            quote_char = bytes[i];
+        } else if in_quote && bytes[i] == quote_char {
+            in_quote = false;
+        } else if !in_quote && i + or_len <= bytes.len() && &bytes[i..i + or_len] == or_bytes {
+            parts.push(&pred[start..i]);
+            start = i + or_len;
+        }
+    }
+    parts.push(&pred[start..]);
+    parts
+}
+
+/// Check if a predicate part is an attribute comparison: `@attr="value"`
+fn is_attr_eq_predicate(part: &str) -> bool {
+    part.starts_with('@') && (part.contains("=\"") || part.contains("='"))
+}
+
+/// Evaluate `@attr="value"` predicate.
+fn evaluate_attr_eq(node: &roxmltree::Node<'_, '_>, pred: &str) -> bool {
+    let pred = pred.trim();
+    if let Some(attr_part) = pred.strip_prefix('@') {
+        // Split on = to get attr name and value
+        if let Some((attr_name, quoted_value)) = attr_part.split_once('=') {
+            let value = quoted_value.trim_matches(|c| c == '"' || c == '\'');
+            return node.attribute(attr_name) == Some(value);
+        }
+    }
+    false
 }
 
 /// Collect all node IDs in a subtree.

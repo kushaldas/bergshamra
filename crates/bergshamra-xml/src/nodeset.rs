@@ -6,7 +6,7 @@
 //! their `roxmltree::NodeId`.  It supports the set operations needed by
 //! XPath Filter 2.0 and the enveloped-signature transform.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// The type of a node set, matching xmlsec's `xmlSecNodeSetType`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +38,16 @@ pub struct NodeSet {
     nodes: HashSet<usize>,
     /// The type of this node set.
     set_type: NodeSetType,
+    /// Optional namespace node visibility map.
+    ///
+    /// In the XPath data model, each element has namespace nodes for each
+    /// in-scope namespace binding. XPath expressions can filter individual
+    /// namespace nodes independently of their parent element.
+    ///
+    /// When `Some`, maps `(element_node_id, prefix)` → `true` if visible.
+    /// The prefix is "" for the default namespace.
+    /// When `None`, all namespace nodes are considered visible (default).
+    ns_visible: Option<HashMap<(usize, String), bool>>,
 }
 
 impl NodeSet {
@@ -46,6 +56,7 @@ impl NodeSet {
         Self {
             nodes: HashSet::new(),
             set_type: NodeSetType::Normal,
+            ns_visible: None,
         }
     }
 
@@ -54,6 +65,7 @@ impl NodeSet {
         Self {
             nodes: ids,
             set_type,
+            ns_visible: None,
         }
     }
 
@@ -63,6 +75,7 @@ impl NodeSet {
         Self {
             nodes,
             set_type: NodeSetType::Normal,
+            ns_visible: None,
         }
     }
 
@@ -76,6 +89,7 @@ impl NodeSet {
         Self {
             nodes,
             set_type: NodeSetType::Normal,
+            ns_visible: None,
         }
     }
 
@@ -86,6 +100,7 @@ impl NodeSet {
         Self {
             nodes,
             set_type: NodeSetType::Normal,
+            ns_visible: None,
         }
     }
 
@@ -96,6 +111,7 @@ impl NodeSet {
         Self {
             nodes,
             set_type: NodeSetType::Normal,
+            ns_visible: None,
         }
     }
 
@@ -137,25 +153,31 @@ impl NodeSet {
 
     /// Compute the intersection of two node sets.
     pub fn intersection(&self, other: &NodeSet) -> NodeSet {
+        let ns_visible = merge_ns_visible_intersection(&self.ns_visible, &other.ns_visible);
         NodeSet {
             nodes: self.nodes.intersection(&other.nodes).copied().collect(),
             set_type: NodeSetType::Normal,
+            ns_visible,
         }
     }
 
     /// Compute the union of two node sets.
     pub fn union(&self, other: &NodeSet) -> NodeSet {
+        let ns_visible = merge_ns_visible_union(&self.ns_visible, &other.ns_visible);
         NodeSet {
             nodes: self.nodes.union(&other.nodes).copied().collect(),
             set_type: NodeSetType::Normal,
+            ns_visible,
         }
     }
 
     /// Compute self - other (subtraction).
     pub fn subtract(&self, other: &NodeSet) -> NodeSet {
+        let ns_visible = merge_ns_visible_subtract(&self.ns_visible, &other.ns_visible);
         NodeSet {
             nodes: self.nodes.difference(&other.nodes).copied().collect(),
             set_type: NodeSetType::Normal,
+            ns_visible,
         }
     }
 
@@ -168,11 +190,104 @@ impl NodeSet {
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
+
+    /// Set the namespace visibility map.
+    pub fn set_ns_visible(&mut self, map: HashMap<(usize, String), bool>) {
+        self.ns_visible = Some(map);
+    }
+
+    /// Check if a namespace node is visible for the given element and prefix.
+    ///
+    /// Returns `true` if:
+    /// - No ns_visible map exists (all namespace nodes visible by default)
+    /// - The map contains `(element_id, prefix) → true`
+    pub fn is_ns_visible(&self, element_id: usize, prefix: &str) -> bool {
+        match &self.ns_visible {
+            None => true,
+            Some(map) => map.get(&(element_id, prefix.to_string())).copied().unwrap_or(false),
+        }
+    }
+
+    /// Check if this node set has a namespace visibility map.
+    pub fn has_ns_visible(&self) -> bool {
+        self.ns_visible.is_some()
+    }
 }
 
 impl Default for NodeSet {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Merge namespace visibility maps for intersection: both must agree.
+fn merge_ns_visible_intersection(
+    a: &Option<HashMap<(usize, String), bool>>,
+    b: &Option<HashMap<(usize, String), bool>>,
+) -> Option<HashMap<(usize, String), bool>> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(m), None) => Some(m.clone()),
+        (None, Some(m)) => Some(m.clone()),
+        (Some(ma), Some(mb)) => {
+            // Intersection: key must be in both and true in both
+            let mut result = HashMap::new();
+            for (k, v) in ma {
+                if *v && mb.get(k).copied().unwrap_or(false) {
+                    result.insert(k.clone(), true);
+                }
+            }
+            Some(result)
+        }
+    }
+}
+
+/// Merge namespace visibility maps for union: either one suffices.
+fn merge_ns_visible_union(
+    a: &Option<HashMap<(usize, String), bool>>,
+    b: &Option<HashMap<(usize, String), bool>>,
+) -> Option<HashMap<(usize, String), bool>> {
+    match (a, b) {
+        (None, _) | (_, None) => None, // One has all visible → union is all visible
+        (Some(ma), Some(mb)) => {
+            let mut result = ma.clone();
+            for (k, v) in mb {
+                if *v {
+                    result.insert(k.clone(), true);
+                }
+            }
+            Some(result)
+        }
+    }
+}
+
+/// Merge namespace visibility maps for subtraction: remove those in other.
+fn merge_ns_visible_subtract(
+    a: &Option<HashMap<(usize, String), bool>>,
+    b: &Option<HashMap<(usize, String), bool>>,
+) -> Option<HashMap<(usize, String), bool>> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(m), None) => Some(m.clone()),
+        (None, Some(mb)) => {
+            // All visible minus those in mb
+            let mut result = HashMap::new();
+            for (k, v) in mb {
+                if *v {
+                    result.insert(k.clone(), false);
+                }
+            }
+            Some(result)
+        }
+        (Some(ma), Some(mb)) => {
+            let mut result = ma.clone();
+            for (k, v) in mb {
+                if *v {
+                    result.insert(k.clone(), false);
+                }
+            }
+            Some(result)
+        }
     }
 }
 

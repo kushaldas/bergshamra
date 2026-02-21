@@ -169,6 +169,20 @@ impl<'a> ExcC14nContext<'a> {
             // Collect all in-scope namespaces
             let inscope_ns = collect_inscope_namespaces(&node);
 
+            // If namespace node visibility filtering is active, restrict
+            // to only namespace nodes that are in the node set.
+            let has_ns_filter = self.node_set
+                .map_or(false, |ns| ns.has_ns_visible());
+            let visible_inscope_ns = if has_ns_filter {
+                let eid = bergshamra_xml::nodeset::node_index(node);
+                let ns = self.node_set.unwrap();
+                inscope_ns.into_iter()
+                    .filter(|(prefix, _)| ns.is_ns_visible(eid, prefix))
+                    .collect()
+            } else {
+                inscope_ns
+            };
+
             // Determine which namespace declarations to output
             let mut ns_decls: Vec<NsDecl> = Vec::new();
             for prefix in &utilized_prefixes {
@@ -177,7 +191,7 @@ impl<'a> ExcC14nContext<'a> {
                     continue;
                 }
 
-                if let Some(uri) = inscope_ns.get(prefix) {
+                if let Some(uri) = visible_inscope_ns.get(prefix) {
                     // Only output if different from what was previously rendered
                     let previously_rendered = rendered_ns.get(prefix);
                     if previously_rendered != Some(uri) {
@@ -236,10 +250,28 @@ impl<'a> ExcC14nContext<'a> {
             }
             output.push(b'>');
 
-            // Update rendered namespace context for children
+            // Update rendered namespace context for children.
             let mut child_rendered_ns = rendered_ns.clone();
             for ns_decl in &ns_decls {
                 child_rendered_ns.insert(ns_decl.prefix.clone(), ns_decl.uri.clone());
+            }
+
+            // When ns_visible filtering is active, break the rendering
+            // chain for prefixes visibly utilized by this element whose
+            // namespace node is NOT in the node-set.  Per the exc-c14n
+            // spec, the "nearest output ancestor that visibly utilizes
+            // the namespace prefix" must have its ns node in the
+            // node-set for descendants to inherit the rendered binding.
+            // Removing the prefix forces descendants to re-declare it.
+            if has_ns_filter {
+                for prefix in &utilized_prefixes {
+                    if prefix == "xml" {
+                        continue;
+                    }
+                    if !visible_inscope_ns.contains_key(prefix.as_str()) {
+                        child_rendered_ns.remove(prefix.as_str());
+                    }
+                }
             }
 
             // Process children
@@ -252,7 +284,43 @@ impl<'a> ExcC14nContext<'a> {
             output.extend_from_slice(elem_name.as_bytes());
             output.push(b'>');
         } else {
-            // Element not visible, but children might be
+            // Element not visible — in exclusive C14N, namespace
+            // declarations are only rendered on visible element start
+            // tags.  However, for prefixes in InclusiveNamespaces
+            // PrefixList, we follow inclusive C14N rules which include
+            // outputting namespace nodes on invisible elements.
+            let has_ns_filter = self.node_set
+                .map_or(false, |ns| ns.has_ns_visible());
+            if has_ns_filter && !self.inclusive_prefixes.is_empty() {
+                let eid = bergshamra_xml::nodeset::node_index(node);
+                let ns = self.node_set.unwrap();
+                let inscope = collect_inscope_namespaces(&node);
+                let visible_ns: BTreeMap<String, String> = inscope.into_iter()
+                    .filter(|(prefix, _)| ns.is_ns_visible(eid, prefix))
+                    .filter(|(prefix, _)| {
+                        // Only output for InclusiveNamespaces PrefixList
+                        if prefix.is_empty() {
+                            self.inclusive_prefixes.iter().any(|p| p == "#default")
+                        } else {
+                            self.inclusive_prefixes.contains(prefix)
+                        }
+                    })
+                    .collect();
+                let mut ns_decls: Vec<NsDecl> = Vec::new();
+                for (prefix, uri) in &visible_ns {
+                    if prefix == "xml" { continue; }
+                    if rendered_ns.get(prefix) != Some(uri) {
+                        ns_decls.push(NsDecl { prefix: prefix.clone(), uri: uri.clone() });
+                    }
+                }
+                ns_decls.sort();
+                for ns_decl in &ns_decls {
+                    output.extend_from_slice(ns_decl.render().as_bytes());
+                }
+            }
+
+            // Children inherit same rendered_ns (invisible element
+            // doesn't affect the visible ancestor tracking).
             for child in node.children() {
                 self.process_node(child, output, rendered_ns)?;
             }
