@@ -16,8 +16,9 @@ use bergshamra_core::{algorithm, ns, Error};
 ///
 /// Returns the XML document with `<EncryptedData>` populated.
 pub fn encrypt(ctx: &EncContext, template_xml: &str, data: &[u8]) -> Result<String, Error> {
-    let doc = roxmltree::Document::parse_with_options(template_xml, bergshamra_xml::parsing_options())
-        .map_err(|e: roxmltree::Error| Error::XmlParse(e.to_string()))?;
+    let doc =
+        roxmltree::Document::parse_with_options(template_xml, bergshamra_xml::parsing_options())
+            .map_err(|e: roxmltree::Error| Error::XmlParse(e.to_string()))?;
 
     // Find EncryptedData element
     let enc_data_node = find_element(&doc, ns::ENC, ns::node::ENCRYPTED_DATA)
@@ -140,7 +141,11 @@ fn generate_session_key(enc_uri: &str) -> Result<Vec<u8>, Error> {
         algorithm::AES192_CBC | algorithm::AES192_GCM => 24,
         algorithm::AES256_CBC | algorithm::AES256_GCM => 32,
         algorithm::TRIPLEDES_CBC => 24,
-        _ => return Err(Error::UnsupportedAlgorithm(format!("cannot determine key size for: {enc_uri}"))),
+        _ => {
+            return Err(Error::UnsupportedAlgorithm(format!(
+                "cannot determine key size for: {enc_uri}"
+            )))
+        }
     };
 
     let mut key = vec![0u8; key_size];
@@ -196,11 +201,13 @@ fn encrypt_session_key(
         let encrypted_key_bytes = match enc_uri {
             algorithm::RSA_PKCS1 | algorithm::RSA_OAEP | algorithm::RSA_OAEP_ENC11 => {
                 let oaep_params = read_oaep_params(enc_method);
-                let transport = bergshamra_crypto::keytransport::from_uri_with_params(enc_uri, oaep_params)?;
+                let transport =
+                    bergshamra_crypto::keytransport::from_uri_with_params(enc_uri, oaep_params)?;
                 // Look for KeyName in this EncryptedKey's KeyInfo to select the
                 // correct RSA key (important for multi-recipient encryption).
                 let rsa_key = resolve_encrypted_key_rsa(ctx, node)?;
-                let public_key = rsa_key.rsa_public_key()
+                let public_key = rsa_key
+                    .rsa_public_key()
                     .ok_or_else(|| Error::Key("RSA public key required".into()))?;
                 transport.encrypt(public_key, session_key)?
             }
@@ -218,32 +225,46 @@ fn encrypt_session_key(
                     result = fill_originator_key_value(ctx, node, &result)?;
                     kw.wrap(&kek, session_key)?
                 } else {
-                    let aes_key = ctx.keys_manager.find_aes_by_size(expected_kek_size)
+                    let aes_key = ctx
+                        .keys_manager
+                        .find_aes_by_size(expected_kek_size)
                         .or_else(|| ctx.keys_manager.find_aes())
                         .ok_or_else(|| Error::Key("no AES key for key wrap".into()))?;
-                    let kek_bytes = aes_key.symmetric_key_bytes()
+                    let kek_bytes = aes_key
+                        .symmetric_key_bytes()
                         .ok_or_else(|| Error::Key("AES key has no bytes".into()))?;
                     kw.wrap(kek_bytes, session_key)?
                 }
             }
             algorithm::KW_TRIPLEDES => {
                 let kw = bergshamra_crypto::keywrap::from_uri(enc_uri)?;
-                let des_key = ctx.keys_manager.find_des3()
+                let des_key = ctx
+                    .keys_manager
+                    .find_des3()
                     .or_else(|| ctx.keys_manager.first_key().ok())
                     .ok_or_else(|| Error::Key("no key for 3DES key wrap".into()))?;
-                let kek_bytes = des_key.symmetric_key_bytes()
+                let kek_bytes = des_key
+                    .symmetric_key_bytes()
                     .ok_or_else(|| Error::Key("no symmetric key for 3DES key wrap".into()))?;
                 kw.wrap(kek_bytes, session_key)?
             }
             // Regular cipher (AES-CBC/GCM, 3DES-CBC) used to encrypt key material
-            algorithm::AES128_CBC | algorithm::AES192_CBC | algorithm::AES256_CBC
-            | algorithm::AES128_GCM | algorithm::AES192_GCM | algorithm::AES256_GCM
+            algorithm::AES128_CBC
+            | algorithm::AES192_CBC
+            | algorithm::AES256_CBC
+            | algorithm::AES128_GCM
+            | algorithm::AES192_GCM
+            | algorithm::AES256_GCM
             | algorithm::TRIPLEDES_CBC => {
                 let cipher = bergshamra_crypto::cipher::from_uri(enc_uri)?;
                 let kek_bytes = resolve_encrypted_key_kek(ctx, node)?;
                 cipher.encrypt(&kek_bytes, session_key)?
             }
-            _ => return Err(Error::UnsupportedAlgorithm(format!("EncryptedKey method: {enc_uri}"))),
+            _ => {
+                return Err(Error::UnsupportedAlgorithm(format!(
+                    "EncryptedKey method: {enc_uri}"
+                )))
+            }
         };
 
         use base64::Engine;
@@ -321,7 +342,8 @@ fn resolve_encrypted_key_rsa<'a>(
         }
     }
     // Fallback: first RSA key
-    ctx.keys_manager.find_rsa()
+    ctx.keys_manager
+        .find_rsa()
         .ok_or_else(|| Error::Key("no RSA key for EncryptedKey".into()))
 }
 
@@ -359,22 +381,29 @@ fn resolve_agreement_method_encrypt(
     let shared_secret = match agreement_alg {
         algorithm::ECDH_ES => {
             // Get recipient's public key bytes (SEC1 uncompressed point)
-            let recipient_public_bytes = recipient_key.ec_public_key_bytes()
+            let recipient_public_bytes = recipient_key
+                .ec_public_key_bytes()
                 .ok_or_else(|| Error::Key("recipient key has no EC public key bytes".into()))?;
 
             // Compute ECDH shared secret: originator_private × recipient_public
             match &originator_key.data {
-                bergshamra_keys::key::KeyData::EcP256 { private: Some(sk), .. } => {
+                bergshamra_keys::key::KeyData::EcP256 {
+                    private: Some(sk), ..
+                } => {
                     let secret = p256::SecretKey::from_bytes(&sk.to_bytes())
                         .map_err(|e| Error::Key(format!("P-256 secret key: {e}")))?;
                     bergshamra_crypto::keyagreement::ecdh_p256(&recipient_public_bytes, &secret)?
                 }
-                bergshamra_keys::key::KeyData::EcP384 { private: Some(sk), .. } => {
+                bergshamra_keys::key::KeyData::EcP384 {
+                    private: Some(sk), ..
+                } => {
                     let secret = p384::SecretKey::from_bytes(&sk.to_bytes())
                         .map_err(|e| Error::Key(format!("P-384 secret key: {e}")))?;
                     bergshamra_crypto::keyagreement::ecdh_p384(&recipient_public_bytes, &secret)?
                 }
-                bergshamra_keys::key::KeyData::EcP521 { private: Some(sk), .. } => {
+                bergshamra_keys::key::KeyData::EcP521 {
+                    private: Some(sk), ..
+                } => {
                     use p521::elliptic_curve::generic_array::GenericArray;
                     let bytes = sk.to_bytes();
                     let secret = p521::SecretKey::from_bytes(GenericArray::from_slice(&bytes))
@@ -390,13 +419,26 @@ fn resolve_agreement_method_encrypt(
             // Finite-field DH: shared_secret = recipient_public ^ originator_private mod p
             match (&originator_key.data, &recipient_key.data) {
                 (
-                    bergshamra_keys::key::KeyData::Dh { p, private_key: Some(x), .. },
-                    bergshamra_keys::key::KeyData::Dh { public_key: recipient_pub, .. },
+                    bergshamra_keys::key::KeyData::Dh {
+                        p,
+                        q,
+                        private_key: Some(x),
+                        ..
+                    },
+                    bergshamra_keys::key::KeyData::Dh {
+                        public_key: recipient_pub,
+                        ..
+                    },
                 ) => {
-                    bergshamra_crypto::keyagreement::dh_compute(recipient_pub, x, p)?
+                    let q_bytes = q.as_deref().ok_or_else(|| {
+                        Error::Key("DH subgroup order q is required for DH-ES".into())
+                    })?;
+                    bergshamra_crypto::keyagreement::dh_compute(recipient_pub, x, p, Some(q_bytes))?
                 }
                 _ => {
-                    return Err(Error::Key("originator must be DH private key and recipient DH public key".into()));
+                    return Err(Error::Key(
+                        "originator must be DH private key and recipient DH public key".into(),
+                    ));
                 }
             }
         }
@@ -451,16 +493,49 @@ fn resolve_originator_key<'a>(
     }
     // Fallback: first DH key with private, then EC key with a private key
     if let Some(dh_key) = ctx.keys_manager.find_dh() {
-        if matches!(&dh_key.data, bergshamra_keys::key::KeyData::Dh { private_key: Some(_), .. }) {
+        if matches!(
+            &dh_key.data,
+            bergshamra_keys::key::KeyData::Dh {
+                private_key: Some(_),
+                ..
+            }
+        ) {
             return Ok(dh_key);
         }
     }
-    ctx.keys_manager.find_ec_p256()
-        .filter(|k| matches!(&k.data, bergshamra_keys::key::KeyData::EcP256 { private: Some(_), .. }))
-        .or_else(|| ctx.keys_manager.find_ec_p384()
-            .filter(|k| matches!(&k.data, bergshamra_keys::key::KeyData::EcP384 { private: Some(_), .. })))
-        .or_else(|| ctx.keys_manager.find_ec_p521()
-            .filter(|k| matches!(&k.data, bergshamra_keys::key::KeyData::EcP521 { private: Some(_), .. })))
+    ctx.keys_manager
+        .find_ec_p256()
+        .filter(|k| {
+            matches!(
+                &k.data,
+                bergshamra_keys::key::KeyData::EcP256 {
+                    private: Some(_),
+                    ..
+                }
+            )
+        })
+        .or_else(|| {
+            ctx.keys_manager.find_ec_p384().filter(|k| {
+                matches!(
+                    &k.data,
+                    bergshamra_keys::key::KeyData::EcP384 {
+                        private: Some(_),
+                        ..
+                    }
+                )
+            })
+        })
+        .or_else(|| {
+            ctx.keys_manager.find_ec_p521().filter(|k| {
+                matches!(
+                    &k.data,
+                    bergshamra_keys::key::KeyData::EcP521 {
+                        private: Some(_),
+                        ..
+                    }
+                )
+            })
+        })
         .ok_or_else(|| Error::Key("no private key for key agreement originator".into()))
 }
 
@@ -479,7 +554,9 @@ fn resolve_recipient_public_key<'a>(
             }
         }
     }
-    Err(Error::Key("no public key for key agreement recipient".into()))
+    Err(Error::Key(
+        "no public key for key agreement recipient".into(),
+    ))
 }
 
 /// Fill in the empty `<dsig:KeyValue/>` in OriginatorKeyInfo with the originator's EC public key.
@@ -507,7 +584,9 @@ fn fill_originator_key_value(
 
     // Get the originator's key and generate KeyValue XML
     let originator_key = resolve_originator_key(ctx, agreement)?;
-    let kv_xml_content = originator_key.data.to_key_value_xml("")
+    let kv_xml_content = originator_key
+        .data
+        .to_key_value_xml("")
         .ok_or_else(|| Error::Key("originator key has no KeyValue XML representation".into()))?;
 
     // Build the prefix for KeyValue tag from the template
@@ -538,7 +617,9 @@ fn extract_prefix<'a>(xml_fragment: &'a str, local_name: &str) -> &'a str {
 }
 
 /// Read RSA-OAEP parameters from EncryptionMethod child elements.
-fn read_oaep_params(enc_method: roxmltree::Node<'_, '_>) -> bergshamra_crypto::keytransport::OaepParams {
+fn read_oaep_params(
+    enc_method: roxmltree::Node<'_, '_>,
+) -> bergshamra_crypto::keytransport::OaepParams {
     let mut params = bergshamra_crypto::keytransport::OaepParams::default();
 
     for child in enc_method.children() {

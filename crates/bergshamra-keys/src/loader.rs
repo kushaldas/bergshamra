@@ -15,7 +15,10 @@ pub fn load_rsa_private_pem(pem_data: &[u8]) -> Result<Key, Error> {
     if let Ok(pk) = rsa::RsaPrivateKey::from_pkcs8_pem(pem_str) {
         let public = pk.to_public_key();
         return Ok(Key::new(
-            KeyData::Rsa { private: Some(pk), public },
+            KeyData::Rsa {
+                private: Some(pk),
+                public,
+            },
             KeyUsage::Any,
         ));
     }
@@ -26,7 +29,10 @@ pub fn load_rsa_private_pem(pem_data: &[u8]) -> Result<Key, Error> {
         .map_err(|e| Error::Key(format!("failed to parse RSA private key PEM: {e}")))?;
     let public = pk.to_public_key();
     Ok(Key::new(
-        KeyData::Rsa { private: Some(pk), public },
+        KeyData::Rsa {
+            private: Some(pk),
+            public,
+        },
         KeyUsage::Any,
     ))
 }
@@ -40,7 +46,10 @@ pub fn load_rsa_public_pem(pem_data: &[u8]) -> Result<Key, Error> {
     // Try SPKI first
     if let Ok(pk) = rsa::RsaPublicKey::from_public_key_pem(pem_str) {
         return Ok(Key::new(
-            KeyData::Rsa { private: None, public: pk },
+            KeyData::Rsa {
+                private: None,
+                public: pk,
+            },
             KeyUsage::Verify,
         ));
     }
@@ -50,7 +59,10 @@ pub fn load_rsa_public_pem(pem_data: &[u8]) -> Result<Key, Error> {
     let pk = rsa::RsaPublicKey::from_pkcs1_pem(pem_str)
         .map_err(|e| Error::Key(format!("failed to parse RSA public key PEM: {e}")))?;
     Ok(Key::new(
-        KeyData::Rsa { private: None, public: pk },
+        KeyData::Rsa {
+            private: None,
+            public: pk,
+        },
         KeyUsage::Verify,
     ))
 }
@@ -65,7 +77,10 @@ pub fn load_ec_p256_private_pem(pem_data: &[u8]) -> Result<Key, Error> {
         .map_err(|e| Error::Key(format!("failed to parse EC P-256 private key: {e}")))?;
     let vk = *sk.verifying_key();
     Ok(Key::new(
-        KeyData::EcP256 { private: Some(sk), public: vk },
+        KeyData::EcP256 {
+            private: Some(sk),
+            public: vk,
+        },
         KeyUsage::Any,
     ))
 }
@@ -80,7 +95,10 @@ pub fn load_ec_p384_private_pem(pem_data: &[u8]) -> Result<Key, Error> {
         .map_err(|e| Error::Key(format!("failed to parse EC P-384 private key: {e}")))?;
     let vk = *sk.verifying_key();
     Ok(Key::new(
-        KeyData::EcP384 { private: Some(sk), public: vk },
+        KeyData::EcP384 {
+            private: Some(sk),
+            public: vk,
+        },
         KeyUsage::Any,
     ))
 }
@@ -96,7 +114,10 @@ pub fn load_ec_p521_private_pem(pem_data: &[u8]) -> Result<Key, Error> {
     let sk = p521::ecdsa::SigningKey::from(ecdsa::SigningKey::from(secret));
     let vk = p521::ecdsa::VerifyingKey::from(&sk);
     Ok(Key::new(
-        KeyData::EcP521 { private: Some(sk), public: vk },
+        KeyData::EcP521 {
+            private: Some(sk),
+            public: vk,
+        },
         KeyUsage::Any,
     ))
 }
@@ -110,14 +131,19 @@ pub fn load_hmac_key(data: &[u8]) -> Key {
 pub fn load_aes_key(data: &[u8]) -> Result<Key, Error> {
     match data.len() {
         16 | 24 | 32 => Ok(Key::new(KeyData::Aes(data.to_vec()), KeyUsage::Any)),
-        n => Err(Error::Key(format!("invalid AES key size: {n} (expected 16, 24, or 32)"))),
+        n => Err(Error::Key(format!(
+            "invalid AES key size: {n} (expected 16, 24, or 32)"
+        ))),
     }
 }
 
 /// Load a 3DES key from raw binary data.
 pub fn load_des3_key(data: &[u8]) -> Result<Key, Error> {
     if data.len() != 24 {
-        return Err(Error::Key(format!("invalid 3DES key size: {} (expected 24)", data.len())));
+        return Err(Error::Key(format!(
+            "invalid 3DES key size: {} (expected 24)",
+            data.len()
+        )));
     }
     Ok(Key::new(KeyData::Des3(data.to_vec()), KeyUsage::Any))
 }
@@ -132,7 +158,10 @@ fn load_private_key_pkcs8_der(der: &[u8]) -> Result<Key, Error> {
     if let Ok(pk) = rsa::RsaPrivateKey::from_pkcs8_der(der) {
         let public = pk.to_public_key();
         return Ok(Key::new(
-            KeyData::Rsa { private: Some(pk), public },
+            KeyData::Rsa {
+                private: Some(pk),
+                public,
+            },
             KeyUsage::Any,
         ));
     }
@@ -141,7 +170,10 @@ fn load_private_key_pkcs8_der(der: &[u8]) -> Result<Key, Error> {
     if let Ok(sk) = p256::ecdsa::SigningKey::from_pkcs8_der(der) {
         let vk = *sk.verifying_key();
         return Ok(Key::new(
-            KeyData::EcP256 { private: Some(sk), public: vk },
+            KeyData::EcP256 {
+                private: Some(sk),
+                public: vk,
+            },
             KeyUsage::Any,
         ));
     }
@@ -150,7 +182,10 @@ fn load_private_key_pkcs8_der(der: &[u8]) -> Result<Key, Error> {
     if let Ok(sk) = p384::ecdsa::SigningKey::from_pkcs8_der(der) {
         let vk = *sk.verifying_key();
         return Ok(Key::new(
-            KeyData::EcP384 { private: Some(sk), public: vk },
+            KeyData::EcP384 {
+                private: Some(sk),
+                public: vk,
+            },
             KeyUsage::Any,
         ));
     }
@@ -160,7 +195,10 @@ fn load_private_key_pkcs8_der(der: &[u8]) -> Result<Key, Error> {
         let sk = p521::ecdsa::SigningKey::from(ecdsa::SigningKey::from(secret));
         let vk = p521::ecdsa::VerifyingKey::from(&sk);
         return Ok(Key::new(
-            KeyData::EcP521 { private: Some(sk), public: vk },
+            KeyData::EcP521 {
+                private: Some(sk),
+                public: vk,
+            },
             KeyUsage::Any,
         ));
     }
@@ -172,7 +210,10 @@ fn load_private_key_pkcs8_der(der: &[u8]) -> Result<Key, Error> {
             if let Ok(sk) = dsa::SigningKey::try_from(pki) {
                 let vk = sk.verifying_key().clone();
                 return Ok(Key::new(
-                    KeyData::Dsa { private: Some(sk), public: vk },
+                    KeyData::Dsa {
+                        private: Some(sk),
+                        public: vk,
+                    },
                     KeyUsage::Any,
                 ));
             }
@@ -220,7 +261,10 @@ fn load_encrypted_pem(pem_data: &[u8], password: &str) -> Result<Key, Error> {
     if let Ok(pk) = rsa::RsaPrivateKey::from_pkcs8_encrypted_pem(pem_str, password) {
         let public = pk.to_public_key();
         return Ok(Key::new(
-            KeyData::Rsa { private: Some(pk), public },
+            KeyData::Rsa {
+                private: Some(pk),
+                public,
+            },
             KeyUsage::Any,
         ));
     }
@@ -229,7 +273,10 @@ fn load_encrypted_pem(pem_data: &[u8], password: &str) -> Result<Key, Error> {
     if let Ok(sk) = p256::ecdsa::SigningKey::from_pkcs8_encrypted_pem(pem_str, password) {
         let vk = *sk.verifying_key();
         return Ok(Key::new(
-            KeyData::EcP256 { private: Some(sk), public: vk },
+            KeyData::EcP256 {
+                private: Some(sk),
+                public: vk,
+            },
             KeyUsage::Any,
         ));
     }
@@ -238,7 +285,10 @@ fn load_encrypted_pem(pem_data: &[u8], password: &str) -> Result<Key, Error> {
     if let Ok(sk) = p384::ecdsa::SigningKey::from_pkcs8_encrypted_pem(pem_str, password) {
         let vk = *sk.verifying_key();
         return Ok(Key::new(
-            KeyData::EcP384 { private: Some(sk), public: vk },
+            KeyData::EcP384 {
+                private: Some(sk),
+                public: vk,
+            },
             KeyUsage::Any,
         ));
     }
@@ -248,7 +298,10 @@ fn load_encrypted_pem(pem_data: &[u8], password: &str) -> Result<Key, Error> {
         let sk = p521::ecdsa::SigningKey::from(ecdsa::SigningKey::from(secret));
         let vk = p521::ecdsa::VerifyingKey::from(&sk);
         return Ok(Key::new(
-            KeyData::EcP521 { private: Some(sk), public: vk },
+            KeyData::EcP521 {
+                private: Some(sk),
+                public: vk,
+            },
             KeyUsage::Any,
         ));
     }
@@ -311,7 +364,9 @@ pub fn load_pem_auto(pem_data: &[u8], password: Option<&str>) -> Result<Key, Err
     if let Ok(key) = load_generic_pkcs8_pem(pem_data) {
         return Ok(key);
     }
-    Err(Error::Key("unable to auto-detect key format from PEM data".into()))
+    Err(Error::Key(
+        "unable to auto-detect key format from PEM data".into(),
+    ))
 }
 
 /// Load a public key from a PEM-encoded SubjectPublicKeyInfo (`-----BEGIN PUBLIC KEY-----`).
@@ -345,7 +400,9 @@ pub fn load_x509_cert_pem(pem_data: &[u8]) -> Result<Key, Error> {
         .map_err(|e| Error::Key(format!("failed to decode certificate PEM: {e}")))?;
 
     if label != "CERTIFICATE" {
-        return Err(Error::Key(format!("expected CERTIFICATE PEM label, got: {label}")));
+        return Err(Error::Key(format!(
+            "expected CERTIFICATE PEM label, got: {label}"
+        )));
     }
 
     load_x509_cert_der(&der_bytes)
@@ -395,7 +452,10 @@ pub fn load_key_file_with_password(
     if let Ok(pk) = rsa::RsaPrivateKey::from_pkcs1_der(&data) {
         let public = pk.to_public_key();
         return Ok(Key::new(
-            KeyData::Rsa { private: Some(pk), public },
+            KeyData::Rsa {
+                private: Some(pk),
+                public,
+            },
             KeyUsage::Any,
         ));
     }
@@ -419,22 +479,26 @@ pub fn load_key_file_with_password(
 
 /// Load a public key from a DER-encoded X.509 certificate.
 pub fn load_x509_cert_der(data: &[u8]) -> Result<Key, Error> {
-    use x509_cert::Certificate;
     use der::{Decode, Encode};
+    use x509_cert::Certificate;
 
     let cert = Certificate::from_der(data)
         .map_err(|e| Error::Key(format!("failed to parse X.509 certificate: {e}")))?;
 
     // Extract SubjectPublicKeyInfo and try to parse it
     let spki = &cert.tbs_certificate.subject_public_key_info;
-    let spki_der = spki.to_der()
+    let spki_der = spki
+        .to_der()
         .map_err(|e| Error::Key(format!("failed to encode SPKI: {e}")))?;
 
     // Try RSA
     use spki::DecodePublicKey;
     if let Ok(pk) = rsa::RsaPublicKey::from_public_key_der(&spki_der) {
         let mut key = Key::new(
-            KeyData::Rsa { private: None, public: pk },
+            KeyData::Rsa {
+                private: None,
+                public: pk,
+            },
             KeyUsage::Verify,
         );
         key.x509_chain = vec![data.to_vec()];
@@ -444,7 +508,10 @@ pub fn load_x509_cert_der(data: &[u8]) -> Result<Key, Error> {
     // Try EC P-256
     if let Ok(vk) = p256::ecdsa::VerifyingKey::from_public_key_der(&spki_der) {
         let mut key = Key::new(
-            KeyData::EcP256 { private: None, public: vk },
+            KeyData::EcP256 {
+                private: None,
+                public: vk,
+            },
             KeyUsage::Verify,
         );
         key.x509_chain = vec![data.to_vec()];
@@ -454,7 +521,10 @@ pub fn load_x509_cert_der(data: &[u8]) -> Result<Key, Error> {
     // Try EC P-384
     if let Ok(vk) = p384::ecdsa::VerifyingKey::from_public_key_der(&spki_der) {
         let mut key = Key::new(
-            KeyData::EcP384 { private: None, public: vk },
+            KeyData::EcP384 {
+                private: None,
+                public: vk,
+            },
             KeyUsage::Verify,
         );
         key.x509_chain = vec![data.to_vec()];
@@ -463,11 +533,12 @@ pub fn load_x509_cert_der(data: &[u8]) -> Result<Key, Error> {
 
     // Try EC P-521
     if let Ok(pk) = p521::PublicKey::from_public_key_der(&spki_der) {
-        let vk = p521::ecdsa::VerifyingKey::from(
-            ecdsa::VerifyingKey::from(pk),
-        );
+        let vk = p521::ecdsa::VerifyingKey::from(ecdsa::VerifyingKey::from(pk));
         let mut key = Key::new(
-            KeyData::EcP521 { private: None, public: vk },
+            KeyData::EcP521 {
+                private: None,
+                public: vk,
+            },
             KeyUsage::Verify,
         );
         key.x509_chain = vec![data.to_vec()];
@@ -480,7 +551,10 @@ pub fn load_x509_cert_der(data: &[u8]) -> Result<Key, Error> {
         if let Ok(spki_ref) = spki::SubjectPublicKeyInfoRef::from_der(&spki_der) {
             if let Ok(vk) = dsa::VerifyingKey::try_from(spki_ref) {
                 let mut key = Key::new(
-                    KeyData::Dsa { private: None, public: vk },
+                    KeyData::Dsa {
+                        private: None,
+                        public: vk,
+                    },
                     KeyUsage::Verify,
                 );
                 key.x509_chain = vec![data.to_vec()];
@@ -501,7 +575,9 @@ pub fn load_x509_cert_der(data: &[u8]) -> Result<Key, Error> {
         return Ok(key);
     }
 
-    Err(Error::Key("unsupported public key algorithm in X.509 certificate".into()))
+    Err(Error::Key(
+        "unsupported public key algorithm in X.509 certificate".into(),
+    ))
 }
 
 /// Load a key from raw SubjectPublicKeyInfo DER bytes.
@@ -511,7 +587,10 @@ pub fn load_spki_der(spki_der: &[u8]) -> Result<Key, Error> {
     // Try RSA
     if let Ok(pk) = rsa::RsaPublicKey::from_public_key_der(spki_der) {
         return Ok(Key::new(
-            KeyData::Rsa { private: None, public: pk },
+            KeyData::Rsa {
+                private: None,
+                public: pk,
+            },
             KeyUsage::Verify,
         ));
     }
@@ -519,7 +598,10 @@ pub fn load_spki_der(spki_der: &[u8]) -> Result<Key, Error> {
     // Try EC P-256
     if let Ok(vk) = p256::ecdsa::VerifyingKey::from_public_key_der(spki_der) {
         return Ok(Key::new(
-            KeyData::EcP256 { private: None, public: vk },
+            KeyData::EcP256 {
+                private: None,
+                public: vk,
+            },
             KeyUsage::Verify,
         ));
     }
@@ -527,7 +609,10 @@ pub fn load_spki_der(spki_der: &[u8]) -> Result<Key, Error> {
     // Try EC P-384
     if let Ok(vk) = p384::ecdsa::VerifyingKey::from_public_key_der(spki_der) {
         return Ok(Key::new(
-            KeyData::EcP384 { private: None, public: vk },
+            KeyData::EcP384 {
+                private: None,
+                public: vk,
+            },
             KeyUsage::Verify,
         ));
     }
@@ -536,7 +621,10 @@ pub fn load_spki_der(spki_der: &[u8]) -> Result<Key, Error> {
     if let Ok(pk) = p521::PublicKey::from_public_key_der(spki_der) {
         let vk = p521::ecdsa::VerifyingKey::from(ecdsa::VerifyingKey::from(pk));
         return Ok(Key::new(
-            KeyData::EcP521 { private: None, public: vk },
+            KeyData::EcP521 {
+                private: None,
+                public: vk,
+            },
             KeyUsage::Verify,
         ));
     }
@@ -547,7 +635,10 @@ pub fn load_spki_der(spki_der: &[u8]) -> Result<Key, Error> {
         if let Ok(spki_ref) = spki::SubjectPublicKeyInfoRef::from_der(spki_der) {
             if let Ok(vk) = dsa::VerifyingKey::try_from(spki_ref) {
                 return Ok(Key::new(
-                    KeyData::Dsa { private: None, public: vk },
+                    KeyData::Dsa {
+                        private: None,
+                        public: vk,
+                    },
                     KeyUsage::Verify,
                 ));
             }
@@ -564,7 +655,9 @@ pub fn load_spki_der(spki_der: &[u8]) -> Result<Key, Error> {
         return Ok(key);
     }
 
-    Err(Error::Key("unsupported public key algorithm in SPKI DER".into()))
+    Err(Error::Key(
+        "unsupported public key algorithm in SPKI DER".into(),
+    ))
 }
 
 // ── DH key loading helpers ───────────────────────────────────────────
@@ -583,7 +676,10 @@ fn load_dh_private_pkcs8_der(der: &[u8]) -> Result<Key, Error> {
     use num_bigint_dig::BigUint;
 
     // Check that this is a DH key by looking for the OID
-    if !der.windows(OID_DH_PUBLIC_NUMBER.len()).any(|w| w == OID_DH_PUBLIC_NUMBER) {
+    if !der
+        .windows(OID_DH_PUBLIC_NUMBER.len())
+        .any(|w| w == OID_DH_PUBLIC_NUMBER)
+    {
         return Err(Error::Key("not a DH key (OID mismatch)".into()));
     }
 
@@ -615,6 +711,8 @@ fn load_dh_private_pkcs8_der(der: &[u8]) -> Result<Key, Error> {
     let (pk_octet, _) = parse_asn1_tl(rest, 0x04)?;
     let (x_bytes, _) = parse_asn1_integer(pk_octet)?;
 
+    validate_dh_params(&p_bytes, &g_bytes, q_bytes.as_deref())?;
+
     // Compute public key: y = g^x mod p
     let p_uint = BigUint::from_bytes_be(&p_bytes);
     let g_uint = BigUint::from_bytes_be(&g_bytes);
@@ -642,7 +740,10 @@ fn load_dh_private_pkcs8_der(der: &[u8]) -> Result<Key, Error> {
 /// }
 fn load_dh_public_spki_der(spki_der: &[u8]) -> Result<Key, Error> {
     // Check for DH OID
-    if !spki_der.windows(OID_DH_PUBLIC_NUMBER.len()).any(|w| w == OID_DH_PUBLIC_NUMBER) {
+    if !spki_der
+        .windows(OID_DH_PUBLIC_NUMBER.len())
+        .any(|w| w == OID_DH_PUBLIC_NUMBER)
+    {
         return Err(Error::Key("not a DH key (OID mismatch)".into()));
     }
 
@@ -675,6 +776,8 @@ fn load_dh_public_spki_der(spki_der: &[u8]) -> Result<Key, Error> {
     let inner = &bitstring_content[1..]; // skip unused bits byte
     let (y_bytes, _) = parse_asn1_integer(inner)?;
 
+    validate_dh_params(&p_bytes, &g_bytes, q_bytes.as_deref())?;
+
     Ok(Key::new(
         KeyData::Dh {
             p: p_bytes,
@@ -687,6 +790,41 @@ fn load_dh_public_spki_der(spki_der: &[u8]) -> Result<Key, Error> {
     ))
 }
 
+fn validate_dh_params(p: &[u8], g: &[u8], q: Option<&[u8]>) -> Result<(), Error> {
+    use num_bigint_dig::prime::probably_prime;
+    use num_bigint_dig::BigUint;
+    use num_traits::{One, Zero};
+
+    let p_uint = BigUint::from_bytes_be(p);
+    // W3C XML Encryption 1.1 §5.6.1: "The size of p MUST be at least 512 bits"
+    if p_uint.bits() < 512 {
+        return Err(Error::Key("DH prime p too small (W3C requires >= 512 bits)".into()));
+    }
+    if !probably_prime(&p_uint, 20) {
+        return Err(Error::Key("DH prime p is not prime".into()));
+    }
+    let g_uint = BigUint::from_bytes_be(g);
+    // W3C XML Encryption 1.1 §5.6.1: "g at least 160 bits"
+    if g_uint.bits() < 160 {
+        return Err(Error::Key("DH generator g too small (W3C requires >= 160 bits)".into()));
+    }
+    if g_uint >= p_uint {
+        return Err(Error::Key("DH generator g out of range".into()));
+    }
+    if let Some(q_bytes) = q {
+        let q_uint = BigUint::from_bytes_be(q_bytes);
+        if q_uint.is_zero() || q_uint.is_one() {
+            return Err(Error::Key("DH subgroup order q is trivial".into()));
+        }
+        let pm1 = &p_uint - BigUint::one();
+        if (&pm1 % &q_uint) != BigUint::zero() {
+            return Err(Error::Key("DH subgroup order q does not divide p-1".into()));
+        }
+    }
+
+    Ok(())
+}
+
 /// Parse an ASN.1 tag + length, returning (content, remaining_data).
 fn parse_asn1_tl(data: &[u8], expected_tag: u8) -> Result<(&[u8], &[u8]), Error> {
     if data.is_empty() || data[0] != expected_tag {
@@ -695,8 +833,8 @@ fn parse_asn1_tl(data: &[u8], expected_tag: u8) -> Result<(&[u8], &[u8]), Error>
             data.first().unwrap_or(&0)
         )));
     }
-    let (len, content_start) = parse_asn1_length(&data[1..])
-        .ok_or_else(|| Error::Key("invalid ASN.1 length".into()))?;
+    let (len, content_start) =
+        parse_asn1_length(&data[1..]).ok_or_else(|| Error::Key("invalid ASN.1 length".into()))?;
     if content_start.len() < len {
         return Err(Error::Key("ASN.1 length exceeds data".into()));
     }
@@ -709,8 +847,8 @@ fn skip_asn1_element(data: &[u8]) -> Result<(&[u8], &[u8]), Error> {
         return Err(Error::Key("empty ASN.1 data".into()));
     }
     let tag = data[0];
-    let (len, content_start) = parse_asn1_length(&data[1..])
-        .ok_or_else(|| Error::Key("invalid ASN.1 length".into()))?;
+    let (len, content_start) =
+        parse_asn1_length(&data[1..]).ok_or_else(|| Error::Key("invalid ASN.1 length".into()))?;
     if content_start.len() < len {
         return Err(Error::Key("ASN.1 element exceeds data".into()));
     }
@@ -740,8 +878,8 @@ fn parse_asn1_integer(data: &[u8]) -> Result<(Vec<u8>, &[u8]), Error> {
 fn try_load_pq_private_key(der: &[u8]) -> Option<Key> {
     use bergshamra_crypto::sign::PqAlgorithm;
     use ml_dsa::signature::Keypair;
-    use pkcs8_pq::DecodePrivateKey;
     use pkcs8_pq::spki::EncodePublicKey;
+    use pkcs8_pq::DecodePrivateKey;
 
     // First try the standard from_pkcs8_der (works if key is in RustCrypto format)
     macro_rules! try_standard {
@@ -851,12 +989,36 @@ fn try_load_pq_private_key(der: &[u8]) -> Option<Key> {
     try_ml_dsa_from_seed!(fips204::ID_ML_DSA_65, ml_dsa::MlDsa65, PqAlgorithm::MlDsa65);
     try_ml_dsa_from_seed!(fips204::ID_ML_DSA_87, ml_dsa::MlDsa87, PqAlgorithm::MlDsa87);
 
-    try_slh_dsa_from_raw!(fips205::ID_SLH_DSA_SHA_2_128_F, slh_dsa::Sha2_128f, PqAlgorithm::SlhDsaSha2_128f);
-    try_slh_dsa_from_raw!(fips205::ID_SLH_DSA_SHA_2_128_S, slh_dsa::Sha2_128s, PqAlgorithm::SlhDsaSha2_128s);
-    try_slh_dsa_from_raw!(fips205::ID_SLH_DSA_SHA_2_192_F, slh_dsa::Sha2_192f, PqAlgorithm::SlhDsaSha2_192f);
-    try_slh_dsa_from_raw!(fips205::ID_SLH_DSA_SHA_2_192_S, slh_dsa::Sha2_192s, PqAlgorithm::SlhDsaSha2_192s);
-    try_slh_dsa_from_raw!(fips205::ID_SLH_DSA_SHA_2_256_F, slh_dsa::Sha2_256f, PqAlgorithm::SlhDsaSha2_256f);
-    try_slh_dsa_from_raw!(fips205::ID_SLH_DSA_SHA_2_256_S, slh_dsa::Sha2_256s, PqAlgorithm::SlhDsaSha2_256s);
+    try_slh_dsa_from_raw!(
+        fips205::ID_SLH_DSA_SHA_2_128_F,
+        slh_dsa::Sha2_128f,
+        PqAlgorithm::SlhDsaSha2_128f
+    );
+    try_slh_dsa_from_raw!(
+        fips205::ID_SLH_DSA_SHA_2_128_S,
+        slh_dsa::Sha2_128s,
+        PqAlgorithm::SlhDsaSha2_128s
+    );
+    try_slh_dsa_from_raw!(
+        fips205::ID_SLH_DSA_SHA_2_192_F,
+        slh_dsa::Sha2_192f,
+        PqAlgorithm::SlhDsaSha2_192f
+    );
+    try_slh_dsa_from_raw!(
+        fips205::ID_SLH_DSA_SHA_2_192_S,
+        slh_dsa::Sha2_192s,
+        PqAlgorithm::SlhDsaSha2_192s
+    );
+    try_slh_dsa_from_raw!(
+        fips205::ID_SLH_DSA_SHA_2_256_F,
+        slh_dsa::Sha2_256f,
+        PqAlgorithm::SlhDsaSha2_256f
+    );
+    try_slh_dsa_from_raw!(
+        fips205::ID_SLH_DSA_SHA_2_256_S,
+        slh_dsa::Sha2_256s,
+        PqAlgorithm::SlhDsaSha2_256s
+    );
 
     None
 }
@@ -888,14 +1050,20 @@ fn parse_asn1_length(data: &[u8]) -> Option<(usize, &[u8])> {
     if first < 0x80 {
         Some((first as usize, &data[1..]))
     } else if first == 0x81 {
-        if data.len() < 2 { return None; }
+        if data.len() < 2 {
+            return None;
+        }
         Some((data[1] as usize, &data[2..]))
     } else if first == 0x82 {
-        if data.len() < 3 { return None; }
+        if data.len() < 3 {
+            return None;
+        }
         let len = ((data[1] as usize) << 8) | (data[2] as usize);
         Some((len, &data[3..]))
     } else if first == 0x83 {
-        if data.len() < 4 { return None; }
+        if data.len() < 4 {
+            return None;
+        }
         let len = ((data[1] as usize) << 16) | ((data[2] as usize) << 8) | (data[3] as usize);
         Some((len, &data[4..]))
     } else {
@@ -963,9 +1131,15 @@ mod tests {
             eprintln!("skipping test: {pem_path:?} not found");
             return;
         }
-        let key = load_key_file_with_password(pem_path, Some("secret123"))
-            .expect("load encrypted PEM");
-        assert!(matches!(key.data, KeyData::Rsa { private: Some(_), .. }));
+        let key =
+            load_key_file_with_password(pem_path, Some("secret123")).expect("load encrypted PEM");
+        assert!(matches!(
+            key.data,
+            KeyData::Rsa {
+                private: Some(_),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1017,7 +1191,8 @@ mod tests {
 
     #[test]
     fn test_load_pkcs12_dh() {
-        let p12_path = std::path::Path::new("../../test-data/xmlenc11-interop-2012/DH-1024_SHA256WithDSA.p12");
+        let p12_path =
+            std::path::Path::new("../../test-data/xmlenc11-interop-2012/DH-1024_SHA256WithDSA.p12");
         if !p12_path.exists() {
             eprintln!("skipping test: {p12_path:?} not found");
             return;
@@ -1025,7 +1200,11 @@ mod tests {
         let data = std::fs::read(p12_path).unwrap();
         let key = load_pkcs12(&data, "passwd").expect("load_pkcs12 DH should succeed");
         eprintln!("loaded key algo: {}", key.data.algorithm_name());
-        assert!(matches!(key.data, KeyData::Dh { .. }), "expected DH key, got {}", key.data.algorithm_name());
+        assert!(
+            matches!(key.data, KeyData::Dh { .. }),
+            "expected DH key, got {}",
+            key.data.algorithm_name()
+        );
     }
 
     #[test]
@@ -1037,7 +1216,11 @@ mod tests {
         }
         let key = load_key_file_with_password(pem_path, None).expect("load DH PEM private");
         eprintln!("loaded key algo: {}", key.data.algorithm_name());
-        assert!(matches!(key.data, KeyData::Dh { .. }), "expected DH key, got {}", key.data.algorithm_name());
+        assert!(
+            matches!(key.data, KeyData::Dh { .. }),
+            "expected DH key, got {}",
+            key.data.algorithm_name()
+        );
         if let KeyData::Dh { private_key, .. } = &key.data {
             assert!(private_key.is_some(), "should have private key");
         }
@@ -1045,13 +1228,18 @@ mod tests {
 
     #[test]
     fn test_load_dh_pem_public() {
-        let pem_path = std::path::Path::new("../../test-data/keys/dhx/dhx-rfc5114-3-second-pubkey.pem");
+        let pem_path =
+            std::path::Path::new("../../test-data/keys/dhx/dhx-rfc5114-3-second-pubkey.pem");
         if !pem_path.exists() {
             eprintln!("skipping test: {pem_path:?} not found");
             return;
         }
         let key = load_key_file_with_password(pem_path, None).expect("load DH PEM public");
         eprintln!("loaded key algo: {}", key.data.algorithm_name());
-        assert!(matches!(key.data, KeyData::Dh { .. }), "expected DH key, got {}", key.data.algorithm_name());
+        assert!(
+            matches!(key.data, KeyData::Dh { .. }),
+            "expected DH key, got {}",
+            key.data.algorithm_name()
+        );
     }
 }

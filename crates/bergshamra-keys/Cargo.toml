@@ -29,6 +29,7 @@ x509-cert.workspace = true
 bergshamra-pkcs12.workspace = true
 base64.workspace = true
 num-bigint-dig.workspace = true
+num-traits.workspace = true
 signature.workspace = true
 sha1.workspace = true
 sha2.workspace = true

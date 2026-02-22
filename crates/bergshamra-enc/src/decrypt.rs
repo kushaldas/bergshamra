@@ -147,7 +147,9 @@ fn resolve_decryption_key(
             if child_ns == ns::ENC && child_local == ns::node::ENCRYPTED_KEY {
                 match decrypt_encrypted_key(ctx, child, doc, id_map) {
                     Ok(key) => return Ok(key),
-                    Err(e) => { last_ek_error = Some(e); }
+                    Err(e) => {
+                        last_ek_error = Some(e);
+                    }
                 }
             }
 
@@ -185,8 +187,9 @@ fn resolve_decryption_key(
                         if retrieval_type.contains("EncryptedKey") {
                             if let Some(id) = retrieval_uri.strip_prefix('#') {
                                 if let Some(&node_id) = id_map.get(id) {
-                                    let target = doc.get_node(node_id)
-                                        .ok_or_else(|| Error::InvalidUri(format!("cannot resolve #{id}")))?;
+                                    let target = doc.get_node(node_id).ok_or_else(|| {
+                                        Error::InvalidUri(format!("cannot resolve #{id}"))
+                                    })?;
                                     return decrypt_encrypted_key(ctx, target, doc, id_map);
                                 }
                             }
@@ -221,9 +224,9 @@ fn decrypt_encrypted_key(
     // Read EncryptionMethod on EncryptedKey
     let enc_method = find_child_element(enc_key_node, ns::ENC, ns::node::ENCRYPTION_METHOD)
         .ok_or_else(|| Error::MissingElement("EncryptionMethod on EncryptedKey".into()))?;
-    let enc_uri = enc_method
-        .attribute(ns::attr::ALGORITHM)
-        .ok_or_else(|| Error::MissingAttribute("Algorithm on EncryptedKey EncryptionMethod".into()))?;
+    let enc_uri = enc_method.attribute(ns::attr::ALGORITHM).ok_or_else(|| {
+        Error::MissingAttribute("Algorithm on EncryptedKey EncryptionMethod".into())
+    })?;
 
     // Read CipherData/CipherValue
     let cipher_data = find_child_element(enc_key_node, ns::ENC, ns::node::CIPHER_DATA)
@@ -236,12 +239,16 @@ fn decrypt_encrypted_key(
         algorithm::RSA_PKCS1 | algorithm::RSA_OAEP | algorithm::RSA_OAEP_ENC11 => {
             // Extract OAEP params from EncryptionMethod child elements
             let oaep_params = read_oaep_params(enc_method);
-            let transport = bergshamra_crypto::keytransport::from_uri_with_params(enc_uri, oaep_params)?;
+            let transport =
+                bergshamra_crypto::keytransport::from_uri_with_params(enc_uri, oaep_params)?;
             // Prefer RSA private key; fall back to first RSA key
-            let rsa_key = ctx.keys_manager.find_rsa_private()
+            let rsa_key = ctx
+                .keys_manager
+                .find_rsa_private()
                 .or_else(|| ctx.keys_manager.find_rsa())
                 .ok_or_else(|| Error::Key("no RSA key for EncryptedKey decryption".into()))?;
-            let private_key = rsa_key.rsa_private_key()
+            let private_key = rsa_key
+                .rsa_private_key()
                 .ok_or_else(|| Error::Key("RSA private key required for key transport".into()))?;
             transport.decrypt(private_key, &cipher_bytes)
         }
@@ -260,10 +267,13 @@ fn decrypt_encrypted_key(
                 return kw.unwrap(&kek, &cipher_bytes);
             }
             // Fall back to named/static AES key
-            let aes_key = ctx.keys_manager.find_aes_by_size(expected_kek_size)
+            let aes_key = ctx
+                .keys_manager
+                .find_aes_by_size(expected_kek_size)
                 .or_else(|| ctx.keys_manager.find_aes())
                 .ok_or_else(|| Error::Key("no AES key for key unwrap".into()))?;
-            let kek_bytes = aes_key.symmetric_key_bytes()
+            let kek_bytes = aes_key
+                .symmetric_key_bytes()
                 .ok_or_else(|| Error::Key("AES key has no bytes".into()))?;
             kw.unwrap(kek_bytes, &cipher_bytes)
         }
@@ -271,24 +281,33 @@ fn decrypt_encrypted_key(
         // 3DES Key Wrap
         algorithm::KW_TRIPLEDES => {
             let kw = bergshamra_crypto::keywrap::from_uri(enc_uri)?;
-            let des_key = ctx.keys_manager.find_des3()
+            let des_key = ctx
+                .keys_manager
+                .find_des3()
                 .or_else(|| ctx.keys_manager.first_key().ok())
                 .ok_or_else(|| Error::Key("no symmetric key for 3DES key unwrap".into()))?;
-            let kek_bytes = des_key.symmetric_key_bytes()
+            let kek_bytes = des_key
+                .symmetric_key_bytes()
                 .ok_or_else(|| Error::Key("no symmetric key for 3DES key unwrap".into()))?;
             kw.unwrap(kek_bytes, &cipher_bytes)
         }
 
         // Regular cipher (AES-CBC/GCM, 3DES-CBC) used to encrypt key material
-        algorithm::AES128_CBC | algorithm::AES192_CBC | algorithm::AES256_CBC
-        | algorithm::AES128_GCM | algorithm::AES192_GCM | algorithm::AES256_GCM
+        algorithm::AES128_CBC
+        | algorithm::AES192_CBC
+        | algorithm::AES256_CBC
+        | algorithm::AES128_GCM
+        | algorithm::AES192_GCM
+        | algorithm::AES256_GCM
         | algorithm::TRIPLEDES_CBC => {
             let cipher = bergshamra_crypto::cipher::from_uri(enc_uri)?;
             let kek_bytes = resolve_encrypted_key_kek(ctx, enc_key_node)?;
             cipher.decrypt(&kek_bytes, &cipher_bytes)
         }
 
-        _ => Err(Error::UnsupportedAlgorithm(format!("EncryptedKey method: {enc_uri}"))),
+        _ => Err(Error::UnsupportedAlgorithm(format!(
+            "EncryptedKey method: {enc_uri}"
+        ))),
     }
 }
 
@@ -350,17 +369,23 @@ fn resolve_agreement_method_kek(
             let recipient_key = resolve_recipient_key(ctx, agreement)?;
 
             match &recipient_key.data {
-                bergshamra_keys::key::KeyData::EcP256 { private: Some(sk), .. } => {
+                bergshamra_keys::key::KeyData::EcP256 {
+                    private: Some(sk), ..
+                } => {
                     let secret = p256::SecretKey::from_bytes(&sk.to_bytes())
                         .map_err(|e| Error::Key(format!("P-256 secret key: {e}")))?;
                     bergshamra_crypto::keyagreement::ecdh_p256(&originator_public_bytes, &secret)?
                 }
-                bergshamra_keys::key::KeyData::EcP384 { private: Some(sk), .. } => {
+                bergshamra_keys::key::KeyData::EcP384 {
+                    private: Some(sk), ..
+                } => {
                     let secret = p384::SecretKey::from_bytes(&sk.to_bytes())
                         .map_err(|e| Error::Key(format!("P-384 secret key: {e}")))?;
                     bergshamra_crypto::keyagreement::ecdh_p384(&originator_public_bytes, &secret)?
                 }
-                bergshamra_keys::key::KeyData::EcP521 { private: Some(sk), .. } => {
+                bergshamra_keys::key::KeyData::EcP521 {
+                    private: Some(sk), ..
+                } => {
                     use p521::elliptic_curve::generic_array::GenericArray;
                     let bytes = sk.to_bytes();
                     let secret = p521::SecretKey::from_bytes(GenericArray::from_slice(&bytes))
@@ -378,9 +403,20 @@ fn resolve_agreement_method_kek(
             let recipient_key = resolve_recipient_key(ctx, agreement)?;
 
             match &recipient_key.data {
-                bergshamra_keys::key::KeyData::Dh { p, private_key: Some(x), .. } => {
+                bergshamra_keys::key::KeyData::Dh {
+                    p,
+                    q,
+                    private_key: Some(x),
+                    ..
+                } => {
+                    let q_bytes = q.as_deref().ok_or_else(|| {
+                        Error::Key("DH subgroup order q is required for DH-ES".into())
+                    })?;
                     bergshamra_crypto::keyagreement::dh_compute(
-                        &originator_dh.public_key, x, p,
+                        &originator_dh.public_key,
+                        x,
+                        p,
+                        Some(q_bytes),
                     )?
                 }
                 _ => {
@@ -426,9 +462,7 @@ fn resolve_agreement_method_kek(
 }
 
 /// Extract raw EC public key bytes (SEC1 uncompressed point) from a KeyInfo-like element.
-fn extract_ec_public_key_bytes(
-    key_info_node: roxmltree::Node<'_, '_>,
-) -> Result<Vec<u8>, Error> {
+fn extract_ec_public_key_bytes(key_info_node: roxmltree::Node<'_, '_>) -> Result<Vec<u8>, Error> {
     // Look for <KeyValue><ECKeyValue><PublicKey>
     let key_value = find_child_element(key_info_node, ns::DSIG, ns::node::KEY_VALUE)
         .ok_or_else(|| Error::MissingElement("KeyValue in OriginatorKeyInfo".into()))?;
@@ -475,16 +509,49 @@ fn resolve_recipient_key<'a>(
 
     // Fallback: try first DH key, then EC key with a private key
     if let Some(dh_key) = ctx.keys_manager.find_dh() {
-        if matches!(&dh_key.data, bergshamra_keys::key::KeyData::Dh { private_key: Some(_), .. }) {
+        if matches!(
+            &dh_key.data,
+            bergshamra_keys::key::KeyData::Dh {
+                private_key: Some(_),
+                ..
+            }
+        ) {
             return Ok(dh_key);
         }
     }
-    ctx.keys_manager.find_ec_p256()
-        .filter(|k| matches!(&k.data, bergshamra_keys::key::KeyData::EcP256 { private: Some(_), .. }))
-        .or_else(|| ctx.keys_manager.find_ec_p384()
-            .filter(|k| matches!(&k.data, bergshamra_keys::key::KeyData::EcP384 { private: Some(_), .. })))
-        .or_else(|| ctx.keys_manager.find_ec_p521()
-            .filter(|k| matches!(&k.data, bergshamra_keys::key::KeyData::EcP521 { private: Some(_), .. })))
+    ctx.keys_manager
+        .find_ec_p256()
+        .filter(|k| {
+            matches!(
+                &k.data,
+                bergshamra_keys::key::KeyData::EcP256 {
+                    private: Some(_),
+                    ..
+                }
+            )
+        })
+        .or_else(|| {
+            ctx.keys_manager.find_ec_p384().filter(|k| {
+                matches!(
+                    &k.data,
+                    bergshamra_keys::key::KeyData::EcP384 {
+                        private: Some(_),
+                        ..
+                    }
+                )
+            })
+        })
+        .or_else(|| {
+            ctx.keys_manager.find_ec_p521().filter(|k| {
+                matches!(
+                    &k.data,
+                    bergshamra_keys::key::KeyData::EcP521 {
+                        private: Some(_),
+                        ..
+                    }
+                )
+            })
+        })
         .ok_or_else(|| Error::Key("no private key for key agreement".into()))
 }
 
@@ -536,19 +603,28 @@ pub(crate) fn resolve_derived_key(
     enc_uri: &str,
 ) -> Result<Vec<u8>, Error> {
     // Get the master key name
-    let master_key_name = find_child_element(derived_key_node, ns::ENC11, ns::node::MASTER_KEY_NAME)
-        .and_then(|n| n.text())
-        .map(|t| t.trim())
-        .unwrap_or("");
+    let master_key_name =
+        find_child_element(derived_key_node, ns::ENC11, ns::node::MASTER_KEY_NAME)
+            .and_then(|n| n.text())
+            .map(|t| t.trim())
+            .unwrap_or("");
 
     // Look up master key in keys manager
     let master_key_bytes = if !master_key_name.is_empty() {
         if let Some(key) = ctx.keys_manager.find_by_name(master_key_name) {
             key.symmetric_key_bytes()
                 .map(|b| b.to_vec())
-                .ok_or_else(|| Error::Key(format!("master key '{}' has no symmetric data", master_key_name)))?
+                .ok_or_else(|| {
+                    Error::Key(format!(
+                        "master key '{}' has no symmetric data",
+                        master_key_name
+                    ))
+                })?
         } else {
-            return Err(Error::KeyNotFound(format!("master key '{}' not found", master_key_name)));
+            return Err(Error::KeyNotFound(format!(
+                "master key '{}' not found",
+                master_key_name
+            )));
         }
     } else {
         // Fall back to first key
@@ -559,9 +635,11 @@ pub(crate) fn resolve_derived_key(
     };
 
     // Parse KeyDerivationMethod
-    let kd_method = find_child_element(derived_key_node, ns::ENC11, ns::node::KEY_DERIVATION_METHOD)
-        .ok_or_else(|| Error::MissingElement("KeyDerivationMethod".into()))?;
-    let kd_alg = kd_method.attribute(ns::attr::ALGORITHM)
+    let kd_method =
+        find_child_element(derived_key_node, ns::ENC11, ns::node::KEY_DERIVATION_METHOD)
+            .ok_or_else(|| Error::MissingElement("KeyDerivationMethod".into()))?;
+    let kd_alg = kd_method
+        .attribute(ns::attr::ALGORITHM)
         .ok_or_else(|| Error::MissingAttribute("Algorithm on KeyDerivationMethod".into()))?;
 
     // Determine key length from the encryption algorithm
@@ -576,7 +654,9 @@ pub(crate) fn resolve_derived_key(
             let params = parse_pbkdf2_params(kd_method, key_len)?;
             bergshamra_crypto::kdf::pbkdf2_derive(&master_key_bytes, &params)
         }
-        _ => Err(Error::UnsupportedAlgorithm(format!("key derivation method: {kd_alg}"))),
+        _ => Err(Error::UnsupportedAlgorithm(format!(
+            "key derivation method: {kd_alg}"
+        ))),
     }
 }
 
@@ -638,20 +718,35 @@ pub(crate) fn parse_pbkdf2_params(
         use base64::Engine;
         let engine = base64::engine::general_purpose::STANDARD;
         let clean: String = salt_b64.chars().filter(|c| !c.is_whitespace()).collect();
-        engine.decode(&clean)
+        engine
+            .decode(&clean)
             .map_err(|e| Error::Base64(format!("PBKDF2 salt: {e}")))?
     };
 
     // IterationCount
-    let iter_count_node = find_child_element(pbkdf2_params_node, ns::ENC11, ns::node::PBKDF2_ITERATION_COUNT)
-        .ok_or_else(|| Error::MissingElement("IterationCount in PBKDF2-params".into()))?;
-    let iteration_count: u32 = iter_count_node.text().unwrap_or("0").trim()
-        .parse().map_err(|_| Error::XmlStructure("invalid IterationCount".into()))?;
+    let iter_count_node = find_child_element(
+        pbkdf2_params_node,
+        ns::ENC11,
+        ns::node::PBKDF2_ITERATION_COUNT,
+    )
+    .ok_or_else(|| Error::MissingElement("IterationCount in PBKDF2-params".into()))?;
+    let iteration_count: u32 = iter_count_node
+        .text()
+        .unwrap_or("0")
+        .trim()
+        .parse()
+        .map_err(|_| Error::XmlStructure("invalid IterationCount".into()))?;
 
     // KeyLength (optional, defaults to encryption algorithm key length)
-    let key_length = if let Some(kl_node) = find_child_element(pbkdf2_params_node, ns::ENC11, ns::node::PBKDF2_KEY_LENGTH) {
-        kl_node.text().unwrap_or("0").trim()
-            .parse::<usize>().unwrap_or(default_key_len)
+    let key_length = if let Some(kl_node) =
+        find_child_element(pbkdf2_params_node, ns::ENC11, ns::node::PBKDF2_KEY_LENGTH)
+    {
+        kl_node
+            .text()
+            .unwrap_or("0")
+            .trim()
+            .parse::<usize>()
+            .unwrap_or(default_key_len)
     } else {
         default_key_len
     };
@@ -659,7 +754,8 @@ pub(crate) fn parse_pbkdf2_params(
     // PRF (pseudo-random function)
     let prf_node = find_child_element(pbkdf2_params_node, ns::ENC11, ns::node::PBKDF2_PRF)
         .ok_or_else(|| Error::MissingElement("PRF in PBKDF2-params".into()))?;
-    let prf_uri = prf_node.attribute(ns::attr::ALGORITHM)
+    let prf_uri = prf_node
+        .attribute(ns::attr::ALGORITHM)
         .ok_or_else(|| Error::MissingAttribute("Algorithm on PRF".into()))?
         .to_owned();
 
@@ -702,7 +798,9 @@ fn hex_decode_strip_pad(s: &str) -> Result<Vec<u8>, Error> {
 }
 
 /// Read RSA-OAEP parameters from EncryptionMethod child elements.
-fn read_oaep_params(enc_method: roxmltree::Node<'_, '_>) -> bergshamra_crypto::keytransport::OaepParams {
+fn read_oaep_params(
+    enc_method: roxmltree::Node<'_, '_>,
+) -> bergshamra_crypto::keytransport::OaepParams {
     let mut params = bergshamra_crypto::keytransport::OaepParams::default();
 
     for child in enc_method.children() {
@@ -748,7 +846,9 @@ fn read_cipher_data(
     id_map: &HashMap<String, roxmltree::NodeId>,
 ) -> Result<Vec<u8>, Error> {
     // Try CipherValue first
-    if let Some(cipher_value) = find_child_element(cipher_data_node, ns::ENC, ns::node::CIPHER_VALUE) {
+    if let Some(cipher_value) =
+        find_child_element(cipher_data_node, ns::ENC, ns::node::CIPHER_VALUE)
+    {
         let b64_text = cipher_value.text().unwrap_or("").trim();
         let clean: String = b64_text.chars().filter(|c| !c.is_whitespace()).collect();
 
@@ -760,14 +860,20 @@ fn read_cipher_data(
     }
 
     // CipherReference: resolve URI and apply transforms
-    if let Some(cipher_ref) = find_child_element(cipher_data_node, ns::ENC, ns::node::CIPHER_REFERENCE) {
+    if let Some(cipher_ref) =
+        find_child_element(cipher_data_node, ns::ENC, ns::node::CIPHER_REFERENCE)
+    {
         if ctx.disable_cipher_reference {
-            return Err(Error::Other("CipherReference resolution is disabled".into()));
+            return Err(Error::Other(
+                "CipherReference resolution is disabled".into(),
+            ));
         }
         return resolve_cipher_reference(cipher_ref, doc, id_map);
     }
 
-    Err(Error::MissingElement("CipherValue or CipherReference".into()))
+    Err(Error::MissingElement(
+        "CipherValue or CipherReference".into(),
+    ))
 }
 
 /// Resolve a CipherReference element to get cipher bytes.
@@ -776,7 +882,8 @@ fn resolve_cipher_reference(
     doc: &roxmltree::Document<'_>,
     id_map: &HashMap<String, roxmltree::NodeId>,
 ) -> Result<Vec<u8>, Error> {
-    let uri = cipher_ref.attribute(ns::attr::URI)
+    let uri = cipher_ref
+        .attribute(ns::attr::URI)
         .ok_or_else(|| Error::MissingAttribute("URI on CipherReference".into()))?;
 
     // Resolve same-document URI reference
@@ -794,16 +901,18 @@ fn resolve_cipher_reference(
         text.into_bytes()
     } else if let Some(id) = uri.strip_prefix('#') {
         // Look up by ID
-        let &node_id = id_map.get(id)
+        let &node_id = id_map
+            .get(id)
             .ok_or_else(|| Error::InvalidUri(format!("cannot resolve CipherReference #{id}")))?;
-        let target = doc.get_node(node_id)
+        let target = doc
+            .get_node(node_id)
             .ok_or_else(|| Error::InvalidUri(format!("cannot resolve CipherReference #{id}")))?;
         // Collect all text content from the target element
         collect_text_content(target).into_bytes()
     } else {
-        return Err(Error::UnsupportedAlgorithm(
-            format!("CipherReference with non-fragment URI not supported: {uri}")
-        ));
+        return Err(Error::UnsupportedAlgorithm(format!(
+            "CipherReference with non-fragment URI not supported: {uri}"
+        )));
     };
 
     // Apply transforms if present
@@ -826,8 +935,9 @@ fn resolve_cipher_reference(
                     let engine = base64::engine::general_purpose::STANDARD;
                     let text = String::from_utf8_lossy(&result);
                     let clean: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-                    result = engine.decode(&clean)
-                        .map_err(|e| Error::Base64(format!("CipherReference base64 transform: {e}")))?;
+                    result = engine.decode(&clean).map_err(|e| {
+                        Error::Base64(format!("CipherReference base64 transform: {e}"))
+                    })?;
                 }
                 algorithm::XPATH => {
                     // XPath transform for CipherReference: evaluate XPath on the
@@ -835,9 +945,9 @@ fn resolve_cipher_reference(
                     result = apply_cipher_ref_xpath(doc, id_map, &child)?;
                 }
                 _ => {
-                    return Err(Error::UnsupportedAlgorithm(
-                        format!("CipherReference transform: {alg}")
-                    ));
+                    return Err(Error::UnsupportedAlgorithm(format!(
+                        "CipherReference transform: {alg}"
+                    )));
                 }
             }
         }
@@ -858,7 +968,8 @@ fn apply_cipher_ref_xpath(
     transform_node: &roxmltree::Node<'_, '_>,
 ) -> Result<Vec<u8>, Error> {
     // Get the XPath expression text
-    let xpath_node = transform_node.children()
+    let xpath_node = transform_node
+        .children()
         .find(|c| c.is_element() && c.tag_name().name() == "XPath")
         .ok_or_else(|| Error::MissingElement("XPath in CipherReference transform".into()))?;
     let xpath_text = xpath_node.text().unwrap_or("").trim();
@@ -871,7 +982,7 @@ fn apply_cipher_ref_xpath(
             // Split off the predicate
             if let Some(bracket_pos) = rest.find('[') {
                 let name_part = &rest[..bracket_pos]; // PREFIX:ELEM
-                let pred_part = &rest[bracket_pos..];  // [@Id="VALUE"]
+                let pred_part = &rest[bracket_pos..]; // [@Id="VALUE"]
 
                 // Parse the element name (PREFIX:LOCAL)
                 let (prefix, local_name) = if let Some(colon_pos) = name_part.find(':') {
@@ -922,16 +1033,16 @@ fn apply_cipher_ref_xpath(
                     }
                 }
 
-                return Err(Error::Transform(
-                    format!("CipherReference XPath: no matching element for {xpath_text}")
-                ));
+                return Err(Error::Transform(format!(
+                    "CipherReference XPath: no matching element for {xpath_text}"
+                )));
             }
         }
     }
 
-    Err(Error::UnsupportedAlgorithm(
-        format!("CipherReference XPath expression not supported: {xpath_text}")
-    ))
+    Err(Error::UnsupportedAlgorithm(format!(
+        "CipherReference XPath expression not supported: {xpath_text}"
+    )))
 }
 
 /// Parse a simple attribute predicate like `[@Id="VALUE"]` or `[@Id='VALUE']`.
@@ -972,9 +1083,8 @@ fn replace_encrypted_data_bytes(
 ) -> Result<Vec<u8>, Error> {
     // When Type is not Element or Content (e.g., MimeType="text/plain" with no Type,
     // or any non-XML type), the plaintext is opaque data — return it as-is.
-    let is_xml_type = enc_type.is_empty()
-        || enc_type.ends_with("#Element")
-        || enc_type.ends_with("#Content");
+    let is_xml_type =
+        enc_type.is_empty() || enc_type.ends_with("#Element") || enc_type.ends_with("#Content");
     if !is_xml_type {
         return Ok(plaintext.to_vec());
     }
@@ -1079,11 +1189,7 @@ fn normalize_empty_elements(data: &[u8]) -> Vec<u8> {
 
     while i < len {
         // Look for '>' immediately followed by '</' (empty element pattern)
-        if bytes[i] == b'>'
-            && i + 2 < len
-            && bytes[i + 1] == b'<'
-            && bytes[i + 2] == b'/'
-        {
+        if bytes[i] == b'>' && i + 2 < len && bytes[i + 1] == b'<' && bytes[i + 2] == b'/' {
             // Find the end of the closing tag
             let mut close_end = i + 3;
             while close_end < len && bytes[close_end] != b'>' {
@@ -1092,7 +1198,9 @@ fn normalize_empty_elements(data: &[u8]) -> Vec<u8> {
             if close_end < len {
                 let close_name = &s[i + 3..close_end];
                 if !close_name.is_empty()
-                    && !close_name.bytes().any(|b| b == b' ' || b == b'<' || b == b'>')
+                    && !close_name
+                        .bytes()
+                        .any(|b| b == b' ' || b == b'<' || b == b'>')
                 {
                     // Scan backwards to find the matching opening '<'
                     let mut open_start = i;
