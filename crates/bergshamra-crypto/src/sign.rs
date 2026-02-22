@@ -827,8 +827,9 @@ where
     }
     // Fall back to 32-byte seed (from OpenSSL format, extracted by loader)
     if private_der.len() == 32 {
-        let seed = ml_dsa::Seed::from_slice(private_der);
-        return Ok(ml_dsa::SigningKey::<P>::from_seed(seed));
+        let seed = ml_dsa::Seed::try_from(private_der)
+            .map_err(|_| Error::Key("invalid ML-DSA seed length".into()))?;
+        return Ok(ml_dsa::SigningKey::<P>::from_seed(&seed));
     }
     Err(Error::Key(format!(
         "failed to parse ML-DSA private key: expected PKCS#8 DER or 32-byte seed, got {} bytes",

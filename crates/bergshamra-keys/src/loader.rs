@@ -943,8 +943,8 @@ fn try_load_pq_private_key(der: &[u8]) -> Option<Key> {
         ($oid_const:expr, $paramset:ty, $algo:expr) => {
             if oid == $oid_const {
                 if inner_bytes.len() == 32 {
-                    let seed = ml_dsa::Seed::from_slice(&inner_bytes);
-                    let sk = ml_dsa::SigningKey::<$paramset>::from_seed(seed);
+                    let seed = ml_dsa::Seed::try_from(inner_bytes).expect("seed length already checked");
+                    let sk = ml_dsa::SigningKey::<$paramset>::from_seed(&seed);
                     let vk = sk.verifying_key();
                     if let Ok(pub_doc) = vk.to_public_key_der() {
                         // Store just the 32-byte seed — sign.rs will use from_seed()

@@ -724,8 +724,6 @@ fn xslt_apply_templates_to_node(
     strip_set: &std::collections::HashSet<String>,
     out: &mut String,
 ) {
-    const XSL_NS: &str = "http://www.w3.org/1999/XSL/Transform";
-
     // Find matching template
     if let Some(tmpl) = find_matching_template(node, templates) {
         // Execute template body
@@ -803,7 +801,7 @@ fn xslt_execute_body(
                     "copy" => {
                         if context_node.is_element() {
                             let local = context_node.tag_name().name();
-                            let elem_ns = context_node.tag_name().namespace();
+                            let _elem_ns = context_node.tag_name().namespace();
                             out.push('<');
                             out.push_str(local);
                             // Copy namespace declarations from context
@@ -820,7 +818,7 @@ fn xslt_execute_body(
                             // Copy attributes
                             for attr in context_node.attributes() {
                                 out.push(' ');
-                                if let Some(ns) = attr.namespace() {
+                                if let Some(_ns) = attr.namespace() {
                                     // Handle prefixed attributes
                                     out.push_str(attr.name());
                                 } else {
@@ -1031,7 +1029,7 @@ fn try_compound_xpath_filter(
     expr: &str,
     xpath_node: &roxmltree::Node<'_, '_>,
     data: bergshamra_transforms::TransformData,
-    sig_node: roxmltree::Node<'_, '_>,
+    _sig_node: roxmltree::Node<'_, '_>,
 ) -> Result<Option<bergshamra_transforms::TransformData>, Error> {
     use bergshamra_xml::nodeset::{NodeSet, NodeSetType, node_index};
     use std::collections::HashSet;
@@ -1205,25 +1203,6 @@ fn is_descendant_of_index(
         current = n.parent();
     }
     false
-}
-
-/// Find an ancestor of the given node matching ns_uri:local_name.
-fn find_ancestor_by_name<'a>(
-    node: roxmltree::Node<'a, 'a>,
-    ns_uri: &str,
-    local_name: &str,
-) -> Option<roxmltree::Node<'a, 'a>> {
-    let mut current = Some(node);
-    while let Some(n) = current {
-        if n.is_element()
-            && n.tag_name().namespace().unwrap_or("") == ns_uri
-            && n.tag_name().name() == local_name
-        {
-            return Some(n);
-        }
-        current = n.parent();
-    }
-    None
 }
 
 /// Find an ancestor of the given node matching ns_uri:local_name (reference version).

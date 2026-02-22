@@ -151,7 +151,6 @@ impl KeyData {
                 pk.to_public_key_der().ok().map(|d| d.to_vec())
             }
             Self::EcP521 { public, .. } => {
-                use p521::elliptic_curve::sec1::ToEncodedPoint;
                 let point = public.to_encoded_point(false);
                 let pk = p521::PublicKey::from_sec1_bytes(point.as_bytes()).ok()?;
                 pk.to_public_key_der().ok().map(|d| d.to_vec())
@@ -183,7 +182,6 @@ impl KeyData {
                 }
             }
             Self::EcP256 { public, .. } => {
-                use p256::elliptic_curve::sec1::ToEncodedPoint;
                 let point = public.to_encoded_point(false);
                 let pub_b64 = engine.encode(point.as_bytes());
                 Some(format!(
@@ -191,7 +189,6 @@ impl KeyData {
                 ))
             }
             Self::EcP384 { public, .. } => {
-                use p384::elliptic_curve::sec1::ToEncodedPoint;
                 let point = public.to_encoded_point(false);
                 let pub_b64 = engine.encode(point.as_bytes());
                 Some(format!(
@@ -199,7 +196,6 @@ impl KeyData {
                 ))
             }
             Self::EcP521 { public, .. } => {
-                use p521::elliptic_curve::sec1::ToEncodedPoint;
                 let point = public.to_encoded_point(false);
                 let pub_b64 = engine.encode(point.as_bytes());
                 Some(format!(
@@ -357,15 +353,12 @@ impl Key {
     pub fn ec_public_key_bytes(&self) -> Option<Vec<u8>> {
         match &self.data {
             KeyData::EcP256 { public, .. } => {
-                use p256::elliptic_curve::sec1::ToEncodedPoint;
                 Some(public.to_encoded_point(false).as_bytes().to_vec())
             }
             KeyData::EcP384 { public, .. } => {
-                use p384::elliptic_curve::sec1::ToEncodedPoint;
                 Some(public.to_encoded_point(false).as_bytes().to_vec())
             }
             KeyData::EcP521 { public, .. } => {
-                use p521::elliptic_curve::sec1::ToEncodedPoint;
                 Some(public.to_encoded_point(false).as_bytes().to_vec())
             }
             _ => None,

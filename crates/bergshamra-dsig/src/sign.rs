@@ -25,7 +25,7 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
     let mut id_attrs: Vec<&str> = vec!["Id", "ID", "id"];
     let extra: Vec<&str> = ctx.id_attrs.iter().map(|s| s.as_str()).collect();
     id_attrs.extend(extra);
-    let id_map = build_id_map(&doc, &id_attrs);
+    let _id_map = build_id_map(&doc, &id_attrs);
 
     // Find Signature element
     let sig_node = find_element(&doc, ns::DSIG, ns::node::SIGNATURE)
@@ -523,7 +523,6 @@ fn extract_x509_info(cert_der: &[u8]) -> X509Info {
 /// Uses the RFC 2253 / xmlsec convention.
 fn format_rdn_sequence(name: &x509_cert::name::Name) -> String {
     use der::oid::db::rfc4519;
-    use der::Decode;
     use std::fmt::Write;
 
     let mut parts = Vec::new();

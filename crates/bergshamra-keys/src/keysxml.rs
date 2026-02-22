@@ -12,7 +12,7 @@
 //! - `<DESKeyValue xmlns="...aleksey...">` — base64 3DES key
 //! - `<RSAKeyValue>` — standard ds:RSAKeyValue (Modulus + Exponent)
 
-use crate::key::{Key, KeyData};
+use crate::key::Key;
 use crate::loader;
 use bergshamra_core::Error;
 
@@ -127,6 +127,7 @@ pub fn load_keys_file(path: &std::path::Path) -> Result<Vec<Key>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::key::KeyData;
 
     #[test]
     fn test_parse_keys_xml() {

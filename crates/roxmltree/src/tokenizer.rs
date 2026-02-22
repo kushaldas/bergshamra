@@ -122,7 +122,7 @@ impl<'input> From<&'input str> for StrSpan<'input> {
 
 impl<'input> StrSpan<'input> {
     #[inline]
-    pub fn from_substr(text: &str, start: usize, end: usize) -> StrSpan {
+    pub fn from_substr(text: &str, start: usize, end: usize) -> StrSpan<'_> {
         debug_assert!(start <= end);
         StrSpan {
             text: &text[start..end],

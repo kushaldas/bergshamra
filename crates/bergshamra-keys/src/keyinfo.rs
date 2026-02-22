@@ -434,7 +434,6 @@ pub fn parse_rsa_key_value(key_value_node: roxmltree::Node<'_, '_>) -> Result<Ke
         .and_then(|n: roxmltree::Node<'_, '_>| n.text())
         .ok_or_else(|| Error::MissingElement("Exponent".into()))?;
 
-    use base64::Engine;
     let engine = base64::engine::general_purpose::STANDARD;
     let modulus_bytes = decode_crypto_binary(modulus_b64, &engine)
         .map_err(|e| Error::Base64(format!("Modulus: {e}")))?;
