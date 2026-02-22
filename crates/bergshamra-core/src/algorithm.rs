@@ -8,8 +8,7 @@
 // ── Canonicalization ─────────────────────────────────────────────────
 
 pub const C14N: &str = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315";
-pub const C14N_WITH_COMMENTS: &str =
-    "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments";
+pub const C14N_WITH_COMMENTS: &str = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments";
 pub const C14N11: &str = "http://www.w3.org/2006/12/xml-c14n11";
 pub const C14N11_WITH_COMMENTS: &str = "http://www.w3.org/2006/12/xml-c14n11#WithComments";
 pub const EXC_C14N: &str = "http://www.w3.org/2001/10/xml-exc-c14n#";
@@ -69,6 +68,10 @@ pub const ECDSA_SHA3_256: &str = "http://www.w3.org/2021/04/xmldsig-more#ecdsa-s
 pub const ECDSA_SHA3_384: &str = "http://www.w3.org/2021/04/xmldsig-more#ecdsa-sha3-384";
 pub const ECDSA_SHA3_512: &str = "http://www.w3.org/2021/04/xmldsig-more#ecdsa-sha3-512";
 
+// ── EdDSA signature algorithms ───────────────────────────────────────
+
+pub const EDDSA_ED25519: &str = "http://www.w3.org/2021/04/xmldsig-more#eddsa-ed25519";
+
 // ── HMAC signature algorithms ────────────────────────────────────────
 
 pub const HMAC_SHA1: &str = "http://www.w3.org/2000/09/xmldsig#hmac-sha1";
@@ -87,12 +90,18 @@ pub const ML_DSA_87: &str = "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#
 
 // ── SLH-DSA (FIPS-205) signature algorithms ───────────────────────────
 
-pub const SLH_DSA_SHA2_128F: &str = "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#slh-dsa-sha2-128f";
-pub const SLH_DSA_SHA2_128S: &str = "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#slh-dsa-sha2-128s";
-pub const SLH_DSA_SHA2_192F: &str = "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#slh-dsa-sha2-192f";
-pub const SLH_DSA_SHA2_192S: &str = "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#slh-dsa-sha2-192s";
-pub const SLH_DSA_SHA2_256F: &str = "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#slh-dsa-sha2-256f";
-pub const SLH_DSA_SHA2_256S: &str = "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#slh-dsa-sha2-256s";
+pub const SLH_DSA_SHA2_128F: &str =
+    "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#slh-dsa-sha2-128f";
+pub const SLH_DSA_SHA2_128S: &str =
+    "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#slh-dsa-sha2-128s";
+pub const SLH_DSA_SHA2_192F: &str =
+    "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#slh-dsa-sha2-192f";
+pub const SLH_DSA_SHA2_192S: &str =
+    "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#slh-dsa-sha2-192s";
+pub const SLH_DSA_SHA2_256F: &str =
+    "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#slh-dsa-sha2-256f";
+pub const SLH_DSA_SHA2_256S: &str =
+    "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#slh-dsa-sha2-256s";
 
 // ── Block cipher algorithms ──────────────────────────────────────────
 
@@ -129,11 +138,13 @@ pub const MGF1_SHA512: &str = "http://www.w3.org/2009/xmlenc11#mgf1sha512";
 
 pub const DH_ES: &str = "http://www.w3.org/2009/xmlenc11#dh-es";
 pub const ECDH_ES: &str = "http://www.w3.org/2009/xmlenc11#ECDH-ES";
+pub const X25519: &str = "http://www.w3.org/2021/04/xmldsig-more#x25519";
 
 // ── Key derivation algorithms ────────────────────────────────────────
 
 pub const PBKDF2: &str = "http://www.w3.org/2009/xmlenc11#pbkdf2";
 pub const CONCAT_KDF: &str = "http://www.w3.org/2009/xmlenc11#ConcatKDF";
+pub const HKDF: &str = "http://www.w3.org/2021/04/xmldsig-more#hkdf";
 
 // ── Transform algorithms ─────────────────────────────────────────────
 

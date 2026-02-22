@@ -9,6 +9,8 @@ description = "Key management for Bergshamra XML Security library"
 [dependencies]
 bergshamra-core.workspace = true
 bergshamra-crypto.workspace = true
+ed25519-dalek.workspace = true
+x25519-dalek.workspace = true
 rsa.workspace = true
 ecdsa.workspace = true
 dsa.workspace = true
@@ -36,3 +38,6 @@ sha2.workspace = true
 digest.workspace = true
 md-5.workspace = true
 uppsala.workspace = true
+
+[dev-dependencies]
+rand.workspace = true

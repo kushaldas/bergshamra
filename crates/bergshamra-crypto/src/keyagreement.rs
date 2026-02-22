@@ -77,6 +77,37 @@ pub fn ecdh_p521(
     Ok(shared_secret.raw_secret_bytes().to_vec())
 }
 
+/// Compute an X25519 Diffie-Hellman shared secret (RFC 7748).
+///
+/// Takes the originator's (ephemeral) public key as raw 32 bytes
+/// and the recipient's (static) private key as raw 32 bytes.
+/// Returns the 32-byte shared secret.
+pub fn ecdh_x25519(originator_public: &[u8], recipient_private: &[u8]) -> Result<Vec<u8>, Error> {
+    if originator_public.len() != 32 {
+        return Err(Error::Key(format!(
+            "invalid X25519 public key length: {} (expected 32)",
+            originator_public.len()
+        )));
+    }
+    if recipient_private.len() != 32 {
+        return Err(Error::Key(format!(
+            "invalid X25519 private key length: {} (expected 32)",
+            recipient_private.len()
+        )));
+    }
+
+    let mut pub_bytes = [0u8; 32];
+    pub_bytes.copy_from_slice(originator_public);
+    let their_public = x25519_dalek::PublicKey::from(pub_bytes);
+
+    let mut priv_bytes = [0u8; 32];
+    priv_bytes.copy_from_slice(recipient_private);
+    let my_secret = x25519_dalek::StaticSecret::from(priv_bytes);
+
+    let shared_secret = my_secret.diffie_hellman(&their_public);
+    Ok(shared_secret.as_bytes().to_vec())
+}
+
 /// Compute a finite-field Diffie-Hellman shared secret (X9.42 DH).
 ///
 /// shared_secret = other_public ^ my_private mod p
@@ -131,4 +162,64 @@ pub fn dh_compute(
     }
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn x25519_roundtrip() {
+        // Both parties generate key pairs; shared secret must match
+        let alice_secret = x25519_dalek::StaticSecret::random_from_rng(rand::thread_rng());
+        let alice_public = x25519_dalek::PublicKey::from(&alice_secret);
+
+        let bob_secret = x25519_dalek::StaticSecret::random_from_rng(rand::thread_rng());
+        let bob_public = x25519_dalek::PublicKey::from(&bob_secret);
+
+        // Alice computes shared secret with Bob's public key
+        let shared_alice = ecdh_x25519(bob_public.as_bytes(), alice_secret.as_bytes()).unwrap();
+
+        // Bob computes shared secret with Alice's public key
+        let shared_bob = ecdh_x25519(alice_public.as_bytes(), bob_secret.as_bytes()).unwrap();
+
+        assert_eq!(shared_alice, shared_bob);
+        assert_eq!(shared_alice.len(), 32);
+    }
+
+    #[test]
+    fn x25519_invalid_public_key_length() {
+        let secret = [0u8; 32];
+        let short_pub = [0u8; 16];
+        let err = ecdh_x25519(&short_pub, &secret).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid X25519 public key length"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn x25519_invalid_private_key_length() {
+        let pub_key = [0u8; 32];
+        let short_priv = [0u8; 16];
+        let err = ecdh_x25519(&pub_key, &short_priv).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("invalid X25519 private key length"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn x25519_deterministic() {
+        // Same inputs → same output
+        let alice_secret = x25519_dalek::StaticSecret::random_from_rng(rand::thread_rng());
+        let bob_secret = x25519_dalek::StaticSecret::random_from_rng(rand::thread_rng());
+        let bob_public = x25519_dalek::PublicKey::from(&bob_secret);
+
+        let shared1 = ecdh_x25519(bob_public.as_bytes(), alice_secret.as_bytes()).unwrap();
+        let shared2 = ecdh_x25519(bob_public.as_bytes(), alice_secret.as_bytes()).unwrap();
+
+        assert_eq!(shared1, shared2);
+    }
 }

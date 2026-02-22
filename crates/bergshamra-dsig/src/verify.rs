@@ -25,9 +25,7 @@ pub enum VerifyResult {
     /// Signature is valid.
     Valid,
     /// Signature is invalid.
-    Invalid {
-        reason: String,
-    },
+    Invalid { reason: String },
 }
 
 impl VerifyResult {
@@ -38,11 +36,10 @@ impl VerifyResult {
 
 /// Verify a signed XML document.
 pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
-    let doc = uppsala::parse(xml)
-        .map_err(|e| Error::XmlParse(e.to_string()))?;
+    let doc = uppsala::parse(xml).map_err(|e| Error::XmlParse(e.to_string()))?;
 
     // Build ID map
-    let mut id_attrs: Vec<&str> = vec!["Id", "ID", "id"];
+    let mut id_attrs: Vec<&str> = vec!["Id", "ID", "id", "AssertionID"];
     let extra: Vec<&str> = ctx.id_attrs.iter().map(|s| s.as_str()).collect();
     id_attrs.extend(extra);
     let id_map = build_id_map(&doc, &id_attrs);
@@ -56,56 +53,82 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
         .ok_or_else(|| Error::MissingElement("SignedInfo".into()))?;
 
     // Read CanonicalizationMethod
-    let c14n_method_node = find_child_element(&doc, signed_info, ns::DSIG, ns::node::CANONICALIZATION_METHOD)
-        .ok_or_else(|| Error::MissingElement("CanonicalizationMethod".into()))?;
-    let c14n_uri = doc.element(c14n_method_node)
+    let c14n_method_node = find_child_element(
+        &doc,
+        signed_info,
+        ns::DSIG,
+        ns::node::CANONICALIZATION_METHOD,
+    )
+    .ok_or_else(|| Error::MissingElement("CanonicalizationMethod".into()))?;
+    let c14n_uri = doc
+        .element(c14n_method_node)
         .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
         .ok_or_else(|| Error::MissingAttribute("Algorithm on CanonicalizationMethod".into()))?;
     let c14n_mode = C14nMode::from_uri(c14n_uri)
         .ok_or_else(|| Error::UnsupportedAlgorithm(format!("C14N: {c14n_uri}")))?;
 
     // Read SignatureMethod
-    let sig_method_node = find_child_element(&doc, signed_info, ns::DSIG, ns::node::SIGNATURE_METHOD)
-        .ok_or_else(|| Error::MissingElement("SignatureMethod".into()))?;
-    let sig_method_uri = doc.element(sig_method_node)
+    let sig_method_node =
+        find_child_element(&doc, signed_info, ns::DSIG, ns::node::SIGNATURE_METHOD)
+            .ok_or_else(|| Error::MissingElement("SignatureMethod".into()))?;
+    let sig_method_uri = doc
+        .element(sig_method_node)
         .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
         .ok_or_else(|| Error::MissingAttribute("Algorithm on SignatureMethod".into()))?;
 
     // Parse HMACOutputLength for HMAC truncation (CVE-2009-0217)
-    let hmac_output_length_bits: Option<usize> = if bergshamra_crypto::sign::is_hmac_algorithm(sig_method_uri) {
-        if let Some(len_node) = find_child_element(&doc, sig_method_node, ns::DSIG, ns::node::HMAC_OUTPUT_LENGTH) {
-            let len_text = element_text(&doc, len_node).unwrap_or("").trim();
-            let bits: usize = len_text
-                .parse()
-                .map_err(|_| Error::XmlStructure("invalid HMACOutputLength value".into()))?;
-            // Validate: must be a multiple of 8
-            if bits % 8 != 0 {
-                return Ok(VerifyResult::Invalid {
-                    reason: "HMACOutputLength must be a multiple of 8".into(),
-                });
+    let hmac_output_length_bits: Option<usize> =
+        if bergshamra_crypto::sign::is_hmac_algorithm(sig_method_uri) {
+            if let Some(len_node) = find_child_element(
+                &doc,
+                sig_method_node,
+                ns::DSIG,
+                ns::node::HMAC_OUTPUT_LENGTH,
+            ) {
+                let len_text = element_text(&doc, len_node).unwrap_or("").trim();
+                let bits: usize = len_text
+                    .parse()
+                    .map_err(|_| Error::XmlStructure("invalid HMACOutputLength value".into()))?;
+                // Validate: must be a multiple of 8
+                if bits % 8 != 0 {
+                    return Ok(VerifyResult::Invalid {
+                        reason: "HMACOutputLength must be a multiple of 8".into(),
+                    });
+                }
+                // Validate minimum truncation per W3C recommendation (CVE-2009-0217)
+                // Only enforce when hmac_min_out_len is explicitly set (matching xmlsec behavior)
+                if ctx.hmac_min_out_len > 0 && bits < ctx.hmac_min_out_len {
+                    return Ok(VerifyResult::Invalid {
+                        reason: format!(
+                            "HMACOutputLength {bits} bits is below minimum {} bits (CVE-2009-0217)",
+                            ctx.hmac_min_out_len
+                        ),
+                    });
+                }
+                Some(bits)
+            } else {
+                None
             }
-            // Validate minimum truncation per W3C recommendation (CVE-2009-0217)
-            // Only enforce when hmac_min_out_len is explicitly set (matching xmlsec behavior)
-            if ctx.hmac_min_out_len > 0 && bits < ctx.hmac_min_out_len {
-                return Ok(VerifyResult::Invalid {
-                    reason: format!(
-                        "HMACOutputLength {bits} bits is below minimum {} bits (CVE-2009-0217)",
-                        ctx.hmac_min_out_len
-                    ),
-                });
-            }
-            Some(bits)
         } else {
             None
-        }
-    } else {
-        None
-    };
+        };
 
     // Extract PQ context string from <MLDSAContextString> or <SLHDSAContextString>
     let pq_context: Option<Vec<u8>> = if bergshamra_crypto::sign::is_pq_algorithm(sig_method_uri) {
-        let ctx_node = find_child_element(&doc, sig_method_node, ns::XMLSEC_PQ, ns::node::MLDSA_CONTEXT_STRING)
-            .or_else(|| find_child_element(&doc, sig_method_node, ns::XMLSEC_PQ, ns::node::SLHDSA_CONTEXT_STRING));
+        let ctx_node = find_child_element(
+            &doc,
+            sig_method_node,
+            ns::XMLSEC_PQ,
+            ns::node::MLDSA_CONTEXT_STRING,
+        )
+        .or_else(|| {
+            find_child_element(
+                &doc,
+                sig_method_node,
+                ns::XMLSEC_PQ,
+                ns::node::SLHDSA_CONTEXT_STRING,
+            )
+        });
         if let Some(cn) = ctx_node {
             let b64 = element_text(&doc, cn).unwrap_or("").trim();
             if b64.is_empty() {
@@ -113,7 +136,8 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
             } else {
                 use base64::Engine;
                 let engine = base64::engine::general_purpose::STANDARD;
-                let decoded = engine.decode(b64)
+                let decoded = engine
+                    .decode(b64)
                     .map_err(|e| Error::Base64(format!("PQ context string: {e}")))?;
                 Some(decoded)
             }
@@ -130,7 +154,16 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
     // 3. Verify each Reference
     let references = find_child_elements(&doc, signed_info, ns::DSIG, ns::node::REFERENCE);
     for reference in &references {
-        let result = verify_reference(*reference, &doc, &id_map, xml, sig_node, &ctx.url_maps, ctx.debug, ctx.base_dir.as_deref())?;
+        let result = verify_reference(
+            *reference,
+            &doc,
+            &id_map,
+            xml,
+            sig_node,
+            &ctx.url_maps,
+            ctx.debug,
+            ctx.base_dir.as_deref(),
+        )?;
         if let VerifyResult::Invalid { reason } = result {
             return Ok(VerifyResult::Invalid {
                 reason: format!("Reference digest failed: {reason}"),
@@ -150,11 +183,21 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
         let effective_ki = resolve_key_info_reference(&doc, ki, &id_map).unwrap_or(ki);
         extracted_key = bergshamra_keys::keyinfo::extract_key_value(effective_ki, &doc)
             .or_else(|| try_unwrap_encrypted_key(&doc, effective_ki, &ctx.keys_manager).ok())
-            .or_else(|| try_resolve_retrieval_method(&doc, effective_ki, ctx.base_dir.as_deref(), &ctx.url_maps))
+            .or_else(|| {
+                try_resolve_retrieval_method(
+                    &doc,
+                    effective_ki,
+                    ctx.base_dir.as_deref(),
+                    &ctx.url_maps,
+                )
+            })
             .or_else(|| try_resolve_retrieval_method_inline(&doc, effective_ki, &id_map));
         if let Some(ref ek) = extracted_key {
             if ctx.debug {
-                eprintln!("== Key: extracted inline key ({})", ek.data.algorithm_name());
+                eprintln!(
+                    "== Key: extracted inline key ({})",
+                    ek.data.algorithm_name()
+                );
             }
             // Check if this key came from an X509Certificate
             if !ek.x509_chain.is_empty() {
@@ -162,9 +205,13 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
             }
             ek
         } else {
-            let k = bergshamra_keys::keyinfo::resolve_key_info(effective_ki, &doc, &ctx.keys_manager)?;
+            let k =
+                bergshamra_keys::keyinfo::resolve_key_info(effective_ki, &doc, &ctx.keys_manager)?;
             if ctx.debug {
-                eprintln!("== Key: resolved from manager ({})", k.data.algorithm_name());
+                eprintln!(
+                    "== Key: resolved from manager ({})",
+                    k.data.algorithm_name()
+                );
             }
             key_from_manager = true;
             k
@@ -172,7 +219,10 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
     } else {
         let k = ctx.keys_manager.first_key()?;
         if ctx.debug {
-            eprintln!("== Key: first key from manager ({})", k.data.algorithm_name());
+            eprintln!(
+                "== Key: first key from manager ({})",
+                k.data.algorithm_name()
+            );
         }
         key_from_manager = true;
         k
@@ -193,11 +243,7 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
             };
             // The first cert in x509_chain is the leaf
             let leaf_der = &key.x509_chain[0];
-            bergshamra_keys::x509::validate_cert_chain(
-                leaf_der,
-                &key.x509_chain,
-                &config,
-            )?;
+            bergshamra_keys::x509::validate_cert_chain(leaf_der, &key.x509_chain, &config)?;
             if ctx.debug {
                 eprintln!("== X.509 certificate chain: valid");
             }
@@ -279,14 +325,23 @@ fn verify_reference(
     base_dir: Option<&str>,
 ) -> Result<VerifyResult, Error> {
     // Read URI attribute
-    let uri = doc.element(reference)
+    let uri = doc
+        .element(reference)
         .and_then(|e| e.get_attribute(ns::attr::URI))
         .unwrap_or("");
+
+    // Skip cid: URIs — these reference MIME attachments outside the XML document
+    // (common in WS-Security). The caller must verify attachment digests separately.
+    // See docs/adr/0002-cid-uri-scheme-skip.md
+    if uri.starts_with("cid:") {
+        return Ok(VerifyResult::Valid);
+    }
 
     // Read DigestMethod
     let digest_method_node = find_child_element(doc, reference, ns::DSIG, ns::node::DIGEST_METHOD)
         .ok_or_else(|| Error::MissingElement("DigestMethod".into()))?;
-    let digest_uri = doc.element(digest_method_node)
+    let digest_uri = doc
+        .element(digest_method_node)
         .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
         .ok_or_else(|| Error::MissingAttribute("Algorithm on DigestMethod".into()))?;
 
@@ -311,22 +366,22 @@ fn verify_reference(
     // Read and apply transforms
     let transforms_node = find_child_element(doc, reference, ns::DSIG, ns::node::TRANSFORMS);
     let mut data = match resolved {
-        ResolvedUri::Xml { xml_text, node_set } => bergshamra_transforms::TransformData::Xml {
-            xml_text,
-            node_set,
-        },
+        ResolvedUri::Xml { xml_text, node_set } => {
+            bergshamra_transforms::TransformData::Xml { xml_text, node_set }
+        }
         ResolvedUri::Binary(bytes) => bergshamra_transforms::TransformData::Binary(bytes),
     };
 
     if let Some(transforms) = transforms_node {
         for transform_node in doc.children(transforms) {
-            let is_transform_elem = doc.element(transform_node).map_or(false, |e| {
-                e.name.local_name.as_ref() == ns::node::TRANSFORM
-            });
+            let is_transform_elem = doc
+                .element(transform_node)
+                .map_or(false, |e| e.name.local_name.as_ref() == ns::node::TRANSFORM);
             if !is_transform_elem {
                 continue;
             }
-            let transform_uri = doc.element(transform_node)
+            let transform_uri = doc
+                .element(transform_node)
                 .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
                 .unwrap_or("");
 
@@ -351,16 +406,17 @@ fn verify_reference(
         Ok(VerifyResult::Valid)
     } else {
         Ok(VerifyResult::Invalid {
-            reason: format!(
-                "URI={uri}: expected digest does not match computed digest"
-            ),
+            reason: format!("URI={uri}: expected digest does not match computed digest"),
         })
     }
 }
 
 /// Resolved URI data — either XML (same-document) or raw binary (external).
 enum ResolvedUri {
-    Xml { xml_text: String, node_set: Option<NodeSet> },
+    Xml {
+        xml_text: String,
+        node_set: Option<NodeSet>,
+    },
     Binary(Vec<u8>),
 }
 
@@ -377,11 +433,17 @@ fn resolve_reference_uri(
         // Whole document, per W3C spec section 4.3.3.3:
         // "if the URI is not a full XPointer, then all comment nodes are excluded"
         let ns = NodeSet::all_without_comments(doc);
-        Ok(ResolvedUri::Xml { xml_text: xml.to_owned(), node_set: Some(ns) })
+        Ok(ResolvedUri::Xml {
+            xml_text: xml.to_owned(),
+            node_set: Some(ns),
+        })
     } else if let Some(fragment) = xpath::parse_same_document_ref(uri) {
         // Handle xpointer(/) — selects entire document
         if fragment == "xpointer(/)" {
-            return Ok(ResolvedUri::Xml { xml_text: xml.to_owned(), node_set: None });
+            return Ok(ResolvedUri::Xml {
+                xml_text: xml.to_owned(),
+                node_set: None,
+            });
         }
         // Handle xpointer(id('...')) — extract the ID.
         // Per W3C: bare `#id` excludes comments, `#xpointer(id('...'))` includes them.
@@ -393,7 +455,10 @@ fn resolve_reference_uri(
         } else {
             NodeSet::tree_without_comments(node, doc)
         };
-        Ok(ResolvedUri::Xml { xml_text: xml.to_owned(), node_set: Some(ns) })
+        Ok(ResolvedUri::Xml {
+            xml_text: xml.to_owned(),
+            node_set: Some(ns),
+        })
     } else {
         // Try url-map for external URIs — read as raw bytes
         for (map_url, file_path) in url_maps {
@@ -416,12 +481,13 @@ fn resolve_reference_uri(
             // Try relative to CWD
             let path = std::path::Path::new(uri);
             if path.exists() {
-                let data = std::fs::read(path)
-                    .map_err(|e| Error::Other(format!("{uri}: {e}")))?;
+                let data = std::fs::read(path).map_err(|e| Error::Other(format!("{uri}: {e}")))?;
                 return Ok(ResolvedUri::Binary(data));
             }
         }
-        Err(Error::InvalidUri(format!("external URI not supported: {uri}")))
+        Err(Error::InvalidUri(format!(
+            "external URI not supported: {uri}"
+        )))
     }
 }
 
@@ -437,12 +503,17 @@ pub(crate) fn apply_transform(
 
     match uri {
         algorithm::ENVELOPED_SIGNATURE => {
-            let t = bergshamra_transforms::enveloped::EnvelopedSignatureTransform::from_node_id(sig_node);
+            let t = bergshamra_transforms::enveloped::EnvelopedSignatureTransform::from_node_id(
+                sig_node,
+            );
             t.execute(data)
         }
-        algorithm::C14N | algorithm::C14N_WITH_COMMENTS
-        | algorithm::C14N11 | algorithm::C14N11_WITH_COMMENTS
-        | algorithm::EXC_C14N | algorithm::EXC_C14N_WITH_COMMENTS => {
+        algorithm::C14N
+        | algorithm::C14N_WITH_COMMENTS
+        | algorithm::C14N11
+        | algorithm::C14N11_WITH_COMMENTS
+        | algorithm::EXC_C14N
+        | algorithm::EXC_C14N_WITH_COMMENTS => {
             let mode = C14nMode::from_uri(uri)
                 .ok_or_else(|| Error::UnsupportedAlgorithm(format!("C14N: {uri}")))?;
             let prefixes = read_inclusive_prefixes(doc, transform_node);
@@ -453,21 +524,11 @@ pub(crate) fn apply_transform(
             let t = bergshamra_transforms::base64_transform::Base64DecodeTransform;
             t.execute(data)
         }
-        algorithm::XPATH => {
-            apply_xpath_transform(data, transform_node, sig_node, doc)
-        }
-        algorithm::XPOINTER => {
-            apply_xpointer_transform(data, transform_node, doc)
-        }
-        algorithm::XPATH2 => {
-            apply_xpath_filter2_transform(data, transform_node, doc)
-        }
-        algorithm::RELATIONSHIP => {
-            apply_relationship_transform(data, transform_node, doc)
-        }
-        algorithm::XSLT => {
-            apply_xslt_transform(data, transform_node, doc)
-        }
+        algorithm::XPATH => apply_xpath_transform(data, transform_node, sig_node, doc),
+        algorithm::XPOINTER => apply_xpointer_transform(data, transform_node, doc),
+        algorithm::XPATH2 => apply_xpath_filter2_transform(data, transform_node, doc),
+        algorithm::RELATIONSHIP => apply_relationship_transform(data, transform_node, doc),
+        algorithm::XSLT => apply_xslt_transform(data, transform_node, doc),
         _ => Err(Error::UnsupportedAlgorithm(format!("transform: {uri}"))),
     }
 }
@@ -510,10 +571,8 @@ fn apply_relationship_transform(
     // Get the input XML text
     let xml_text = match &data {
         bergshamra_transforms::TransformData::Xml { xml_text, .. } => xml_text.clone(),
-        bergshamra_transforms::TransformData::Binary(bytes) => {
-            String::from_utf8(bytes.clone())
-                .map_err(|e| Error::Transform(format!("Relationship input not UTF-8: {e}")))?
-        }
+        bergshamra_transforms::TransformData::Binary(bytes) => String::from_utf8(bytes.clone())
+            .map_err(|e| Error::Transform(format!("Relationship input not UTF-8: {e}")))?,
     };
 
     // Parse the input XML
@@ -553,7 +612,9 @@ fn apply_relationship_transform(
                 rel_type: rel_type.to_owned(),
                 // OPC spec: TargetMode defaults to "Internal" when absent
                 target_mode: Some(
-                    elem.get_attribute("TargetMode").unwrap_or("Internal").to_owned(),
+                    elem.get_attribute("TargetMode")
+                        .unwrap_or("Internal")
+                        .to_owned(),
                 ),
             });
         }
@@ -588,7 +649,9 @@ fn apply_relationship_transform(
     }
     out.push_str("</Relationships>");
 
-    Ok(bergshamra_transforms::TransformData::Binary(out.into_bytes()))
+    Ok(bergshamra_transforms::TransformData::Binary(
+        out.into_bytes(),
+    ))
 }
 
 /// Escape a string for XML attribute value (C14N attribute escaping).
@@ -621,7 +684,8 @@ fn apply_xslt_transform(
     const XSL_NS: &str = "http://www.w3.org/1999/XSL/Transform";
 
     // Find the <xsl:stylesheet> child element
-    let stylesheet = outer_doc.children(transform_node)
+    let stylesheet = outer_doc
+        .children(transform_node)
         .into_iter()
         .find(|&id| {
             outer_doc.element(id).map_or(false, |e| {
@@ -632,7 +696,8 @@ fn apply_xslt_transform(
         .ok_or_else(|| Error::MissingElement("xsl:stylesheet in XSLT transform".into()))?;
 
     // Collect template elements
-    let templates: Vec<NodeId> = outer_doc.children(stylesheet)
+    let templates: Vec<NodeId> = outer_doc
+        .children(stylesheet)
         .into_iter()
         .filter(|&id| {
             outer_doc.element(id).map_or(false, |e| {
@@ -647,7 +712,8 @@ fn apply_xslt_transform(
     // select="@*|node()"/></xsl:copy>
     if templates.len() == 1 {
         let tmpl = templates[0];
-        let match_attr = outer_doc.element(tmpl)
+        let match_attr = outer_doc
+            .element(tmpl)
             .and_then(|e| e.get_attribute("match"))
             .unwrap_or("");
         if match_attr == "@*|node()" || match_attr == "node()|@*" {
@@ -685,17 +751,16 @@ fn apply_minimal_xslt(
     // Get the input XML
     let xml_text = match &data {
         bergshamra_transforms::TransformData::Xml { xml_text, .. } => xml_text.clone(),
-        bergshamra_transforms::TransformData::Binary(bytes) => {
-            String::from_utf8(bytes.clone())
-                .map_err(|e| Error::Transform(format!("XSLT input not UTF-8: {e}")))?
-        }
+        bergshamra_transforms::TransformData::Binary(bytes) => String::from_utf8(bytes.clone())
+            .map_err(|e| Error::Transform(format!("XSLT input not UTF-8: {e}")))?,
     };
 
     let input_doc = uppsala::parse(&xml_text)
         .map_err(|e| Error::Transform(format!("XSLT input XML parse: {e}")))?;
 
     // Check for xsl:strip-space
-    let strip_spaces: Vec<String> = outer_doc.children(stylesheet)
+    let strip_spaces: Vec<String> = outer_doc
+        .children(stylesheet)
         .into_iter()
         .filter(|&id| {
             outer_doc.element(id).map_or(false, |e| {
@@ -703,7 +768,12 @@ fn apply_minimal_xslt(
                     && e.name.local_name.as_ref() == "strip-space"
             })
         })
-        .filter_map(|id| outer_doc.element(id).and_then(|e| e.get_attribute("elements")).map(|s| s.to_owned()))
+        .filter_map(|id| {
+            outer_doc
+                .element(id)
+                .and_then(|e| e.get_attribute("elements"))
+                .map(|s| s.to_owned())
+        })
         .collect();
 
     // Build set of element names to strip whitespace from
@@ -713,7 +783,8 @@ fn apply_minimal_xslt(
         .collect();
 
     // Check for xsl:output
-    let _output_method = outer_doc.children(stylesheet)
+    let _output_method = outer_doc
+        .children(stylesheet)
         .into_iter()
         .find(|&id| {
             outer_doc.element(id).map_or(false, |e| {
@@ -721,7 +792,12 @@ fn apply_minimal_xslt(
                     && e.name.local_name.as_ref() == "output"
             })
         })
-        .and_then(|id| outer_doc.element(id).and_then(|e| e.get_attribute("method")).map(|s| s.to_owned()));
+        .and_then(|id| {
+            outer_doc
+                .element(id)
+                .and_then(|e| e.get_attribute("method"))
+                .map(|s| s.to_owned())
+        });
 
     // Get the default namespace from the stylesheet (for literal result elements)
     let default_ns: Option<String> = outer_doc.element(stylesheet).and_then(|e| {
@@ -736,9 +812,19 @@ fn apply_minimal_xslt(
     // Process root element
     let root = input_doc.document_element().unwrap();
     let mut output = String::new();
-    xslt_apply_templates_to_node(root, templates, outer_doc, &input_doc, &default_ns, &strip_set, &mut output);
+    xslt_apply_templates_to_node(
+        root,
+        templates,
+        outer_doc,
+        &input_doc,
+        &default_ns,
+        &strip_set,
+        &mut output,
+    );
 
-    Ok(bergshamra_transforms::TransformData::Binary(output.into_bytes()))
+    Ok(bergshamra_transforms::TransformData::Binary(
+        output.into_bytes(),
+    ))
 }
 
 /// Apply templates to a node.
@@ -754,12 +840,18 @@ fn xslt_apply_templates_to_node(
     // Find matching template
     if let Some(tmpl) = find_matching_template(node, templates, tmpl_doc, input_doc) {
         // Execute template body
-        xslt_execute_body(tmpl, node, templates, tmpl_doc, input_doc, default_ns, strip_set, out);
+        xslt_execute_body(
+            tmpl, node, templates, tmpl_doc, input_doc, default_ns, strip_set, out,
+        );
     } else {
         // Default: for elements, apply templates to children; for text, copy text
-        if matches!(input_doc.node_kind(node), Some(NodeKind::Text(_)) | Some(NodeKind::CData(_))) {
+        if matches!(
+            input_doc.node_kind(node),
+            Some(NodeKind::Text(_)) | Some(NodeKind::CData(_))
+        ) {
             // Check strip-space: skip whitespace-only text nodes if parent is in strip set
-            let parent_name = input_doc.parent(node)
+            let parent_name = input_doc
+                .parent(node)
                 .and_then(|p| input_doc.element(p))
                 .map(|e| e.name.local_name.to_string())
                 .unwrap_or_default();
@@ -767,14 +859,18 @@ fn xslt_apply_templates_to_node(
                 Some(NodeKind::Text(t)) | Some(NodeKind::CData(t)) => t.as_ref(),
                 _ => "",
             };
-            if strip_set.contains(&parent_name) && text.chars().all(|c: char| c.is_ascii_whitespace()) {
+            if strip_set.contains(&parent_name)
+                && text.chars().all(|c: char| c.is_ascii_whitespace())
+            {
                 // Skip whitespace-only text in stripped elements
             } else {
                 xml_escape_text(text, out);
             }
         } else if input_doc.element(node).is_some() {
             for child in input_doc.children(node) {
-                xslt_apply_templates_to_node(child, templates, tmpl_doc, input_doc, default_ns, strip_set, out);
+                xslt_apply_templates_to_node(
+                    child, templates, tmpl_doc, input_doc, default_ns, strip_set, out,
+                );
             }
         }
     }
@@ -813,14 +909,21 @@ fn xslt_execute_body(
                         if let Some(sel) = select {
                             // Simple child selection: "child-name"
                             for ch in input_doc.children(context_node) {
-                                if input_doc.element(ch).is_some() && xslt_node_matches_select(ch, sel, input_doc) {
-                                    xslt_apply_templates_to_node(ch, templates, tmpl_doc, input_doc, default_ns, strip_set, out);
+                                if input_doc.element(ch).is_some()
+                                    && xslt_node_matches_select(ch, sel, input_doc)
+                                {
+                                    xslt_apply_templates_to_node(
+                                        ch, templates, tmpl_doc, input_doc, default_ns, strip_set,
+                                        out,
+                                    );
                                 }
                             }
                         } else {
                             // Apply to all children
                             for ch in input_doc.children(context_node) {
-                                xslt_apply_templates_to_node(ch, templates, tmpl_doc, input_doc, default_ns, strip_set, out);
+                                xslt_apply_templates_to_node(
+                                    ch, templates, tmpl_doc, input_doc, default_ns, strip_set, out,
+                                );
                             }
                         }
                     }
@@ -857,11 +960,22 @@ fn xslt_execute_body(
                             }
                             out.push('>');
                             // Execute body children
-                            xslt_execute_body(child, context_node, templates, tmpl_doc, input_doc, default_ns, strip_set, out);
+                            xslt_execute_body(
+                                child,
+                                context_node,
+                                templates,
+                                tmpl_doc,
+                                input_doc,
+                                default_ns,
+                                strip_set,
+                                out,
+                            );
                             out.push_str("</");
                             out.push_str(local);
                             out.push('>');
-                        } else if let Some(NodeKind::Text(t)) | Some(NodeKind::CData(t)) = input_doc.node_kind(context_node) {
+                        } else if let Some(NodeKind::Text(t)) | Some(NodeKind::CData(t)) =
+                            input_doc.node_kind(context_node)
+                        {
                             xml_escape_text(t, out);
                         }
                     }
@@ -891,7 +1005,16 @@ fn xslt_execute_body(
                     out.push('"');
                 }
                 out.push('>');
-                xslt_execute_body(child, context_node, templates, tmpl_doc, input_doc, default_ns, strip_set, out);
+                xslt_execute_body(
+                    child,
+                    context_node,
+                    templates,
+                    tmpl_doc,
+                    input_doc,
+                    default_ns,
+                    strip_set,
+                    out,
+                );
                 out.push_str("</");
                 out.push_str(local);
                 out.push('>');
@@ -908,7 +1031,9 @@ fn xslt_node_matches_select(node: NodeId, select: &str, input_doc: &Document<'_>
         // Simple element name match (possibly with path like "player/name")
         let parts: Vec<&str> = select.split('/').collect();
         let last = parts.last().unwrap_or(&"");
-        input_doc.element(node).map_or(false, |e| e.name.local_name.as_ref() == *last)
+        input_doc
+            .element(node)
+            .map_or(false, |e| e.name.local_name.as_ref() == *last)
     }
 }
 
@@ -934,14 +1059,15 @@ fn find_matching_template(
 ) -> Option<NodeId> {
     let elem = input_doc.element(node)?;
     let local = &*elem.name.local_name;
-    let parent_name = input_doc.parent(node).and_then(|p| {
-        input_doc.element(p).map(|e| e.name.local_name.to_string())
-    });
+    let parent_name = input_doc
+        .parent(node)
+        .and_then(|p| input_doc.element(p).map(|e| e.name.local_name.to_string()));
 
     // Find the most specific matching template
     // Priority: parent/child > child > generic
     for &tmpl in templates {
-        let match_attr = tmpl_doc.element(tmpl)
+        let match_attr = tmpl_doc
+            .element(tmpl)
             .and_then(|e| e.get_attribute("match"))
             .unwrap_or("");
         // Check "parent/child" pattern
@@ -992,10 +1118,13 @@ fn apply_xpath_transform(
     outer_doc: &Document<'_>,
 ) -> Result<bergshamra_transforms::TransformData, Error> {
     // Extract the XPath expression from the <XPath> child element
-    let xpath_node = outer_doc.children(transform_node)
+    let xpath_node = outer_doc
+        .children(transform_node)
         .into_iter()
         .find(|&id| {
-            outer_doc.element(id).map_or(false, |e| e.name.local_name.as_ref() == "XPath")
+            outer_doc
+                .element(id)
+                .map_or(false, |e| e.name.local_name.as_ref() == "XPath")
         })
         .ok_or_else(|| Error::MissingElement("XPath expression element".into()))?;
 
@@ -1016,7 +1145,8 @@ fn apply_xpath_transform(
     {
         // Apply enveloped signature transform (same as the dedicated one)
         use bergshamra_transforms::pipeline::Transform;
-        let t = bergshamra_transforms::enveloped::EnvelopedSignatureTransform::from_node_id(sig_node);
+        let t =
+            bergshamra_transforms::enveloped::EnvelopedSignatureTransform::from_node_id(sig_node);
         return t.execute(data);
     }
 
@@ -1027,9 +1157,9 @@ fn apply_xpath_transform(
 
     // Try to handle compound XPath expressions with here() and id()
     // Pattern: "A and count(ancestor-or-self::P:E | here()/ancestor::P:E[1]) > count(ancestor-or-self::P:E) or count(ancestor-or-self::node() | id('X')) = count(ancestor-or-self::node())"
-    if let Some(result) = try_compound_xpath_filter(
-        xpath_expr, xpath_node, outer_doc, data, sig_node,
-    )? {
+    if let Some(result) =
+        try_compound_xpath_filter(xpath_expr, xpath_node, outer_doc, data, sig_node)?
+    {
         return Ok(result);
     }
 
@@ -1110,9 +1240,7 @@ fn try_compound_xpath_filter(
 
     // Now we have all components. Evaluate the expression on the document.
     let (xml_text, input_ns) = match data {
-        bergshamra_transforms::TransformData::Xml { xml_text, node_set } => {
-            (xml_text, node_set)
-        }
+        bergshamra_transforms::TransformData::Xml { xml_text, node_set } => (xml_text, node_set),
         bergshamra_transforms::TransformData::Binary(bytes) => {
             let text = String::from_utf8(bytes)
                 .map_err(|e| Error::XmlParse(format!("XPath: invalid UTF-8: {e}")))?;
@@ -1120,16 +1248,16 @@ fn try_compound_xpath_filter(
         }
     };
 
-    let inner_doc = uppsala::parse(&xml_text)
-        .map_err(|e| Error::XmlParse(e.to_string()))?;
+    let inner_doc = uppsala::parse(&xml_text).map_err(|e| Error::XmlParse(e.to_string()))?;
 
     // Find the here() Reference/element: here() returns the <XPath> element itself.
     // Walk up from xpath_node (which IS the <XPath> element) to find its ancestor
     // Reference. Use the node INDEX for cross-document comparison.
-    let here_ancestor_idx = find_ancestor_by_name_idx(xpath_node, outer_doc, &b_ns_uri, &b_local_name);
+    let here_ancestor_idx =
+        find_ancestor_by_name_idx(xpath_node, outer_doc, &b_ns_uri, &b_local_name);
 
     // Find the id('X') element in the re-parsed document
-    let id_map = build_id_map(&inner_doc, &["Id", "ID", "id"]);
+    let id_map = build_id_map(&inner_doc, &["Id", "ID", "id", "AssertionID"]);
     let id_element_idx = id_map.get(id_value).map(|nid| nid.index());
 
     // Filter nodes
@@ -1219,11 +1347,7 @@ fn is_ancestor_or_self_match(
 
 /// Check if a node is a descendant-or-self of a target node identified by index.
 /// Uses node index for cross-document comparison (same text → same indices).
-fn is_descendant_of_index(
-    node: NodeId,
-    doc: &Document<'_>,
-    target_idx: usize,
-) -> bool {
+fn is_descendant_of_index(node: NodeId, doc: &Document<'_>, target_idx: usize) -> bool {
     let mut current = Some(node);
     while let Some(n) = current {
         if n.index() == target_idx {
@@ -1261,13 +1385,19 @@ enum XPathBoolExpr {
     /// Always true — matches all nodes (e.g., XPath `1` or `true()`)
     True,
     /// `ancestor-or-self::ns:Name` — true if node or any ancestor is the named element
-    AncestorOrSelf { ns_uri: String, local_name: String },
+    AncestorOrSelf {
+        ns_uri: String,
+        local_name: String,
+    },
     /// `self::text()` — true for text nodes
     SelfText,
     /// `@*` — true if node is an element with at least one attribute
     HasAttributes,
     /// `self::prefix:Name` — true if current node is the named element
-    SelfElement { ns_uri: String, local_name: String },
+    SelfElement {
+        ns_uri: String,
+        local_name: String,
+    },
     /// `not(expr)`
     Not(Box<XPathBoolExpr>),
     /// `expr and expr`
@@ -1281,7 +1411,10 @@ enum XPathBoolExpr {
     NamespaceUriEq(String),
     NamespaceUriNeq(String),
     /// `parent::prefix:Name` — true if parent is the named element
-    ParentIs { ns_uri: String, local_name: String },
+    ParentIs {
+        ns_uri: String,
+        local_name: String,
+    },
     /// `string(self::node()) = namespace-uri(parent::node())` — for namespace node testing
     StringSelfEqNsUriParent,
     /// `count(parent::node()/namespace::*) != count(parent::node()/namespace::* | self::node())`
@@ -1298,7 +1431,11 @@ enum XPathBoolExpr {
 ///
 /// Handles combinations of `ancestor-or-self::prefix:Name`, `self::text()`,
 /// `not()`, `and`, `or`.
-fn parse_xpath_bool_expr(expr: &str, xpath_node: NodeId, doc: &Document<'_>) -> Option<XPathBoolExpr> {
+fn parse_xpath_bool_expr(
+    expr: &str,
+    xpath_node: NodeId,
+    doc: &Document<'_>,
+) -> Option<XPathBoolExpr> {
     let expr = expr.trim();
     if expr.is_empty() {
         return None;
@@ -1336,7 +1473,7 @@ fn parse_xpath_bool_expr(expr: &str, xpath_node: NodeId, doc: &Document<'_>) -> 
 
     // Handle parenthesized expression
     if expr.starts_with('(') && expr.ends_with(')') {
-        return parse_xpath_bool_expr(&expr[1..expr.len()-1], xpath_node, doc);
+        return parse_xpath_bool_expr(&expr[1..expr.len() - 1], xpath_node, doc);
     }
 
     // self::text()
@@ -1440,9 +1577,16 @@ fn split_top_level<'a>(expr: &'a str, sep: &str) -> Option<(&'a str, &'a str)> {
     let bytes = expr.as_bytes();
     let sep_bytes = sep.as_bytes();
     for i in 0..bytes.len() {
-        if bytes[i] == b'(' { depth += 1; }
-        if bytes[i] == b')' { depth -= 1; }
-        if depth == 0 && i + sep_bytes.len() <= bytes.len() && &bytes[i..i + sep_bytes.len()] == sep_bytes {
+        if bytes[i] == b'(' {
+            depth += 1;
+        }
+        if bytes[i] == b')' {
+            depth -= 1;
+        }
+        if depth == 0
+            && i + sep_bytes.len() <= bytes.len()
+            && &bytes[i..i + sep_bytes.len()] == sep_bytes
+        {
             let left = &expr[..i];
             let right = &expr[i + sep.len()..];
             if !left.trim().is_empty() && !right.trim().is_empty() {
@@ -1470,13 +1614,19 @@ fn strip_not(expr: &str) -> Option<&str> {
     }
     {
         // Check that the closing paren matches the opening one after "not("
-        let inner = &expr[prefix_len..expr.len()-1];
+        let inner = &expr[prefix_len..expr.len() - 1];
         // Verify balanced parentheses
         let mut depth = 0i32;
         for c in inner.chars() {
-            if c == '(' { depth += 1; }
-            if c == ')' { depth -= 1; }
-            if depth < 0 { return None; }
+            if c == '(' {
+                depth += 1;
+            }
+            if c == ')' {
+                depth -= 1;
+            }
+            if depth < 0 {
+                return None;
+            }
         }
         if depth == 0 {
             return Some(inner.trim());
@@ -1486,7 +1636,11 @@ fn strip_not(expr: &str) -> Option<&str> {
 }
 
 /// Resolve a possibly-prefixed element name using the XPath node's namespace declarations.
-fn resolve_prefixed_name(name: &str, xpath_node: NodeId, doc: &Document<'_>) -> Option<(String, String)> {
+fn resolve_prefixed_name(
+    name: &str,
+    xpath_node: NodeId,
+    doc: &Document<'_>,
+) -> Option<(String, String)> {
     if let Some((prefix, local)) = name.split_once(':') {
         // Resolve namespace prefix on the element itself
         if let Some(elem) = doc.element(xpath_node) {
@@ -1530,11 +1684,7 @@ struct NsNode {
 }
 
 /// Evaluate a parsed XPath boolean expression for a given regular node.
-fn eval_xpath_bool(
-    expr: &XPathBoolExpr,
-    node: NodeId,
-    doc: &Document<'_>,
-) -> bool {
+fn eval_xpath_bool(expr: &XPathBoolExpr, node: NodeId, doc: &Document<'_>) -> bool {
     match expr {
         XPathBoolExpr::True => true,
         XPathBoolExpr::AncestorOrSelf { ns_uri, local_name } => {
@@ -1543,7 +1693,8 @@ fn eval_xpath_bool(
             while let Some(n) = current {
                 if let Some(elem) = doc.element(n) {
                     if elem.name.local_name.as_ref() == local_name.as_str()
-                        && (ns_uri.is_empty() || elem.name.namespace_uri.as_deref().unwrap_or("") == ns_uri)
+                        && (ns_uri.is_empty()
+                            || elem.name.namespace_uri.as_deref().unwrap_or("") == ns_uri)
                     {
                         return true;
                     }
@@ -1553,13 +1704,13 @@ fn eval_xpath_bool(
             false
         }
         XPathBoolExpr::SelfText => matches!(doc.node_kind(node), Some(NodeKind::Text(_))),
-        XPathBoolExpr::HasAttributes => doc.element(node).map_or(false, |e| !e.attributes.is_empty()),
-        XPathBoolExpr::SelfElement { ns_uri, local_name } => {
-            doc.element(node).map_or(false, |e| {
-                e.name.local_name.as_ref() == local_name.as_str()
-                    && (ns_uri.is_empty() || e.name.namespace_uri.as_deref().unwrap_or("") == ns_uri)
-            })
-        }
+        XPathBoolExpr::HasAttributes => doc
+            .element(node)
+            .map_or(false, |e| !e.attributes.is_empty()),
+        XPathBoolExpr::SelfElement { ns_uri, local_name } => doc.element(node).map_or(false, |e| {
+            e.name.local_name.as_ref() == local_name.as_str()
+                && (ns_uri.is_empty() || e.name.namespace_uri.as_deref().unwrap_or("") == ns_uri)
+        }),
         XPathBoolExpr::Not(inner) => !eval_xpath_bool(inner, node, doc),
         XPathBoolExpr::And(left, right) => {
             eval_xpath_bool(left, node, doc) && eval_xpath_bool(right, node, doc)
@@ -1606,7 +1757,8 @@ fn eval_xpath_bool(
             if let Some(parent) = doc.parent(node) {
                 doc.element(parent).map_or(false, |e| {
                     e.name.local_name.as_ref() == local_name.as_str()
-                        && (ns_uri.is_empty() || e.name.namespace_uri.as_deref().unwrap_or("") == ns_uri)
+                        && (ns_uri.is_empty()
+                            || e.name.namespace_uri.as_deref().unwrap_or("") == ns_uri)
                 })
             } else {
                 false
@@ -1639,11 +1791,7 @@ fn eval_xpath_bool(
 }
 
 /// Evaluate a parsed XPath boolean expression for a virtual namespace node.
-fn eval_xpath_bool_ns(
-    expr: &XPathBoolExpr,
-    ns_node: &NsNode,
-    doc: &Document<'_>,
-) -> bool {
+fn eval_xpath_bool_ns(expr: &XPathBoolExpr, ns_node: &NsNode, doc: &Document<'_>) -> bool {
     match expr {
         XPathBoolExpr::True => true,
         XPathBoolExpr::AncestorOrSelf { ns_uri, local_name } => {
@@ -1652,7 +1800,8 @@ fn eval_xpath_bool_ns(
             while let Some(n) = current {
                 if let Some(elem) = doc.element(n) {
                     if elem.name.local_name.as_ref() == local_name.as_str()
-                        && (ns_uri.is_empty() || elem.name.namespace_uri.as_deref().unwrap_or("") == ns_uri)
+                        && (ns_uri.is_empty()
+                            || elem.name.namespace_uri.as_deref().unwrap_or("") == ns_uri)
                     {
                         return true;
                     }
@@ -1675,26 +1824,24 @@ fn eval_xpath_bool_ns(
             // For namespace nodes, name() returns the prefix
             ns_node.prefix == *s
         }
-        XPathBoolExpr::NameNeq(s) => {
-            ns_node.prefix != *s
-        }
+        XPathBoolExpr::NameNeq(s) => ns_node.prefix != *s,
         XPathBoolExpr::NamespaceUriEq(s) => {
             // namespace-uri() on namespace nodes is "" per XPath 1.0 spec §4.1
             s.is_empty()
         }
-        XPathBoolExpr::NamespaceUriNeq(s) => {
-            !s.is_empty()
-        }
+        XPathBoolExpr::NamespaceUriNeq(s) => !s.is_empty(),
         XPathBoolExpr::ParentIs { ns_uri, local_name } => {
             doc.element(ns_node.parent).map_or(false, |e| {
                 e.name.local_name.as_ref() == local_name.as_str()
-                    && (ns_uri.is_empty() || e.name.namespace_uri.as_deref().unwrap_or("") == ns_uri)
+                    && (ns_uri.is_empty()
+                        || e.name.namespace_uri.as_deref().unwrap_or("") == ns_uri)
             })
         }
         XPathBoolExpr::StringSelfEqNsUriParent => {
             // string(self::node()) for namespace nodes = the namespace URI
             // namespace-uri(parent::node()) = parent element's namespace URI
-            let parent_ns = doc.element(ns_node.parent)
+            let parent_ns = doc
+                .element(ns_node.parent)
                 .and_then(|e| e.name.namespace_uri.as_deref())
                 .unwrap_or("");
             ns_node.uri == parent_ns
@@ -1801,9 +1948,7 @@ fn apply_parsed_xpath_filter(
     // node-set by parsing the octets and creating a node-set that includes all
     // document nodes").
     let (xml_text, input_ns) = match data {
-        bergshamra_transforms::TransformData::Xml { xml_text, node_set } => {
-            (xml_text, node_set)
-        }
+        bergshamra_transforms::TransformData::Xml { xml_text, node_set } => (xml_text, node_set),
         bergshamra_transforms::TransformData::Binary(bytes) => {
             let text = String::from_utf8(bytes)
                 .map_err(|e| Error::XmlParse(format!("XPath transform: invalid UTF-8: {e}")))?;
@@ -1811,8 +1956,7 @@ fn apply_parsed_xpath_filter(
         }
     };
 
-    let doc = uppsala::parse(&xml_text)
-        .map_err(|e| Error::XmlParse(e.to_string()))?;
+    let doc = uppsala::parse(&xml_text).map_err(|e| Error::XmlParse(e.to_string()))?;
 
     // Filter: include only nodes for which the expression evaluates to true
     let mut result_ids = HashSet::new();
@@ -1932,9 +2076,7 @@ fn is_enveloped_xpath_here(expr: &str, xpath_node: NodeId, doc: &Document<'_>) -
     let after_marker = &rest[pos + sig_marker.len()..];
 
     // Verify the rest matches: PREFIX:Signature[1]) > count(ancestor-or-self::PREFIX:Signature)
-    let expected_tail = format!(
-        "{pfx}:Signature[1]) > count(ancestor-or-self::{pfx}:Signature)"
-    );
+    let expected_tail = format!("{pfx}:Signature[1]) > count(ancestor-or-self::{pfx}:Signature)");
     if after_marker != expected_tail {
         return false;
     }
@@ -1972,8 +2114,7 @@ fn apply_xpath_filter2_transform(
 
     match data {
         bergshamra_transforms::TransformData::Xml { xml_text, node_set } => {
-            let doc = uppsala::parse(&xml_text)
-                .map_err(|e| Error::XmlParse(e.to_string()))?;
+            let doc = uppsala::parse(&xml_text).map_err(|e| Error::XmlParse(e.to_string()))?;
 
             // I = input node-set (from previous transform or URI resolution)
             let input_ns = node_set.unwrap_or_else(|| NodeSet::all(&doc));
@@ -1995,12 +2136,20 @@ fn apply_xpath_filter2_transform(
 
                 // Update filter node-set F based on filter type
                 match filter {
-                    "intersect" => { filter_ns = filter_ns.intersection(&xpath_ns); }
-                    "subtract" => { filter_ns = filter_ns.subtract(&xpath_ns); }
-                    "union" => { filter_ns = filter_ns.union(&xpath_ns); }
-                    _ => return Err(Error::UnsupportedAlgorithm(format!(
-                        "XPath Filter 2.0 unknown filter: {filter}"
-                    ))),
+                    "intersect" => {
+                        filter_ns = filter_ns.intersection(&xpath_ns);
+                    }
+                    "subtract" => {
+                        filter_ns = filter_ns.subtract(&xpath_ns);
+                    }
+                    "union" => {
+                        filter_ns = filter_ns.union(&xpath_ns);
+                    }
+                    _ => {
+                        return Err(Error::UnsupportedAlgorithm(format!(
+                            "XPath Filter 2.0 unknown filter: {filter}"
+                        )))
+                    }
                 }
             }
 
@@ -2052,10 +2201,11 @@ fn evaluate_simple_xpath(
     if let Some(name_expr) = expr.strip_prefix("//") {
         let (ns_uri, local_name) = if let Some((prefix, local)) = name_expr.split_once(':') {
             // Resolve namespace prefix from the XPath element's namespace declarations
-            let uri = resolve_ns_prefix(xpath_node, outer_doc, prefix)
-                .ok_or_else(|| Error::InvalidUri(format!(
+            let uri = resolve_ns_prefix(xpath_node, outer_doc, prefix).ok_or_else(|| {
+                Error::InvalidUri(format!(
                     "XPath Filter 2.0: unresolved namespace prefix '{prefix}'"
-                )))?;
+                ))
+            })?;
             (Some(uri), local)
         } else {
             (None, name_expr)
@@ -2067,7 +2217,9 @@ fn evaluate_simple_xpath(
             if let Some(elem) = doc.element(node) {
                 if elem.name.local_name.as_ref() == local_name {
                     let matches = match &ns_uri {
-                        Some(uri) => elem.name.namespace_uri.as_deref().unwrap_or("") == uri.as_str(),
+                        Some(uri) => {
+                            elem.name.namespace_uri.as_deref().unwrap_or("") == uri.as_str()
+                        }
                         None => true, // no namespace specified — match any namespace
                     };
                     if matches {
@@ -2078,7 +2230,10 @@ fn evaluate_simple_xpath(
             }
         }
 
-        return Ok(NodeSet::from_ids(nodes, bergshamra_xml::nodeset::NodeSetType::Normal));
+        return Ok(NodeSet::from_ids(
+            nodes,
+            bergshamra_xml::nodeset::NodeSetType::Normal,
+        ));
     }
 
     // Absolute path: `/step1/step2/step3[pred]`
@@ -2089,7 +2244,10 @@ fn evaluate_simple_xpath(
         for node in &matches {
             collect_subtree_ids(*node, doc, &mut nodes);
         }
-        return Ok(NodeSet::from_ids(nodes, bergshamra_xml::nodeset::NodeSetType::Normal));
+        return Ok(NodeSet::from_ids(
+            nodes,
+            bergshamra_xml::nodeset::NodeSetType::Normal,
+        ));
     }
 
     Err(Error::UnsupportedAlgorithm(format!(
@@ -2229,16 +2387,20 @@ fn evaluate_path_steps(
     }
 
     // Resolve any namespace prefixes stored as strings
-    let resolved_steps: Vec<(Option<String>, &str, &Option<String>)> = steps.iter().map(|s| {
-        let ns = match &s.ns_uri {
-            Some(prefix) => resolve_ns_prefix(xpath_node, outer_doc, prefix),
-            None => None,
-        };
-        (ns, s.name.as_str(), &s.predicate)
-    }).collect();
+    let resolved_steps: Vec<(Option<String>, &str, &Option<String>)> = steps
+        .iter()
+        .map(|s| {
+            let ns = match &s.ns_uri {
+                Some(prefix) => resolve_ns_prefix(xpath_node, outer_doc, prefix),
+                None => None,
+            };
+            (ns, s.name.as_str(), &s.predicate)
+        })
+        .collect();
 
     // Start from the root's children (since we already consumed the leading `/`)
-    let mut current_nodes: Vec<NodeId> = doc.children(doc.root())
+    let mut current_nodes: Vec<NodeId> = doc
+        .children(doc.root())
         .into_iter()
         .filter(|&id| doc.element(id).is_some())
         .collect();
@@ -2251,7 +2413,10 @@ fn evaluate_path_steps(
             let candidates: Vec<NodeId> = if step_idx == 0 {
                 vec![node]
             } else {
-                doc.children(node).into_iter().filter(|&id| doc.element(id).is_some()).collect()
+                doc.children(node)
+                    .into_iter()
+                    .filter(|&id| doc.element(id).is_some())
+                    .collect()
             };
 
             for candidate in candidates {
@@ -2269,7 +2434,9 @@ fn evaluate_path_steps(
 
                 // Match namespace
                 let ns_matches = match ns_uri {
-                    Some(ref uri) => elem.name.namespace_uri.as_deref().unwrap_or("") == uri.as_str(),
+                    Some(ref uri) => {
+                        elem.name.namespace_uri.as_deref().unwrap_or("") == uri.as_str()
+                    }
                     None => true,
                 };
 
@@ -2305,7 +2472,10 @@ fn evaluate_xpath_predicate(node: NodeId, doc: &Document<'_>, pred: &str) -> boo
     if pred.starts_with("not(") && pred.ends_with(')') {
         let inner = pred[4..pred.len() - 1].trim();
         if let Some(attr_name) = inner.strip_prefix('@') {
-            return doc.element(node).and_then(|e| e.get_attribute(attr_name)).is_none();
+            return doc
+                .element(node)
+                .and_then(|e| e.get_attribute(attr_name))
+                .is_none();
         }
     }
 
@@ -2363,7 +2533,11 @@ fn evaluate_attr_eq(node: NodeId, doc: &Document<'_>, pred: &str) -> bool {
 }
 
 /// Collect all node IDs in a subtree.
-fn collect_subtree_ids(node: NodeId, doc: &Document<'_>, ids: &mut std::collections::HashSet<usize>) {
+fn collect_subtree_ids(
+    node: NodeId,
+    doc: &Document<'_>,
+    ids: &mut std::collections::HashSet<usize>,
+) {
     ids.insert(node.index());
     for child in doc.children(node) {
         collect_subtree_ids(child, doc, ids);
@@ -2379,32 +2553,36 @@ fn apply_xpointer_transform(
     transform_node: NodeId,
     outer_doc: &Document<'_>,
 ) -> Result<bergshamra_transforms::TransformData, Error> {
-    use bergshamra_xml::xpath;
     use bergshamra_xml::nodeset::NodeSet;
+    use bergshamra_xml::xpath;
 
     // Extract the XPointer expression from the <XPointer> child element
-    let xpointer_node = outer_doc.children(transform_node)
+    let xpointer_node = outer_doc
+        .children(transform_node)
         .into_iter()
         .find(|&id| {
-            outer_doc.element(id).map_or(false, |e| e.name.local_name.as_ref() == "XPointer")
+            outer_doc
+                .element(id)
+                .map_or(false, |e| e.name.local_name.as_ref() == "XPointer")
         })
         .ok_or_else(|| Error::MissingElement("XPointer expression element".into()))?;
 
     let xpointer_expr = element_text(outer_doc, xpointer_node).unwrap_or("").trim();
 
     // Parse xpointer(id('...')) or xpointer(id("..."))
-    let id = xpath::parse_xpointer_id(xpointer_expr)
-        .ok_or_else(|| Error::UnsupportedAlgorithm(format!(
+    let id = xpath::parse_xpointer_id(xpointer_expr).ok_or_else(|| {
+        Error::UnsupportedAlgorithm(format!(
             "XPointer expression not supported: {xpointer_expr}"
-        )))?;
+        ))
+    })?;
 
     match data {
         bergshamra_transforms::TransformData::Xml { xml_text, node_set } => {
-            let inner_doc = uppsala::parse(&xml_text)
-                .map_err(|e| Error::XmlParse(e.to_string()))?;
+            let inner_doc =
+                uppsala::parse(&xml_text).map_err(|e| Error::XmlParse(e.to_string()))?;
 
             // Build ID map
-            let id_map = build_id_map(&inner_doc, &["Id", "ID", "id"]);
+            let id_map = build_id_map(&inner_doc, &["Id", "ID", "id", "AssertionID"]);
 
             // Resolve the ID
             let target = xpath::resolve_id(&inner_doc, &id_map, id)?;
@@ -2437,19 +2615,26 @@ fn try_unwrap_encrypted_key(
     manager: &bergshamra_keys::KeysManager,
 ) -> Result<bergshamra_keys::Key, Error> {
     // Find <EncryptedKey> child
-    let enc_key_node = doc.children(key_info_node).into_iter().find(|&id| {
-        doc.element(id).map_or(false, |e| {
-            e.name.local_name.as_ref() == ns::node::ENCRYPTED_KEY
-                && e.name.namespace_uri.as_deref().unwrap_or("") == ns::ENC
+    let enc_key_node = doc
+        .children(key_info_node)
+        .into_iter()
+        .find(|&id| {
+            doc.element(id).map_or(false, |e| {
+                e.name.local_name.as_ref() == ns::node::ENCRYPTED_KEY
+                    && e.name.namespace_uri.as_deref().unwrap_or("") == ns::ENC
+            })
         })
-    }).ok_or_else(|| Error::Key("no EncryptedKey found".into()))?;
+        .ok_or_else(|| Error::Key("no EncryptedKey found".into()))?;
 
     // Read EncryptionMethod
     let enc_method = find_child_element(doc, enc_key_node, ns::ENC, ns::node::ENCRYPTION_METHOD)
         .ok_or_else(|| Error::MissingElement("EncryptionMethod on EncryptedKey".into()))?;
-    let enc_uri = doc.element(enc_method)
+    let enc_uri = doc
+        .element(enc_method)
         .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
-        .ok_or_else(|| Error::MissingAttribute("Algorithm on EncryptedKey EncryptionMethod".into()))?;
+        .ok_or_else(|| {
+            Error::MissingAttribute("Algorithm on EncryptedKey EncryptionMethod".into())
+        })?;
 
     // Read CipherData/CipherValue
     let cipher_data = find_child_element(doc, enc_key_node, ns::ENC, ns::node::CIPHER_DATA)
@@ -2460,7 +2645,8 @@ fn try_unwrap_encrypted_key(
     let clean: String = b64_text.chars().filter(|c| !c.is_whitespace()).collect();
     use base64::Engine;
     let engine = base64::engine::general_purpose::STANDARD;
-    let cipher_bytes = engine.decode(&clean)
+    let cipher_bytes = engine
+        .decode(&clean)
         .map_err(|e| Error::Base64(format!("EncryptedKey CipherValue: {e}")))?;
 
     // Resolve the KEK from EncryptedKey's own KeyInfo
@@ -2477,13 +2663,15 @@ fn try_unwrap_encrypted_key(
             };
             // Try KeyName from EncryptedKey's KeyInfo
             let kek = resolve_kek_from_key_info(doc, ek_key_info, manager)?;
-            let kek_bytes = kek.symmetric_key_bytes()
+            let kek_bytes = kek
+                .symmetric_key_bytes()
                 .ok_or_else(|| Error::Key("KEK has no symmetric key bytes".into()))?;
             // Validate size if possible
             if expected_kek_size > 0 && kek_bytes.len() != expected_kek_size {
                 // Try to find one with the right size
                 if let Some(sized_key) = manager.find_aes_by_size(expected_kek_size) {
-                    let sized_bytes = sized_key.symmetric_key_bytes()
+                    let sized_bytes = sized_key
+                        .symmetric_key_bytes()
                         .ok_or_else(|| Error::Key("AES key has no bytes".into()))?;
                     kw.unwrap(sized_bytes, &cipher_bytes)?
                 } else {
@@ -2496,21 +2684,29 @@ fn try_unwrap_encrypted_key(
         algorithm::KW_TRIPLEDES => {
             let kw = bergshamra_crypto::keywrap::from_uri(enc_uri)?;
             let kek = resolve_kek_from_key_info(doc, ek_key_info, manager)?;
-            let kek_bytes = kek.symmetric_key_bytes()
+            let kek_bytes = kek
+                .symmetric_key_bytes()
                 .ok_or_else(|| Error::Key("no symmetric key for 3DES key unwrap".into()))?;
             kw.unwrap(kek_bytes, &cipher_bytes)?
         }
         algorithm::RSA_PKCS1 | algorithm::RSA_OAEP | algorithm::RSA_OAEP_ENC11 => {
             let oaep_params = read_oaep_params(doc, enc_method);
-            let transport = bergshamra_crypto::keytransport::from_uri_with_params(enc_uri, oaep_params)?;
-            let rsa_key = manager.find_rsa_private()
+            let transport =
+                bergshamra_crypto::keytransport::from_uri_with_params(enc_uri, oaep_params)?;
+            let rsa_key = manager
+                .find_rsa_private()
                 .or_else(|| manager.find_rsa())
                 .ok_or_else(|| Error::Key("no RSA key for EncryptedKey decryption".into()))?;
-            let private_key = rsa_key.rsa_private_key()
+            let private_key = rsa_key
+                .rsa_private_key()
                 .ok_or_else(|| Error::Key("RSA private key required for key transport".into()))?;
             transport.decrypt(private_key, &cipher_bytes)?
         }
-        _ => return Err(Error::UnsupportedAlgorithm(format!("EncryptedKey method: {enc_uri}"))),
+        _ => {
+            return Err(Error::UnsupportedAlgorithm(format!(
+                "EncryptedKey method: {enc_uri}"
+            )))
+        }
     };
 
     // Create an HMAC key from the unwrapped session key
@@ -2550,7 +2746,10 @@ fn resolve_kek_from_key_info<'a>(
 }
 
 /// Read RSA-OAEP parameters from an EncryptionMethod element.
-fn read_oaep_params(doc: &Document<'_>, enc_method: NodeId) -> bergshamra_crypto::keytransport::OaepParams {
+fn read_oaep_params(
+    doc: &Document<'_>,
+    enc_method: NodeId,
+) -> bergshamra_crypto::keytransport::OaepParams {
     let mut params = bergshamra_crypto::keytransport::OaepParams::default();
     for child in doc.children(enc_method) {
         let elem = match doc.element(child) {
@@ -2597,7 +2796,12 @@ fn find_element(doc: &Document<'_>, ns_uri: &str, local_name: &str) -> Option<No
     None
 }
 
-fn find_child_element(doc: &Document<'_>, parent: NodeId, ns_uri: &str, local_name: &str) -> Option<NodeId> {
+fn find_child_element(
+    doc: &Document<'_>,
+    parent: NodeId,
+    ns_uri: &str,
+    local_name: &str,
+) -> Option<NodeId> {
     for id in doc.children(parent) {
         if let Some(elem) = doc.element(id) {
             if elem.name.local_name.as_ref() == local_name
@@ -2610,7 +2814,12 @@ fn find_child_element(doc: &Document<'_>, parent: NodeId, ns_uri: &str, local_na
     None
 }
 
-fn find_child_elements(doc: &Document<'_>, parent: NodeId, ns_uri: &str, local_name: &str) -> Vec<NodeId> {
+fn find_child_elements(
+    doc: &Document<'_>,
+    parent: NodeId,
+    ns_uri: &str,
+    local_name: &str,
+) -> Vec<NodeId> {
     doc.children(parent)
         .into_iter()
         .filter(|&id| {
@@ -2623,7 +2832,12 @@ fn find_child_elements(doc: &Document<'_>, parent: NodeId, ns_uri: &str, local_n
 }
 
 /// Find a descendant element with the given namespace URI and local name.
-fn find_descendant_element(doc: &Document<'_>, node: NodeId, ns_uri: &str, local_name: &str) -> Option<NodeId> {
+fn find_descendant_element(
+    doc: &Document<'_>,
+    node: NodeId,
+    ns_uri: &str,
+    local_name: &str,
+) -> Option<NodeId> {
     for id in doc.descendants(node) {
         if let Some(elem) = doc.element(id) {
             if elem.name.local_name.as_ref() == local_name
@@ -2686,7 +2900,10 @@ fn read_inclusive_prefixes(doc: &Document<'_>, node: NodeId) -> Vec<String> {
         if let Some(elem) = doc.element(child) {
             if elem.name.local_name.as_ref() == ns::node::INCLUSIVE_NAMESPACES {
                 if let Some(prefix_list) = elem.get_attribute(ns::attr::PREFIX_LIST) {
-                    return prefix_list.split_whitespace().map(|s| s.to_owned()).collect();
+                    return prefix_list
+                        .split_whitespace()
+                        .map(|s| s.to_owned())
+                        .collect();
                 }
             }
         }
@@ -2765,6 +2982,14 @@ fn try_resolve_retrieval_method(
         } else if alg_oid == der::oid::db::rfc5912::ID_EC_PUBLIC_KEY {
             // EC public key — determine curve from parameters
             extract_ec_key_from_spki(spki)?
+        } else if alg_oid == der::oid::db::rfc8410::ID_ED_25519 {
+            // Ed25519 public key — raw 32-byte key
+            let vk =
+                ed25519_dalek::VerifyingKey::from_bytes(pub_key_bytes.try_into().ok()?).ok()?;
+            KeyData::Ed25519 {
+                public: vk,
+                private: None,
+            }
         } else {
             continue;
         };
@@ -2851,6 +3076,14 @@ fn try_resolve_retrieval_method_inline(
             extract_dsa_key_from_cert(&cert)?
         } else if alg_oid == der::oid::db::rfc5912::ID_EC_PUBLIC_KEY {
             extract_ec_key_from_spki(spki)?
+        } else if alg_oid == der::oid::db::rfc8410::ID_ED_25519 {
+            // Ed25519 public key — raw 32-byte key
+            let vk =
+                ed25519_dalek::VerifyingKey::from_bytes(pub_key_bytes.try_into().ok()?).ok()?;
+            KeyData::Ed25519 {
+                public: vk,
+                private: None,
+            }
         } else {
             continue;
         };
@@ -2917,7 +3150,9 @@ fn resolve_retrieval_uri(
 }
 
 /// Extract a DSA public key from an X.509 certificate.
-fn extract_dsa_key_from_cert(cert: &x509_cert::Certificate) -> Option<bergshamra_keys::key::KeyData> {
+fn extract_dsa_key_from_cert(
+    cert: &x509_cert::Certificate,
+) -> Option<bergshamra_keys::key::KeyData> {
     use bergshamra_keys::key::KeyData;
     use der::Decode;
 
@@ -2987,5 +3222,100 @@ fn extract_ec_key_from_spki(
         })
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_id_map_includes_assertionid() {
+        // SAML v1.1 uses AssertionID as the identifier attribute
+        let xml = r#"<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:1.0:assertion"
+            AssertionID="abc123" MajorVersion="1" MinorVersion="1">
+            <saml:AttributeStatement/>
+        </saml:Assertion>"#;
+        let doc = uppsala::parse(xml).expect("parse XML");
+        let id_map = build_id_map(&doc, &["Id", "ID", "id", "AssertionID"]);
+        assert!(
+            id_map.contains_key("abc123"),
+            "AssertionID should be in the ID map"
+        );
+    }
+
+    #[test]
+    fn test_build_id_map_standard_id_attrs() {
+        let xml = r#"<Root>
+            <Elem1 Id="e1"/>
+            <Elem2 ID="e2"/>
+            <Elem3 id="e3"/>
+        </Root>"#;
+        let doc = uppsala::parse(xml).expect("parse XML");
+        let id_map = build_id_map(&doc, &["Id", "ID", "id", "AssertionID"]);
+        assert!(id_map.contains_key("e1"), "Id should be in map");
+        assert!(id_map.contains_key("e2"), "ID should be in map");
+        assert!(id_map.contains_key("e3"), "id should be in map");
+    }
+
+    #[test]
+    fn test_verify_reference_skips_cid_uri() {
+        // A <Reference URI="cid:..."> should be skipped (return Valid) without
+        // attempting to resolve the URI or compute a digest.
+        // See docs/adr/0002-cid-uri-scheme-skip.md
+        let xml = r##"<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+  <ds:SignedInfo>
+    <ds:Reference URI="cid:attachment-1@example.com">
+      <ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
+      <ds:DigestValue>AAAA</ds:DigestValue>
+    </ds:Reference>
+  </ds:SignedInfo>
+</ds:Signature>"##;
+        let doc = uppsala::parse(xml).expect("parse");
+        let sig_node = find_element(&doc, ns::DSIG, ns::node::SIGNATURE).unwrap();
+        let signed_info =
+            find_child_element(&doc, sig_node, ns::DSIG, ns::node::SIGNED_INFO).unwrap();
+        let refs = find_child_elements(&doc, signed_info, ns::DSIG, ns::node::REFERENCE);
+        assert_eq!(refs.len(), 1);
+
+        let id_map = HashMap::new();
+        let result = verify_reference(refs[0], &doc, &id_map, xml, sig_node, &[], false, None)
+            .expect("verify_reference failed");
+        assert!(
+            matches!(result, VerifyResult::Valid),
+            "cid: reference should be skipped and reported as Valid"
+        );
+    }
+
+    #[test]
+    fn test_verify_reference_does_not_skip_non_cid_fragment() {
+        // A normal fragment reference (e.g. #id) should NOT be skipped.
+        // This verifies the cid: check is specific and does not accidentally
+        // skip other URI schemes.
+        let xml = r##"<Root Id="body">
+  <ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+    <ds:SignedInfo>
+      <ds:Reference URI="#body">
+        <ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
+        <ds:DigestValue>AAAA</ds:DigestValue>
+      </ds:Reference>
+    </ds:SignedInfo>
+  </ds:Signature>
+</Root>"##;
+        let doc = uppsala::parse(xml).expect("parse");
+        let sig_node = find_element(&doc, ns::DSIG, ns::node::SIGNATURE).unwrap();
+        let signed_info =
+            find_child_element(&doc, sig_node, ns::DSIG, ns::node::SIGNED_INFO).unwrap();
+        let refs = find_child_elements(&doc, signed_info, ns::DSIG, ns::node::REFERENCE);
+        assert_eq!(refs.len(), 1);
+
+        let id_map = build_id_map(&doc, &["Id", "ID", "id"]);
+        let result = verify_reference(refs[0], &doc, &id_map, xml, sig_node, &[], false, None)
+            .expect("verify_reference failed");
+        // The digest will not match since AAAA is bogus, so we expect Invalid.
+        assert!(
+            matches!(result, VerifyResult::Invalid { .. }),
+            "non-cid reference should be processed normally, digest mismatch expected"
+        );
     }
 }

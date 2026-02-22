@@ -35,6 +35,9 @@ pub const XMLNS: &str = "http://www.w3.org/2000/xmlns/";
 /// xmlsec post-quantum extensions namespace
 pub const XMLSEC_PQ: &str = "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#";
 
+/// XML Digital Signature "more" namespace (used for HKDFParams, etc.)
+pub const DSIG_MORE: &str = "http://www.w3.org/2001/04/xmldsig-more#";
+
 /// OOXML Relationships namespace
 pub const RELATIONSHIPS: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
 
@@ -145,6 +148,14 @@ pub mod node {
 
     // ConcatKDF elements
     pub const CONCAT_KDF_PARAMS: &str = "ConcatKDFParams";
+
+    // HKDF elements (namespace: http://www.w3.org/2001/04/xmldsig-more#)
+    pub const HKDF_PARAMS: &str = "HKDFParams";
+    pub const HKDF_PRF: &str = "PRF";
+    pub const HKDF_SALT: &str = "Salt";
+    pub const HKDF_SALT_SPECIFIED: &str = "Specified";
+    pub const HKDF_INFO: &str = "Info";
+    pub const HKDF_KEY_LENGTH: &str = "KeyLength";
 
     // XPath / Exc C14N
     pub const XPATH: &str = "XPath";

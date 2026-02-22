@@ -225,12 +225,17 @@ fn load_private_key_pkcs8_der(der: &[u8]) -> Result<Key, Error> {
         return Ok(key);
     }
 
+    // Try Ed25519
+    if let Ok(key) = load_ed25519_private_pkcs8_der(der) {
+        return Ok(key);
+    }
+
     // Try post-quantum (ML-DSA, SLH-DSA)
     if let Some(key) = try_load_pq_private_key(der) {
         return Ok(key);
     }
 
-    Err(Error::Key("unable to parse PKCS#8 DER private key (tried RSA, P-256, P-384, P-521, DSA, ML-DSA, SLH-DSA)".into()))
+    Err(Error::Key("unable to parse PKCS#8 DER private key (tried RSA, P-256, P-384, P-521, DSA, DH, Ed25519, ML-DSA, SLH-DSA)".into()))
 }
 
 /// Load keys from a PKCS#12 (.p12/.pfx) file.
@@ -575,6 +580,12 @@ pub fn load_x509_cert_der(data: &[u8]) -> Result<Key, Error> {
         return Ok(key);
     }
 
+    // Try Ed25519
+    if let Ok(mut key) = load_ed25519_public_spki_der(&spki_der) {
+        key.x509_chain = vec![data.to_vec()];
+        return Ok(key);
+    }
+
     Err(Error::Key(
         "unsupported public key algorithm in X.509 certificate".into(),
     ))
@@ -650,6 +661,11 @@ pub fn load_spki_der(spki_der: &[u8]) -> Result<Key, Error> {
         return Ok(key);
     }
 
+    // Try Ed25519
+    if let Ok(key) = load_ed25519_public_spki_der(spki_der) {
+        return Ok(key);
+    }
+
     // Try post-quantum (ML-DSA, SLH-DSA)
     if let Some(key) = try_load_pq_public_key(spki_der) {
         return Ok(key);
@@ -661,6 +677,77 @@ pub fn load_spki_der(spki_der: &[u8]) -> Result<Key, Error> {
 }
 
 // ── DH key loading helpers ───────────────────────────────────────────
+
+/// Load an Ed25519 private key from PKCS#8 DER bytes.
+fn load_ed25519_private_pkcs8_der(der: &[u8]) -> Result<Key, Error> {
+    use ed25519_dalek::pkcs8::DecodePrivateKey;
+    let sk = ed25519_dalek::SigningKey::from_pkcs8_der(der)
+        .map_err(|e| Error::Key(format!("failed to parse Ed25519 private key: {e}")))?;
+    let vk = sk.verifying_key();
+    Ok(Key::new(
+        KeyData::Ed25519 {
+            private: Some(sk),
+            public: vk,
+        },
+        KeyUsage::Any,
+    ))
+}
+
+/// Load an Ed25519 public key from SPKI DER bytes.
+fn load_ed25519_public_spki_der(spki_der: &[u8]) -> Result<Key, Error> {
+    use ed25519_dalek::pkcs8::spki::DecodePublicKey;
+    let vk = ed25519_dalek::VerifyingKey::from_public_key_der(spki_der)
+        .map_err(|e| Error::Key(format!("failed to parse Ed25519 public key: {e}")))?;
+    Ok(Key::new(
+        KeyData::Ed25519 {
+            private: None,
+            public: vk,
+        },
+        KeyUsage::Verify,
+    ))
+}
+
+/// Load an X25519 key pair from raw 32-byte private key bytes.
+///
+/// Derives the public key from the private key.
+pub fn load_x25519_private_raw(private_bytes: &[u8]) -> Result<Key, Error> {
+    if private_bytes.len() != 32 {
+        return Err(Error::Key(format!(
+            "X25519 private key must be 32 bytes, got {}",
+            private_bytes.len()
+        )));
+    }
+    let mut secret = [0u8; 32];
+    secret.copy_from_slice(private_bytes);
+    let static_secret = x25519_dalek::StaticSecret::from(secret);
+    let public = x25519_dalek::PublicKey::from(&static_secret);
+    Ok(Key::new(
+        KeyData::X25519 {
+            private: Some(secret),
+            public: *public.as_bytes(),
+        },
+        KeyUsage::Any,
+    ))
+}
+
+/// Load an X25519 public key from raw 32-byte public key bytes.
+pub fn load_x25519_public_raw(public_bytes: &[u8]) -> Result<Key, Error> {
+    if public_bytes.len() != 32 {
+        return Err(Error::Key(format!(
+            "X25519 public key must be 32 bytes, got {}",
+            public_bytes.len()
+        )));
+    }
+    let mut public = [0u8; 32];
+    public.copy_from_slice(public_bytes);
+    Ok(Key::new(
+        KeyData::X25519 {
+            private: None,
+            public,
+        },
+        KeyUsage::Encrypt,
+    ))
+}
 
 /// OID for X9.42 DH (dhpublicnumber): 1.2.840.10046.2.1
 const OID_DH_PUBLIC_NUMBER: &[u8] = &[0x06, 0x07, 0x2A, 0x86, 0x48, 0xCE, 0x3E, 0x02, 0x01];
@@ -798,7 +885,9 @@ fn validate_dh_params(p: &[u8], g: &[u8], q: Option<&[u8]>) -> Result<(), Error>
     let p_uint = BigUint::from_bytes_be(p);
     // W3C XML Encryption 1.1 §5.6.1: "The size of p MUST be at least 512 bits"
     if p_uint.bits() < 512 {
-        return Err(Error::Key("DH prime p too small (W3C requires >= 512 bits)".into()));
+        return Err(Error::Key(
+            "DH prime p too small (W3C requires >= 512 bits)".into(),
+        ));
     }
     if !probably_prime(&p_uint, 20) {
         return Err(Error::Key("DH prime p is not prime".into()));
@@ -806,7 +895,9 @@ fn validate_dh_params(p: &[u8], g: &[u8], q: Option<&[u8]>) -> Result<(), Error>
     let g_uint = BigUint::from_bytes_be(g);
     // W3C XML Encryption 1.1 §5.6.1: "g at least 160 bits"
     if g_uint.bits() < 160 {
-        return Err(Error::Key("DH generator g too small (W3C requires >= 160 bits)".into()));
+        return Err(Error::Key(
+            "DH generator g too small (W3C requires >= 160 bits)".into(),
+        ));
     }
     if g_uint >= p_uint {
         return Err(Error::Key("DH generator g out of range".into()));
@@ -943,7 +1034,8 @@ fn try_load_pq_private_key(der: &[u8]) -> Option<Key> {
         ($oid_const:expr, $paramset:ty, $algo:expr) => {
             if oid == $oid_const {
                 if inner_bytes.len() == 32 {
-                    let seed = ml_dsa::Seed::try_from(inner_bytes).expect("seed length already checked");
+                    let seed =
+                        ml_dsa::Seed::try_from(inner_bytes).expect("seed length already checked");
                     let sk = ml_dsa::SigningKey::<$paramset>::from_seed(&seed);
                     let vk = sk.verifying_key();
                     if let Ok(pub_doc) = vk.to_public_key_der() {
@@ -1241,5 +1333,242 @@ mod tests {
             "expected DH key, got {}",
             key.data.algorithm_name()
         );
+    }
+
+    #[test]
+    fn test_load_ed25519_private_pkcs8() {
+        // Create an Ed25519 key from fixed bytes and encode as PKCS#8 DER
+        use ed25519_dalek::pkcs8::EncodePrivateKey;
+        use ed25519_dalek::SigningKey;
+
+        let secret: [u8; 32] = [
+            0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec,
+            0x2c, 0xc4, 0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32, 0x69, 0x19, 0x70, 0x3b, 0xac, 0x03,
+            0x1c, 0xae, 0x7f, 0x60,
+        ];
+        let sk = SigningKey::from_bytes(&secret);
+        let pkcs8_der = sk.to_pkcs8_der().expect("encode PKCS#8 DER");
+
+        let key = load_ed25519_private_pkcs8_der(pkcs8_der.as_bytes())
+            .expect("load Ed25519 private key from PKCS#8 DER");
+        assert!(
+            matches!(
+                key.data,
+                KeyData::Ed25519 {
+                    private: Some(_),
+                    ..
+                }
+            ),
+            "expected Ed25519 key with private component, got {}",
+            key.data.algorithm_name()
+        );
+        assert_eq!(key.data.algorithm_name(), "Ed25519");
+    }
+
+    #[test]
+    fn test_load_ed25519_public_spki() {
+        // Create an Ed25519 key and encode the public key as SPKI DER
+        use ed25519_dalek::pkcs8::spki::EncodePublicKey;
+        use ed25519_dalek::SigningKey;
+
+        let secret: [u8; 32] = [
+            0xc5, 0xaa, 0x8d, 0xf4, 0x3f, 0x9f, 0x83, 0x7b, 0xed, 0xb7, 0x44, 0x2f, 0x31, 0xdc,
+            0xb7, 0xb1, 0x66, 0xd3, 0x85, 0x35, 0x07, 0x6f, 0x09, 0x4b, 0x85, 0xce, 0x3a, 0x2e,
+            0x0b, 0x44, 0x58, 0xf7,
+        ];
+        let sk = SigningKey::from_bytes(&secret);
+        let vk = sk.verifying_key();
+        let spki_der = vk.to_public_key_der().expect("encode SPKI DER");
+
+        let key = load_ed25519_public_spki_der(spki_der.as_ref())
+            .expect("load Ed25519 public key from SPKI DER");
+        assert!(
+            matches!(key.data, KeyData::Ed25519 { private: None, .. }),
+            "expected Ed25519 key without private component, got {}",
+            key.data.algorithm_name()
+        );
+        assert_eq!(key.usage, KeyUsage::Verify);
+    }
+
+    #[test]
+    fn test_load_ed25519_via_autodetect_pkcs8() {
+        // Test that the auto-detect chain in load_private_key_pkcs8_der picks up Ed25519
+        use ed25519_dalek::pkcs8::EncodePrivateKey;
+        use ed25519_dalek::SigningKey;
+
+        let secret: [u8; 32] = [
+            0x83, 0x3f, 0xe6, 0x24, 0x09, 0x23, 0x7b, 0x9d, 0x62, 0xec, 0x77, 0x58, 0x75, 0x20,
+            0x91, 0x1e, 0x9a, 0x75, 0x9c, 0xec, 0x1d, 0x19, 0x75, 0x5b, 0x7d, 0xa9, 0x01, 0xb9,
+            0x6d, 0xca, 0x3d, 0x42,
+        ];
+        let sk = SigningKey::from_bytes(&secret);
+        let pkcs8_der = sk.to_pkcs8_der().expect("encode PKCS#8 DER");
+
+        let key = load_private_key_pkcs8_der(pkcs8_der.as_bytes())
+            .expect("auto-detect Ed25519 from PKCS#8");
+        assert!(
+            matches!(
+                key.data,
+                KeyData::Ed25519 {
+                    private: Some(_),
+                    ..
+                }
+            ),
+            "auto-detect should find Ed25519 key"
+        );
+    }
+
+    #[test]
+    fn test_load_ed25519_via_autodetect_spki() {
+        // Test that the auto-detect chain in load_spki_der picks up Ed25519
+        use ed25519_dalek::pkcs8::spki::EncodePublicKey;
+        use ed25519_dalek::SigningKey;
+
+        let secret: [u8; 32] = [
+            0xab, 0x72, 0x00, 0x1b, 0xa2, 0x49, 0xca, 0xad, 0xb4, 0x95, 0xb1, 0xf6, 0x4c, 0x5a,
+            0x0f, 0x85, 0xd2, 0x40, 0x23, 0x50, 0x0c, 0x00, 0xa9, 0xf4, 0xbb, 0x29, 0x8e, 0x1b,
+            0x5e, 0x65, 0x59, 0xbb,
+        ];
+        let sk = SigningKey::from_bytes(&secret);
+        let vk = sk.verifying_key();
+        let spki_der = vk.to_public_key_der().expect("encode SPKI DER");
+
+        let key = load_spki_der(spki_der.as_ref()).expect("auto-detect Ed25519 from SPKI");
+        assert!(
+            matches!(key.data, KeyData::Ed25519 { private: None, .. }),
+            "auto-detect should find Ed25519 public key"
+        );
+    }
+
+    #[test]
+    fn test_ed25519_roundtrip_pkcs8_sign_verify() {
+        // Full roundtrip: generate → encode PKCS#8 → load → sign → verify
+        use ed25519_dalek::pkcs8::spki::EncodePublicKey;
+        use ed25519_dalek::pkcs8::EncodePrivateKey;
+        use ed25519_dalek::SigningKey;
+
+        let secret: [u8; 32] = [
+            0x4c, 0xcd, 0x08, 0x9b, 0x28, 0xff, 0x96, 0xda, 0x9d, 0xb6, 0xc3, 0x46, 0xec, 0x11,
+            0x4e, 0x0f, 0x5b, 0x8a, 0x31, 0x9f, 0x35, 0xab, 0xa6, 0x24, 0xda, 0x8c, 0xf6, 0xed,
+            0x4f, 0xb8, 0xa6, 0xfb,
+        ];
+        let sk = SigningKey::from_bytes(&secret);
+        let vk = sk.verifying_key();
+
+        // Encode and reload
+        let pkcs8_der = sk.to_pkcs8_der().expect("encode private");
+        let spki_der = vk.to_public_key_der().expect("encode public");
+
+        let priv_key = load_private_key_pkcs8_der(pkcs8_der.as_bytes()).expect("load private");
+        let pub_key = load_spki_der(spki_der.as_ref()).expect("load public");
+
+        // Sign with loaded private key
+        let signing_key = priv_key.to_signing_key().expect("convert to signing key");
+        let algo = bergshamra_crypto::sign::from_uri_with_context(
+            bergshamra_core::algorithm::EDDSA_ED25519,
+            None,
+        )
+        .expect("resolve Ed25519 algorithm");
+
+        let data = b"roundtrip test data";
+        let signature = algo.sign(&signing_key, data).expect("sign");
+
+        // Verify with loaded public key
+        let verify_key = pub_key.to_signing_key().expect("convert to verify key");
+        let result = algo.verify(&verify_key, data, &signature);
+        assert!(
+            result.is_ok(),
+            "Ed25519 roundtrip through PKCS#8/SPKI should verify"
+        );
+    }
+
+    #[test]
+    fn test_load_x25519_private_raw() {
+        // Generate a random X25519 key and load it
+        let secret = x25519_dalek::StaticSecret::random_from_rng(rand::thread_rng());
+        let expected_public = x25519_dalek::PublicKey::from(&secret);
+
+        let key = load_x25519_private_raw(secret.as_bytes()).expect("load X25519 private");
+        match &key.data {
+            KeyData::X25519 {
+                private: Some(priv_bytes),
+                public,
+            } => {
+                assert_eq!(priv_bytes, secret.as_bytes());
+                assert_eq!(public, expected_public.as_bytes());
+            }
+            _ => panic!("expected X25519 key data with private key"),
+        }
+    }
+
+    #[test]
+    fn test_load_x25519_public_raw() {
+        let secret = x25519_dalek::StaticSecret::random_from_rng(rand::thread_rng());
+        let public = x25519_dalek::PublicKey::from(&secret);
+
+        let key = load_x25519_public_raw(public.as_bytes()).expect("load X25519 public");
+        match &key.data {
+            KeyData::X25519 {
+                private: None,
+                public: pub_bytes,
+            } => {
+                assert_eq!(pub_bytes, public.as_bytes());
+            }
+            _ => panic!("expected X25519 public key data"),
+        }
+    }
+
+    #[test]
+    fn test_load_x25519_private_wrong_length() {
+        let short = [0u8; 16];
+        assert!(load_x25519_private_raw(&short).is_err());
+        let long = [0u8; 64];
+        assert!(load_x25519_private_raw(&long).is_err());
+    }
+
+    #[test]
+    fn test_load_x25519_public_wrong_length() {
+        let short = [0u8; 31];
+        assert!(load_x25519_public_raw(&short).is_err());
+        let long = [0u8; 33];
+        assert!(load_x25519_public_raw(&long).is_err());
+    }
+
+    #[test]
+    fn test_x25519_key_value_xml() {
+        // Verify to_key_value_xml produces correct ECKeyValue with X25519 NamedCurve
+        let secret = x25519_dalek::StaticSecret::random_from_rng(rand::thread_rng());
+        let key = load_x25519_private_raw(secret.as_bytes()).expect("load X25519 private");
+        let xml = key
+            .data
+            .to_key_value_xml("")
+            .expect("X25519 should produce XML");
+        assert!(
+            xml.contains("urn:ietf:params:xml:ns:keyprov:curve:x25519"),
+            "should contain X25519 NamedCurve URI"
+        );
+        assert!(
+            xml.contains("ECKeyValue"),
+            "should be an ECKeyValue element"
+        );
+        assert!(
+            xml.contains("PublicKey"),
+            "should contain PublicKey element"
+        );
+    }
+
+    #[test]
+    fn test_x25519_manager_find() {
+        use crate::manager::KeysManager;
+
+        let mut mgr = KeysManager::new();
+        assert!(mgr.find_x25519().is_none());
+
+        let secret = x25519_dalek::StaticSecret::random_from_rng(rand::thread_rng());
+        let key = load_x25519_private_raw(secret.as_bytes()).expect("load X25519 private");
+        mgr.add_key(key);
+
+        let found = mgr.find_x25519().expect("should find X25519 key");
+        assert_eq!(found.data.algorithm_name(), "X25519");
     }
 }

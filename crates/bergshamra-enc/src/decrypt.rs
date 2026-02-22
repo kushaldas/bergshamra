@@ -31,7 +31,7 @@ pub fn decrypt_to_bytes(ctx: &EncContext, xml: &str) -> Result<Vec<u8>, Error> {
     let doc = uppsala::parse(xml).map_err(|e| Error::XmlParse(e.to_string()))?;
 
     // Build ID map
-    let mut id_attrs: Vec<&str> = vec!["Id", "ID", "id"];
+    let mut id_attrs: Vec<&str> = vec!["Id", "ID", "id", "AssertionID"];
     let extra: Vec<&str> = ctx.id_attrs.iter().map(|s| s.as_str()).collect();
     id_attrs.extend(extra);
     let id_map = build_id_map(&doc, &id_attrs);
@@ -48,9 +48,8 @@ pub fn decrypt_to_bytes(ctx: &EncContext, xml: &str) -> Result<Vec<u8>, Error> {
         .unwrap_or("");
 
     // Read EncryptionMethod
-    let enc_method_id =
-        find_child_element(&doc, enc_data_id, ns::ENC, ns::node::ENCRYPTION_METHOD)
-            .ok_or_else(|| Error::MissingElement("EncryptionMethod".into()))?;
+    let enc_method_id = find_child_element(&doc, enc_data_id, ns::ENC, ns::node::ENCRYPTION_METHOD)
+        .ok_or_else(|| Error::MissingElement("EncryptionMethod".into()))?;
     let enc_uri = doc
         .element(enc_method_id)
         .unwrap()
@@ -61,9 +60,8 @@ pub fn decrypt_to_bytes(ctx: &EncContext, xml: &str) -> Result<Vec<u8>, Error> {
     let key_bytes = resolve_decryption_key(ctx, &doc, enc_data_id, &id_map, enc_uri)?;
 
     // Read CipherData/CipherValue
-    let cipher_data_id =
-        find_child_element(&doc, enc_data_id, ns::ENC, ns::node::CIPHER_DATA)
-            .ok_or_else(|| Error::MissingElement("CipherData".into()))?;
+    let cipher_data_id = find_child_element(&doc, enc_data_id, ns::ENC, ns::node::CIPHER_DATA)
+        .ok_or_else(|| Error::MissingElement("CipherData".into()))?;
 
     let cipher_bytes = read_cipher_data(ctx, &doc, cipher_data_id, &id_map)?;
 
@@ -200,9 +198,7 @@ fn resolve_decryption_key(
                                 if let Some(&target_id) = id_map.get(id) {
                                     // Verify that the target node is an element
                                     if doc.element(target_id).is_some() {
-                                        return decrypt_encrypted_key(
-                                            ctx, doc, target_id, id_map,
-                                        );
+                                        return decrypt_encrypted_key(ctx, doc, target_id, id_map);
                                     } else {
                                         return Err(Error::InvalidUri(format!(
                                             "cannot resolve #{id}"
@@ -456,6 +452,32 @@ fn resolve_agreement_method_kek(
                 }
             }
         }
+        algorithm::X25519 => {
+            // X25519 key agreement (ECDH over Curve25519)
+            let originator_public_bytes = extract_ec_public_key_bytes(doc, originator_ki_id)?;
+            if originator_public_bytes.len() != 32 {
+                return Err(Error::Key(format!(
+                    "X25519 public key must be 32 bytes, got {}",
+                    originator_public_bytes.len()
+                )));
+            }
+            let recipient_key = resolve_recipient_key(ctx, doc, agreement_id)?;
+
+            match &recipient_key.data {
+                bergshamra_keys::key::KeyData::X25519 {
+                    private: Some(priv_bytes),
+                    ..
+                } => bergshamra_crypto::keyagreement::ecdh_x25519(
+                    &originator_public_bytes,
+                    priv_bytes,
+                )?,
+                _ => {
+                    return Err(Error::Key(
+                        "recipient key is not an X25519 private key".into(),
+                    ));
+                }
+            }
+        }
         _ => {
             return Err(Error::UnsupportedAlgorithm(format!(
                 "key agreement: {agreement_alg}"
@@ -464,8 +486,12 @@ fn resolve_agreement_method_kek(
     };
 
     // Apply KDF to derive KEK
-    let kdf_method_id =
-        find_child_element(doc, agreement_id, ns::ENC11, ns::node::KEY_DERIVATION_METHOD);
+    let kdf_method_id = find_child_element(
+        doc,
+        agreement_id,
+        ns::ENC11,
+        ns::node::KEY_DERIVATION_METHOD,
+    );
     let kek = match kdf_method_id {
         Some(kdm_id) => {
             let kdf_uri = doc
@@ -481,6 +507,10 @@ fn resolve_agreement_method_kek(
                 algorithm::PBKDF2 => {
                     let params = parse_pbkdf2_params(doc, kdm_id, kek_len)?;
                     bergshamra_crypto::kdf::pbkdf2_derive(&shared_secret, &params)?
+                }
+                algorithm::HKDF => {
+                    let params = parse_hkdf_params(doc, kdm_id, kek_len)?;
+                    bergshamra_crypto::kdf::hkdf_derive(&shared_secret, kek_len, &params)?
                 }
                 _ => {
                     return Err(Error::UnsupportedAlgorithm(format!(
@@ -563,7 +593,7 @@ fn resolve_recipient_key<'a>(
         }
     }
 
-    // Fallback: try first DH key, then EC key with a private key
+    // Fallback: try first DH key, then X25519 key, then EC key with a private key
     if let Some(dh_key) = ctx.keys_manager.find_dh() {
         if matches!(
             &dh_key.data,
@@ -573,6 +603,17 @@ fn resolve_recipient_key<'a>(
             }
         ) {
             return Ok(dh_key);
+        }
+    }
+    if let Some(x25519_key) = ctx.keys_manager.find_x25519() {
+        if matches!(
+            &x25519_key.data,
+            bergshamra_keys::key::KeyData::X25519 {
+                private: Some(_),
+                ..
+            }
+        ) {
+            return Ok(x25519_key);
         }
     }
     ctx.keys_manager
@@ -676,12 +717,13 @@ pub(crate) fn resolve_derived_key(
     enc_uri: &str,
 ) -> Result<Vec<u8>, Error> {
     // Get the master key name
-    let master_key_name = find_child_element(doc, derived_key_id, ns::ENC11, ns::node::MASTER_KEY_NAME)
-        .map(|id| {
-            let t = doc.text_content_deep(id);
-            t.trim().to_owned()
-        })
-        .unwrap_or_default();
+    let master_key_name =
+        find_child_element(doc, derived_key_id, ns::ENC11, ns::node::MASTER_KEY_NAME)
+            .map(|id| {
+                let t = doc.text_content_deep(id);
+                t.trim().to_owned()
+            })
+            .unwrap_or_default();
 
     // Look up master key in keys manager
     let master_key_bytes = if !master_key_name.is_empty() {
@@ -709,9 +751,13 @@ pub(crate) fn resolve_derived_key(
     };
 
     // Parse KeyDerivationMethod
-    let kd_method_id =
-        find_child_element(doc, derived_key_id, ns::ENC11, ns::node::KEY_DERIVATION_METHOD)
-            .ok_or_else(|| Error::MissingElement("KeyDerivationMethod".into()))?;
+    let kd_method_id = find_child_element(
+        doc,
+        derived_key_id,
+        ns::ENC11,
+        ns::node::KEY_DERIVATION_METHOD,
+    )
+    .ok_or_else(|| Error::MissingElement("KeyDerivationMethod".into()))?;
     let kd_alg = doc
         .element(kd_method_id)
         .unwrap()
@@ -796,9 +842,8 @@ pub(crate) fn parse_pbkdf2_params(
     // Salt
     let salt_id = find_child_element(doc, pbkdf2_params_id, ns::ENC11, ns::node::PBKDF2_SALT)
         .ok_or_else(|| Error::MissingElement("Salt in PBKDF2-params".into()))?;
-    let specified_id =
-        find_child_element(doc, salt_id, ns::ENC11, ns::node::PBKDF2_SALT_SPECIFIED)
-            .ok_or_else(|| Error::MissingElement("Specified in Salt".into()))?;
+    let specified_id = find_child_element(doc, salt_id, ns::ENC11, ns::node::PBKDF2_SALT_SPECIFIED)
+        .ok_or_else(|| Error::MissingElement("Specified in Salt".into()))?;
     let salt_b64 = doc.text_content_deep(specified_id);
     let salt_b64 = salt_b64.trim();
     let salt = {
@@ -825,18 +870,17 @@ pub(crate) fn parse_pbkdf2_params(
         .map_err(|_| Error::XmlStructure("invalid IterationCount".into()))?;
 
     // KeyLength (optional, defaults to encryption algorithm key length)
-    let key_length =
-        if let Some(kl_id) =
-            find_child_element(doc, pbkdf2_params_id, ns::ENC11, ns::node::PBKDF2_KEY_LENGTH)
-        {
-            let kl_text = doc.text_content_deep(kl_id);
-            kl_text
-                .trim()
-                .parse::<usize>()
-                .unwrap_or(default_key_len)
-        } else {
-            default_key_len
-        };
+    let key_length = if let Some(kl_id) = find_child_element(
+        doc,
+        pbkdf2_params_id,
+        ns::ENC11,
+        ns::node::PBKDF2_KEY_LENGTH,
+    ) {
+        let kl_text = doc.text_content_deep(kl_id);
+        kl_text.trim().parse::<usize>().unwrap_or(default_key_len)
+    } else {
+        default_key_len
+    };
 
     // PRF (pseudo-random function)
     let prf_id = find_child_element(doc, pbkdf2_params_id, ns::ENC11, ns::node::PBKDF2_PRF)
@@ -853,6 +897,96 @@ pub(crate) fn parse_pbkdf2_params(
         salt,
         iteration_count,
         key_length,
+    })
+}
+
+/// Parse HKDF parameters from a KeyDerivationMethod element.
+///
+/// HKDFParams is in the `http://www.w3.org/2001/04/xmldsig-more#` namespace.
+/// Structure:
+/// ```xml
+/// <dsig-more:HKDFParams xmlns:dsig-more="http://www.w3.org/2001/04/xmldsig-more#">
+///   <dsig-more:PRF Algorithm="http://www.w3.org/2001/04/xmldsig-more#hmac-sha256"/>
+///   <dsig-more:Salt><dsig-more:Specified>base64...</dsig-more:Specified></dsig-more:Salt>
+///   <dsig-more:Info>base64...</dsig-more:Info>
+///   <dsig-more:KeyLength>128</dsig-more:KeyLength>
+/// </dsig-more:HKDFParams>
+/// ```
+pub(crate) fn parse_hkdf_params(
+    doc: &Document<'_>,
+    kd_method_id: NodeId,
+    default_key_len: usize,
+) -> Result<bergshamra_crypto::kdf::HkdfParams, Error> {
+    // Try to find HKDFParams in DSIG_MORE namespace first, fall back to any-namespace match
+    let hkdf_params_id =
+        find_child_element(doc, kd_method_id, ns::DSIG_MORE, ns::node::HKDF_PARAMS)
+            .or_else(|| find_child_element_any_ns(doc, kd_method_id, ns::node::HKDF_PARAMS))
+            .ok_or_else(|| Error::MissingElement("HKDFParams".into()))?;
+
+    // PRF (pseudo-random function) — default is HMAC-SHA256
+    let prf_uri = find_child_element(doc, hkdf_params_id, ns::DSIG_MORE, ns::node::HKDF_PRF)
+        .or_else(|| find_child_element_any_ns(doc, hkdf_params_id, ns::node::HKDF_PRF))
+        .and_then(|prf_id| {
+            doc.element(prf_id)
+                .unwrap()
+                .get_attribute(ns::attr::ALGORITHM)
+                .map(|s| s.to_owned())
+        })
+        .unwrap_or_else(|| algorithm::HMAC_SHA256.to_owned());
+
+    // Salt (optional)
+    let salt = find_child_element(doc, hkdf_params_id, ns::DSIG_MORE, ns::node::HKDF_SALT)
+        .or_else(|| find_child_element_any_ns(doc, hkdf_params_id, ns::node::HKDF_SALT))
+        .and_then(|salt_id| {
+            find_child_element(doc, salt_id, ns::DSIG_MORE, ns::node::HKDF_SALT_SPECIFIED)
+                .or_else(|| find_child_element_any_ns(doc, salt_id, ns::node::HKDF_SALT_SPECIFIED))
+        })
+        .and_then(|specified_id| {
+            let b64 = doc.text_content_deep(specified_id);
+            let b64 = b64.trim();
+            if b64.is_empty() {
+                return None;
+            }
+            use base64::Engine;
+            let engine = base64::engine::general_purpose::STANDARD;
+            let clean: String = b64.chars().filter(|c| !c.is_whitespace()).collect();
+            engine.decode(&clean).ok()
+        });
+
+    // Info (optional)
+    let info = find_child_element(doc, hkdf_params_id, ns::DSIG_MORE, ns::node::HKDF_INFO)
+        .or_else(|| find_child_element_any_ns(doc, hkdf_params_id, ns::node::HKDF_INFO))
+        .and_then(|info_id| {
+            let b64 = doc.text_content_deep(info_id);
+            let b64 = b64.trim();
+            if b64.is_empty() {
+                return None;
+            }
+            use base64::Engine;
+            let engine = base64::engine::general_purpose::STANDARD;
+            let clean: String = b64.chars().filter(|c| !c.is_whitespace()).collect();
+            engine.decode(&clean).ok()
+        });
+
+    // KeyLength (in bits, optional — default to kek_len * 8)
+    let key_length_bits = find_child_element(
+        doc,
+        hkdf_params_id,
+        ns::DSIG_MORE,
+        ns::node::HKDF_KEY_LENGTH,
+    )
+    .or_else(|| find_child_element_any_ns(doc, hkdf_params_id, ns::node::HKDF_KEY_LENGTH))
+    .and_then(|kl_id| {
+        let text = doc.text_content_deep(kl_id);
+        text.trim().parse::<u32>().ok()
+    })
+    .unwrap_or((default_key_len * 8) as u32);
+
+    Ok(bergshamra_crypto::kdf::HkdfParams {
+        prf_uri: Some(prf_uri),
+        salt,
+        info,
+        key_length_bits,
     })
 }
 
@@ -1111,8 +1245,7 @@ fn apply_cipher_ref_xpath(
                     // Look up by ID first for efficiency
                     if let Some(&target_id) = id_map.get(id_val) {
                         if let Some(elem) = doc.element(target_id) {
-                            let target_ns =
-                                elem.name.namespace_uri.as_deref().unwrap_or("");
+                            let target_ns = elem.name.namespace_uri.as_deref().unwrap_or("");
                             let target_local = &*elem.name.local_name;
                             if target_ns == ns_uri && target_local == local_name {
                                 return Ok(collect_text_content(doc, target_id).into_bytes());
@@ -1154,7 +1287,11 @@ fn apply_cipher_ref_xpath(
 
 /// Resolve a namespace prefix by walking up the element's ancestors looking at
 /// namespace declarations. This replaces roxmltree's `lookup_namespace_uri`.
-fn resolve_prefix_on_element<'a>(doc: &'a Document<'_>, node_id: NodeId, prefix: &str) -> Option<&'a str> {
+fn resolve_prefix_on_element<'a>(
+    doc: &'a Document<'_>,
+    node_id: NodeId,
+    prefix: &str,
+) -> Option<&'a str> {
     let mut current = Some(node_id);
     while let Some(nid) = current {
         if let Some(elem) = doc.element(nid) {
@@ -1483,6 +1620,25 @@ fn find_child_element(
             if &*elem.name.local_name == local_name
                 && elem.name.namespace_uri.as_deref().unwrap_or("") == ns_uri
             {
+                return Some(child_id);
+            }
+        }
+    }
+    None
+}
+
+/// Find a child element by local name, ignoring namespace.
+///
+/// Used as a fallback when the exact namespace is uncertain (e.g., HKDFParams
+/// may appear with or without a namespace declaration).
+fn find_child_element_any_ns(
+    doc: &Document<'_>,
+    parent_id: NodeId,
+    local_name: &str,
+) -> Option<NodeId> {
+    for child_id in doc.children(parent_id) {
+        if let Some(elem) = doc.element(child_id) {
+            if &*elem.name.local_name == local_name {
                 return Some(child_id);
             }
         }

@@ -19,11 +19,10 @@ use uppsala::{Document, NodeId};
 ///
 /// Returns the signed XML document as a string.
 pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
-    let doc = uppsala::parse(template_xml)
-        .map_err(|e| Error::XmlParse(e.to_string()))?;
+    let doc = uppsala::parse(template_xml).map_err(|e| Error::XmlParse(e.to_string()))?;
 
     // Build ID map
-    let mut id_attrs: Vec<&str> = vec!["Id", "ID", "id"];
+    let mut id_attrs: Vec<&str> = vec!["Id", "ID", "id", "AssertionID"];
     let extra: Vec<&str> = ctx.id_attrs.iter().map(|s| s.as_str()).collect();
     id_attrs.extend(extra);
     let _id_map = build_id_map(&doc, &id_attrs);
@@ -35,9 +34,15 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
         .ok_or_else(|| Error::MissingElement("SignedInfo".into()))?;
 
     // Read CanonicalizationMethod
-    let c14n_method = find_child_element(&doc, signed_info, ns::DSIG, ns::node::CANONICALIZATION_METHOD)
-        .ok_or_else(|| Error::MissingElement("CanonicalizationMethod".into()))?;
-    let c14n_uri = doc.element(c14n_method)
+    let c14n_method = find_child_element(
+        &doc,
+        signed_info,
+        ns::DSIG,
+        ns::node::CANONICALIZATION_METHOD,
+    )
+    .ok_or_else(|| Error::MissingElement("CanonicalizationMethod".into()))?;
+    let c14n_uri = doc
+        .element(c14n_method)
         .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
         .ok_or_else(|| Error::MissingAttribute("Algorithm on CanonicalizationMethod".into()))?;
     let c14n_mode = C14nMode::from_uri(c14n_uri)
@@ -47,7 +52,8 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
     // Read SignatureMethod
     let sig_method = find_child_element(&doc, signed_info, ns::DSIG, ns::node::SIGNATURE_METHOD)
         .ok_or_else(|| Error::MissingElement("SignatureMethod".into()))?;
-    let sig_method_uri = doc.element(sig_method)
+    let sig_method_uri = doc
+        .element(sig_method)
         .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
         .ok_or_else(|| Error::MissingAttribute("Algorithm on SignatureMethod".into()))?;
 
@@ -59,22 +65,34 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
 
     for ref_idx in 0..ref_count {
         // Re-parse current state so same-document refs see filled DigestValues
-        let cur_doc = uppsala::parse(&result_xml)
-            .map_err(|e| Error::XmlParse(e.to_string()))?;
+        let cur_doc = uppsala::parse(&result_xml).map_err(|e| Error::XmlParse(e.to_string()))?;
         let cur_id_map = build_id_map(&cur_doc, &id_attrs);
         let cur_sig = find_element(&cur_doc, ns::DSIG, ns::node::SIGNATURE)
             .ok_or_else(|| Error::MissingElement("Signature".into()))?;
-        let cur_signed_info = find_child_element(&cur_doc, cur_sig, ns::DSIG, ns::node::SIGNED_INFO)
-            .ok_or_else(|| Error::MissingElement("SignedInfo".into()))?;
-        let cur_refs = find_child_elements(&cur_doc, cur_signed_info, ns::DSIG, ns::node::REFERENCE);
+        let cur_signed_info =
+            find_child_element(&cur_doc, cur_sig, ns::DSIG, ns::node::SIGNED_INFO)
+                .ok_or_else(|| Error::MissingElement("SignedInfo".into()))?;
+        let cur_refs =
+            find_child_elements(&cur_doc, cur_signed_info, ns::DSIG, ns::node::REFERENCE);
         let reference = cur_refs[ref_idx];
 
-        let uri = cur_doc.element(reference)
+        let uri = cur_doc
+            .element(reference)
             .and_then(|e| e.get_attribute(ns::attr::URI))
             .unwrap_or("");
-        let digest_method = find_child_element(&cur_doc, reference, ns::DSIG, ns::node::DIGEST_METHOD)
-            .ok_or_else(|| Error::MissingElement("DigestMethod".into()))?;
-        let digest_uri = cur_doc.element(digest_method)
+
+        // Skip cid: URIs — these reference MIME attachments outside the XML document
+        // (common in WS-Security). Digests are pre-computed by the caller.
+        // See docs/adr/0002-cid-uri-scheme-skip.md
+        if uri.starts_with("cid:") {
+            continue;
+        }
+
+        let digest_method =
+            find_child_element(&cur_doc, reference, ns::DSIG, ns::node::DIGEST_METHOD)
+                .ok_or_else(|| Error::MissingElement("DigestMethod".into()))?;
+        let digest_uri = cur_doc
+            .element(digest_method)
             .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
             .ok_or_else(|| Error::MissingAttribute("Algorithm on DigestMethod".into()))?;
 
@@ -94,8 +112,10 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
                 }
             } else {
                 let is_xpointer = bergshamra_xml::xpath::parse_xpointer_id(fragment).is_some();
-                let frag_id = bergshamra_xml::xpath::parse_xpointer_id(fragment).unwrap_or(fragment);
-                let resolved_id = bergshamra_xml::xpath::resolve_id(&cur_doc, &cur_id_map, frag_id)?;
+                let frag_id =
+                    bergshamra_xml::xpath::parse_xpointer_id(fragment).unwrap_or(fragment);
+                let resolved_id =
+                    bergshamra_xml::xpath::resolve_id(&cur_doc, &cur_id_map, frag_id)?;
                 let ns = if is_xpointer {
                     NodeSet::tree_with_comments(resolved_id, &cur_doc)
                 } else {
@@ -130,24 +150,26 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
                 if resolved.is_none() {
                     let path = std::path::Path::new(uri);
                     if path.exists() {
-                        let bytes = std::fs::read(path)
-                            .map_err(|e| Error::Other(format!("{uri}: {e}")))?;
+                        let bytes =
+                            std::fs::read(path).map_err(|e| Error::Other(format!("{uri}: {e}")))?;
                         resolved = Some(bergshamra_transforms::TransformData::Binary(bytes));
                     }
                 }
             }
             resolved.ok_or_else(|| Error::InvalidUri(format!("unsupported URI: {uri}")))?
         };
-        let transforms_node = find_child_element(&cur_doc, reference, ns::DSIG, ns::node::TRANSFORMS);
+        let transforms_node =
+            find_child_element(&cur_doc, reference, ns::DSIG, ns::node::TRANSFORMS);
         if let Some(transforms_id) = transforms_node {
             for t_node in cur_doc.children(transforms_id) {
-                let is_transform = cur_doc.element(t_node).map_or(false, |e| {
-                    &*e.name.local_name == ns::node::TRANSFORM
-                });
+                let is_transform = cur_doc
+                    .element(t_node)
+                    .map_or(false, |e| &*e.name.local_name == ns::node::TRANSFORM);
                 if !is_transform {
                     continue;
                 }
-                let t_uri = cur_doc.element(t_node)
+                let t_uri = cur_doc
+                    .element(t_node)
                     .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
                     .unwrap_or("");
                 data = crate::verify::apply_transform(t_uri, data, t_node, cur_sig, &cur_doc)?;
@@ -164,9 +186,10 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
         // Replace the empty DigestValue in the result XML
         // This is a simple text replacement — works for templates
         // where DigestValue elements are initially empty.
-        let digest_value_text = find_child_element(&cur_doc, reference, ns::DSIG, ns::node::DIGEST_VALUE)
-            .map(|id| cur_doc.text_content_deep(id))
-            .unwrap_or_default();
+        let digest_value_text =
+            find_child_element(&cur_doc, reference, ns::DSIG, ns::node::DIGEST_VALUE)
+                .map(|id| cur_doc.text_content_deep(id))
+                .unwrap_or_default();
 
         if digest_value_text.trim().is_empty() {
             result_xml = replace_first_empty_element(&result_xml, "DigestValue", &digest_b64);
@@ -175,12 +198,12 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
 
     // Now canonicalize SignedInfo and compute signature
     // Re-parse the updated XML
-    let updated_doc = uppsala::parse(&result_xml)
-        .map_err(|e| Error::XmlParse(e.to_string()))?;
+    let updated_doc = uppsala::parse(&result_xml).map_err(|e| Error::XmlParse(e.to_string()))?;
     let updated_sig = find_element(&updated_doc, ns::DSIG, ns::node::SIGNATURE)
         .ok_or_else(|| Error::MissingElement("Signature".into()))?;
-    let updated_signed_info = find_child_element(&updated_doc, updated_sig, ns::DSIG, ns::node::SIGNED_INFO)
-        .ok_or_else(|| Error::MissingElement("SignedInfo".into()))?;
+    let updated_signed_info =
+        find_child_element(&updated_doc, updated_sig, ns::DSIG, ns::node::SIGNED_INFO)
+            .ok_or_else(|| Error::MissingElement("SignedInfo".into()))?;
 
     let signed_info_ns = NodeSet::tree_without_comments(updated_signed_info, &updated_doc);
     let c14n_signed_info = bergshamra_c14n::canonicalize_doc(
@@ -197,13 +220,30 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
         .ok_or_else(|| Error::Key("no signing key".into()))?;
 
     // Re-find sig_method in the updated doc for PQ context / HMAC length extraction
-    let updated_sig_method = find_child_element(&updated_doc, updated_signed_info, ns::DSIG, ns::node::SIGNATURE_METHOD)
-        .ok_or_else(|| Error::MissingElement("SignatureMethod".into()))?;
+    let updated_sig_method = find_child_element(
+        &updated_doc,
+        updated_signed_info,
+        ns::DSIG,
+        ns::node::SIGNATURE_METHOD,
+    )
+    .ok_or_else(|| Error::MissingElement("SignatureMethod".into()))?;
 
     // Extract PQ context string for ML-DSA/SLH-DSA signing
     let pq_context: Option<Vec<u8>> = if bergshamra_crypto::sign::is_pq_algorithm(sig_method_uri) {
-        let ctx_node = find_child_element(&updated_doc, updated_sig_method, ns::XMLSEC_PQ, ns::node::MLDSA_CONTEXT_STRING)
-            .or_else(|| find_child_element(&updated_doc, updated_sig_method, ns::XMLSEC_PQ, ns::node::SLHDSA_CONTEXT_STRING));
+        let ctx_node = find_child_element(
+            &updated_doc,
+            updated_sig_method,
+            ns::XMLSEC_PQ,
+            ns::node::MLDSA_CONTEXT_STRING,
+        )
+        .or_else(|| {
+            find_child_element(
+                &updated_doc,
+                updated_sig_method,
+                ns::XMLSEC_PQ,
+                ns::node::SLHDSA_CONTEXT_STRING,
+            )
+        });
         if let Some(cn) = ctx_node {
             let b64_text = updated_doc.text_content_deep(cn);
             let b64 = b64_text.trim();
@@ -212,7 +252,8 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
             } else {
                 use base64::Engine as _;
                 let engine = base64::engine::general_purpose::STANDARD;
-                let decoded = engine.decode(b64)
+                let decoded = engine
+                    .decode(b64)
                     .map_err(|e| Error::Base64(format!("PQ context string: {e}")))?;
                 Some(decoded)
             }
@@ -228,7 +269,12 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
 
     // Truncate HMAC output if HMACOutputLength is specified
     if bergshamra_crypto::sign::is_hmac_algorithm(sig_method_uri) {
-        if let Some(hmac_len_id) = find_child_element(&updated_doc, updated_sig_method, ns::DSIG, ns::node::HMAC_OUTPUT_LENGTH) {
+        if let Some(hmac_len_id) = find_child_element(
+            &updated_doc,
+            updated_sig_method,
+            ns::DSIG,
+            ns::node::HMAC_OUTPUT_LENGTH,
+        ) {
             let len_text_owned = updated_doc.text_content_deep(hmac_len_id);
             let len_text = len_text_owned.trim();
             if let Ok(bits) = len_text.parse::<usize>() {
@@ -280,7 +326,12 @@ fn find_element(doc: &Document<'_>, ns_uri: &str, local_name: &str) -> Option<No
     None
 }
 
-fn find_child_element(doc: &Document<'_>, parent: NodeId, ns_uri: &str, local_name: &str) -> Option<NodeId> {
+fn find_child_element(
+    doc: &Document<'_>,
+    parent: NodeId,
+    ns_uri: &str,
+    local_name: &str,
+) -> Option<NodeId> {
     for id in doc.children(parent) {
         if let Some(elem) = doc.element(id) {
             if &*elem.name.local_name == local_name
@@ -293,7 +344,12 @@ fn find_child_element(doc: &Document<'_>, parent: NodeId, ns_uri: &str, local_na
     None
 }
 
-fn find_child_elements(doc: &Document<'_>, parent: NodeId, ns_uri: &str, local_name: &str) -> Vec<NodeId> {
+fn find_child_elements(
+    doc: &Document<'_>,
+    parent: NodeId,
+    ns_uri: &str,
+    local_name: &str,
+) -> Vec<NodeId> {
     doc.children(parent)
         .into_iter()
         .filter(|&id| {
@@ -399,8 +455,7 @@ fn extract_open_tag(raw_xml: &str) -> String {
 /// 2. `<X509Data>` with empty child template elements like `<X509SubjectName/>`,
 ///    `<X509IssuerSerial/>`, `<X509SKI/>`, `<X509Certificate/>` — populates each
 fn populate_x509_data(xml: &str, x509_chain: &[Vec<u8>]) -> Result<String, Error> {
-    let doc = uppsala::parse(xml)
-        .map_err(|e| Error::XmlParse(e.to_string()))?;
+    let doc = uppsala::parse(xml).map_err(|e| Error::XmlParse(e.to_string()))?;
 
     // Find X509Data element in KeyInfo
     let x509_data_id = doc.descendants(doc.root()).into_iter().find(|&id| {
@@ -419,7 +474,10 @@ fn populate_x509_data(xml: &str, x509_chain: &[Vec<u8>]) -> Result<String, Error
     let engine = base64::engine::general_purpose::STANDARD;
 
     // Check if empty (no child elements) — simple case
-    let has_children = doc.children(x509_data_id).iter().any(|&c| doc.element(c).is_some());
+    let has_children = doc
+        .children(x509_data_id)
+        .iter()
+        .any(|&c| doc.element(c).is_some());
     if !has_children {
         // Build X509Certificate elements
         let mut certs_xml = String::new();
@@ -430,7 +488,9 @@ fn populate_x509_data(xml: &str, x509_chain: &[Vec<u8>]) -> Result<String, Error
             if prefix.is_empty() {
                 certs_xml.push_str(&format!("<X509Certificate>{cert_b64}</X509Certificate>"));
             } else {
-                certs_xml.push_str(&format!("<{prefix}:X509Certificate>{cert_b64}</{prefix}:X509Certificate>"));
+                certs_xml.push_str(&format!(
+                    "<{prefix}:X509Certificate>{cert_b64}</{prefix}:X509Certificate>"
+                ));
             }
         }
 
@@ -465,7 +525,8 @@ fn populate_x509_data(xml: &str, x509_chain: &[Vec<u8>]) -> Result<String, Error
     // Process child elements — replace each empty one with populated content
     let mut result = xml.to_owned();
     // Process in reverse order of byte offset so replacements don't shift ranges
-    let mut children_to_process: Vec<NodeId> = doc.children(x509_data_id)
+    let mut children_to_process: Vec<NodeId> = doc
+        .children(x509_data_id)
         .into_iter()
         .filter(|&c| doc.element(c).is_some())
         .collect();
@@ -508,7 +569,9 @@ fn populate_x509_data(xml: &str, x509_chain: &[Vec<u8>]) -> Result<String, Error
                 }
             }
             "X509IssuerSerial" => {
-                if let (Some(ref issuer), Some(ref serial)) = (&cert_info.issuer_name, &cert_info.serial_number) {
+                if let (Some(ref issuer), Some(ref serial)) =
+                    (&cert_info.issuer_name, &cert_info.serial_number)
+                {
                     if prefix.is_empty() {
                         format!("<X509IssuerSerial><X509IssuerName>{issuer}</X509IssuerName><X509SerialNumber>{serial}</X509SerialNumber></X509IssuerSerial>")
                     } else {
@@ -557,7 +620,14 @@ fn extract_x509_info(cert_der: &[u8]) -> X509Info {
 
     let cert = match Certificate::from_der(cert_der) {
         Ok(c) => c,
-        Err(_) => return X509Info { subject_name: None, issuer_name: None, serial_number: None, ski_b64: None },
+        Err(_) => {
+            return X509Info {
+                subject_name: None,
+                issuer_name: None,
+                serial_number: None,
+                ski_b64: None,
+            }
+        }
     };
 
     let subject_name = Some(format_rdn_sequence(&cert.tbs_certificate.subject));
@@ -567,7 +637,12 @@ fn extract_x509_info(cert_der: &[u8]) -> X509Info {
     // Extract SKI from extensions
     let ski_b64 = extract_ski(&cert);
 
-    X509Info { subject_name, issuer_name, serial_number, ski_b64 }
+    X509Info {
+        subject_name,
+        issuer_name,
+        serial_number,
+        ski_b64,
+    }
 }
 
 /// Format an X.500 Name (RDN sequence) as a comma-separated string.
@@ -733,9 +808,11 @@ fn extract_ski(cert: &x509_cert::Certificate) -> Option<String> {
 }
 
 /// Populate an empty `<KeyValue/>` element with the signing key's public key.
-fn populate_key_value(xml: &str, key_data: &bergshamra_keys::key::KeyData) -> Result<String, Error> {
-    let doc = uppsala::parse(xml)
-        .map_err(|e| Error::XmlParse(e.to_string()))?;
+fn populate_key_value(
+    xml: &str,
+    key_data: &bergshamra_keys::key::KeyData,
+) -> Result<String, Error> {
+    let doc = uppsala::parse(xml).map_err(|e| Error::XmlParse(e.to_string()))?;
 
     let kv_id = doc.descendants(doc.root()).into_iter().find(|&id| {
         doc.element(id).map_or(false, |elem| {
@@ -750,7 +827,11 @@ fn populate_key_value(xml: &str, key_data: &bergshamra_keys::key::KeyData) -> Re
     };
 
     // Only populate if empty
-    if doc.children(kv_id).iter().any(|&c| doc.element(c).is_some()) {
+    if doc
+        .children(kv_id)
+        .iter()
+        .any(|&c| doc.element(c).is_some())
+    {
         return Ok(xml.to_owned());
     }
     let text = doc.text_content_deep(kv_id);
@@ -779,9 +860,11 @@ fn populate_key_value(xml: &str, key_data: &bergshamra_keys::key::KeyData) -> Re
 }
 
 /// Populate an empty `<DEREncodedKeyValue/>` element with the SPKI DER of the signing key.
-fn populate_der_encoded_key_value(xml: &str, key_data: &bergshamra_keys::key::KeyData) -> Result<String, Error> {
-    let doc = uppsala::parse(xml)
-        .map_err(|e| Error::XmlParse(e.to_string()))?;
+fn populate_der_encoded_key_value(
+    xml: &str,
+    key_data: &bergshamra_keys::key::KeyData,
+) -> Result<String, Error> {
+    let doc = uppsala::parse(xml).map_err(|e| Error::XmlParse(e.to_string()))?;
 
     let dek_id = doc.descendants(doc.root()).into_iter().find(|&id| {
         doc.element(id).map_or(false, |elem| {
@@ -796,7 +879,11 @@ fn populate_der_encoded_key_value(xml: &str, key_data: &bergshamra_keys::key::Ke
     };
 
     // Only populate if empty
-    if doc.children(dek_id).iter().any(|&c| doc.element(c).is_some()) {
+    if doc
+        .children(dek_id)
+        .iter()
+        .any(|&c| doc.element(c).is_some())
+    {
         return Ok(xml.to_owned());
     }
     let text = doc.text_content_deep(dek_id);
@@ -838,7 +925,10 @@ fn read_inclusive_prefixes(doc: &Document<'_>, node: NodeId) -> Vec<String> {
         if let Some(elem) = doc.element(child) {
             if &*elem.name.local_name == ns::node::INCLUSIVE_NAMESPACES {
                 if let Some(prefix_list) = elem.get_attribute(ns::attr::PREFIX_LIST) {
-                    return prefix_list.split_whitespace().map(|s| s.to_owned()).collect();
+                    return prefix_list
+                        .split_whitespace()
+                        .map(|s| s.to_owned())
+                        .collect();
                 }
             }
         }
@@ -862,8 +952,7 @@ fn encrypt_session_key_in_template(
         None => return Ok(xml.to_owned()),
     };
 
-    let doc = uppsala::parse(xml)
-        .map_err(|e| Error::XmlParse(e.to_string()))?;
+    let doc = uppsala::parse(xml).map_err(|e| Error::XmlParse(e.to_string()))?;
 
     // Find EncryptedKey elements with empty CipherValue
     let mut replacements: Vec<(std::ops::Range<usize>, String)> = Vec::new();
@@ -895,7 +984,10 @@ fn encrypt_session_key_in_template(
             Some(id) => id,
             None => continue,
         };
-        let alg_uri = match doc.element(enc_method).and_then(|e| e.get_attribute(ns::attr::ALGORITHM)) {
+        let alg_uri = match doc
+            .element(enc_method)
+            .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
+        {
             Some(u) => u,
             None => continue,
         };
@@ -907,7 +999,11 @@ fn encrypt_session_key_in_template(
             if let Some(kn_id) = key_name_id {
                 let name = doc.text_content_deep(kn_id);
                 let name = name.trim();
-                if name.is_empty() { None } else { manager.find_by_name(name) }
+                if name.is_empty() {
+                    None
+                } else {
+                    manager.find_by_name(name)
+                }
             } else {
                 None
             }
@@ -934,7 +1030,10 @@ fn encrypt_session_key_in_template(
 
         // Record range of CipherValue to replace
         let cv_range = doc.node_range(cv_id).unwrap();
-        replacements.push((cv_range.clone(), format_cipher_value_element_range(xml, &cv_range, &b64)));
+        replacements.push((
+            cv_range.clone(),
+            format_cipher_value_element_range(xml, &cv_range, &b64),
+        ));
     }
 
     if replacements.is_empty() {
@@ -952,7 +1051,11 @@ fn encrypt_session_key_in_template(
 }
 
 /// Format a CipherValue element replacement preserving its tag structure.
-fn format_cipher_value_element_range(xml: &str, range: &std::ops::Range<usize>, b64_content: &str) -> String {
+fn format_cipher_value_element_range(
+    xml: &str,
+    range: &std::ops::Range<usize>,
+    b64_content: &str,
+) -> String {
     let raw_tag = &xml[range.start..range.end];
     let open_tag = extract_open_tag(raw_tag);
     let prefix = extract_tag_prefix(raw_tag, "CipherValue");
@@ -965,7 +1068,11 @@ fn format_cipher_value_element_range(xml: &str, range: &std::ops::Range<usize>, 
 }
 
 /// Find a descendant element by local name (any namespace).
-fn find_descendant_element_by_local(doc: &Document<'_>, node_id: NodeId, local_name: &str) -> Option<NodeId> {
+fn find_descendant_element_by_local(
+    doc: &Document<'_>,
+    node_id: NodeId,
+    local_name: &str,
+) -> Option<NodeId> {
     for desc in doc.descendants(node_id) {
         if let Some(elem) = doc.element(desc) {
             if &*elem.name.local_name == local_name {

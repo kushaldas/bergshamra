@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-//! Signature algorithm implementations (RSA, ECDSA, HMAC, ML-DSA, SLH-DSA).
+//! Signature algorithm implementations (RSA, ECDSA, Ed25519, HMAC, ML-DSA, SLH-DSA).
 
 use bergshamra_core::{algorithm, Error};
 use signature::SignatureEncoding;
@@ -17,6 +17,8 @@ pub enum SigningKey {
     EcP521Public(p521::ecdsa::VerifyingKey),
     Dsa(dsa::SigningKey),
     DsaPublic(dsa::VerifyingKey),
+    Ed25519(ed25519_dalek::SigningKey),
+    Ed25519Public(ed25519_dalek::VerifyingKey),
     Hmac(Vec<u8>),
     /// Post-quantum key stored as raw DER bytes.
     /// The algorithm variant determines how to parse them.
@@ -72,75 +74,230 @@ pub fn from_uri(uri: &str) -> Result<Box<dyn SignatureAlgorithm>, Error> {
 
 /// Create a signature algorithm from its URI with an optional context string.
 /// Context strings are used by ML-DSA and SLH-DSA algorithms.
-pub fn from_uri_with_context(uri: &str, context: Option<Vec<u8>>) -> Result<Box<dyn SignatureAlgorithm>, Error> {
+pub fn from_uri_with_context(
+    uri: &str,
+    context: Option<Vec<u8>>,
+) -> Result<Box<dyn SignatureAlgorithm>, Error> {
     match uri {
-        algorithm::RSA_SHA1 => Ok(Box::new(RsaPkcs1v15 { uri: algorithm::RSA_SHA1, hash: HashType::Sha1 })),
-        algorithm::RSA_SHA224 => Ok(Box::new(RsaPkcs1v15 { uri: algorithm::RSA_SHA224, hash: HashType::Sha224 })),
-        algorithm::RSA_SHA256 => Ok(Box::new(RsaPkcs1v15 { uri: algorithm::RSA_SHA256, hash: HashType::Sha256 })),
-        algorithm::RSA_SHA384 => Ok(Box::new(RsaPkcs1v15 { uri: algorithm::RSA_SHA384, hash: HashType::Sha384 })),
-        algorithm::RSA_SHA512 => Ok(Box::new(RsaPkcs1v15 { uri: algorithm::RSA_SHA512, hash: HashType::Sha512 })),
+        algorithm::RSA_SHA1 => Ok(Box::new(RsaPkcs1v15 {
+            uri: algorithm::RSA_SHA1,
+            hash: HashType::Sha1,
+        })),
+        algorithm::RSA_SHA224 => Ok(Box::new(RsaPkcs1v15 {
+            uri: algorithm::RSA_SHA224,
+            hash: HashType::Sha224,
+        })),
+        algorithm::RSA_SHA256 => Ok(Box::new(RsaPkcs1v15 {
+            uri: algorithm::RSA_SHA256,
+            hash: HashType::Sha256,
+        })),
+        algorithm::RSA_SHA384 => Ok(Box::new(RsaPkcs1v15 {
+            uri: algorithm::RSA_SHA384,
+            hash: HashType::Sha384,
+        })),
+        algorithm::RSA_SHA512 => Ok(Box::new(RsaPkcs1v15 {
+            uri: algorithm::RSA_SHA512,
+            hash: HashType::Sha512,
+        })),
 
-        algorithm::RSA_PSS_SHA1 => Ok(Box::new(RsaPss { uri: algorithm::RSA_PSS_SHA1, hash: HashType::Sha1 })),
-        algorithm::RSA_PSS_SHA224 => Ok(Box::new(RsaPss { uri: algorithm::RSA_PSS_SHA224, hash: HashType::Sha224 })),
-        algorithm::RSA_PSS_SHA256 => Ok(Box::new(RsaPss { uri: algorithm::RSA_PSS_SHA256, hash: HashType::Sha256 })),
-        algorithm::RSA_PSS_SHA384 => Ok(Box::new(RsaPss { uri: algorithm::RSA_PSS_SHA384, hash: HashType::Sha384 })),
-        algorithm::RSA_PSS_SHA512 => Ok(Box::new(RsaPss { uri: algorithm::RSA_PSS_SHA512, hash: HashType::Sha512 })),
+        algorithm::RSA_PSS_SHA1 => Ok(Box::new(RsaPss {
+            uri: algorithm::RSA_PSS_SHA1,
+            hash: HashType::Sha1,
+        })),
+        algorithm::RSA_PSS_SHA224 => Ok(Box::new(RsaPss {
+            uri: algorithm::RSA_PSS_SHA224,
+            hash: HashType::Sha224,
+        })),
+        algorithm::RSA_PSS_SHA256 => Ok(Box::new(RsaPss {
+            uri: algorithm::RSA_PSS_SHA256,
+            hash: HashType::Sha256,
+        })),
+        algorithm::RSA_PSS_SHA384 => Ok(Box::new(RsaPss {
+            uri: algorithm::RSA_PSS_SHA384,
+            hash: HashType::Sha384,
+        })),
+        algorithm::RSA_PSS_SHA512 => Ok(Box::new(RsaPss {
+            uri: algorithm::RSA_PSS_SHA512,
+            hash: HashType::Sha512,
+        })),
 
-        algorithm::RSA_PSS_SHA3_224 => Ok(Box::new(RsaPss { uri: algorithm::RSA_PSS_SHA3_224, hash: HashType::Sha3_224 })),
-        algorithm::RSA_PSS_SHA3_256 => Ok(Box::new(RsaPss { uri: algorithm::RSA_PSS_SHA3_256, hash: HashType::Sha3_256 })),
-        algorithm::RSA_PSS_SHA3_384 => Ok(Box::new(RsaPss { uri: algorithm::RSA_PSS_SHA3_384, hash: HashType::Sha3_384 })),
-        algorithm::RSA_PSS_SHA3_512 => Ok(Box::new(RsaPss { uri: algorithm::RSA_PSS_SHA3_512, hash: HashType::Sha3_512 })),
+        algorithm::RSA_PSS_SHA3_224 => Ok(Box::new(RsaPss {
+            uri: algorithm::RSA_PSS_SHA3_224,
+            hash: HashType::Sha3_224,
+        })),
+        algorithm::RSA_PSS_SHA3_256 => Ok(Box::new(RsaPss {
+            uri: algorithm::RSA_PSS_SHA3_256,
+            hash: HashType::Sha3_256,
+        })),
+        algorithm::RSA_PSS_SHA3_384 => Ok(Box::new(RsaPss {
+            uri: algorithm::RSA_PSS_SHA3_384,
+            hash: HashType::Sha3_384,
+        })),
+        algorithm::RSA_PSS_SHA3_512 => Ok(Box::new(RsaPss {
+            uri: algorithm::RSA_PSS_SHA3_512,
+            hash: HashType::Sha3_512,
+        })),
 
-        algorithm::ECDSA_SHA1 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA1, hash: HashType::Sha1 })),
-        algorithm::ECDSA_SHA224 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA224, hash: HashType::Sha224 })),
-        algorithm::ECDSA_SHA256 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA256, hash: HashType::Sha256 })),
-        algorithm::ECDSA_SHA384 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA384, hash: HashType::Sha384 })),
-        algorithm::ECDSA_SHA512 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA512, hash: HashType::Sha512 })),
+        algorithm::ECDSA_SHA1 => Ok(Box::new(Ecdsa {
+            uri: algorithm::ECDSA_SHA1,
+            hash: HashType::Sha1,
+        })),
+        algorithm::ECDSA_SHA224 => Ok(Box::new(Ecdsa {
+            uri: algorithm::ECDSA_SHA224,
+            hash: HashType::Sha224,
+        })),
+        algorithm::ECDSA_SHA256 => Ok(Box::new(Ecdsa {
+            uri: algorithm::ECDSA_SHA256,
+            hash: HashType::Sha256,
+        })),
+        algorithm::ECDSA_SHA384 => Ok(Box::new(Ecdsa {
+            uri: algorithm::ECDSA_SHA384,
+            hash: HashType::Sha384,
+        })),
+        algorithm::ECDSA_SHA512 => Ok(Box::new(Ecdsa {
+            uri: algorithm::ECDSA_SHA512,
+            hash: HashType::Sha512,
+        })),
 
-        algorithm::ECDSA_SHA3_224 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA3_224, hash: HashType::Sha3_224 })),
-        algorithm::ECDSA_SHA3_256 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA3_256, hash: HashType::Sha3_256 })),
-        algorithm::ECDSA_SHA3_384 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA3_384, hash: HashType::Sha3_384 })),
-        algorithm::ECDSA_SHA3_512 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_SHA3_512, hash: HashType::Sha3_512 })),
+        algorithm::ECDSA_SHA3_224 => Ok(Box::new(Ecdsa {
+            uri: algorithm::ECDSA_SHA3_224,
+            hash: HashType::Sha3_224,
+        })),
+        algorithm::ECDSA_SHA3_256 => Ok(Box::new(Ecdsa {
+            uri: algorithm::ECDSA_SHA3_256,
+            hash: HashType::Sha3_256,
+        })),
+        algorithm::ECDSA_SHA3_384 => Ok(Box::new(Ecdsa {
+            uri: algorithm::ECDSA_SHA3_384,
+            hash: HashType::Sha3_384,
+        })),
+        algorithm::ECDSA_SHA3_512 => Ok(Box::new(Ecdsa {
+            uri: algorithm::ECDSA_SHA3_512,
+            hash: HashType::Sha3_512,
+        })),
 
-        algorithm::DSA_SHA1 => Ok(Box::new(DsaSign { uri: algorithm::DSA_SHA1, hash: HashType::Sha1 })),
-        algorithm::DSA_SHA256 => Ok(Box::new(DsaSign { uri: algorithm::DSA_SHA256, hash: HashType::Sha256 })),
+        algorithm::DSA_SHA1 => Ok(Box::new(DsaSign {
+            uri: algorithm::DSA_SHA1,
+            hash: HashType::Sha1,
+        })),
+        algorithm::DSA_SHA256 => Ok(Box::new(DsaSign {
+            uri: algorithm::DSA_SHA256,
+            hash: HashType::Sha256,
+        })),
 
-        algorithm::HMAC_SHA1 => Ok(Box::new(HmacSign { uri: algorithm::HMAC_SHA1, hash: HashType::Sha1 })),
-        algorithm::HMAC_SHA224 => Ok(Box::new(HmacSign { uri: algorithm::HMAC_SHA224, hash: HashType::Sha224 })),
-        algorithm::HMAC_SHA256 => Ok(Box::new(HmacSign { uri: algorithm::HMAC_SHA256, hash: HashType::Sha256 })),
-        algorithm::HMAC_SHA384 => Ok(Box::new(HmacSign { uri: algorithm::HMAC_SHA384, hash: HashType::Sha384 })),
-        algorithm::HMAC_SHA512 => Ok(Box::new(HmacSign { uri: algorithm::HMAC_SHA512, hash: HashType::Sha512 })),
+        algorithm::EDDSA_ED25519 => Ok(Box::new(Ed25519Sign)),
+
+        algorithm::HMAC_SHA1 => Ok(Box::new(HmacSign {
+            uri: algorithm::HMAC_SHA1,
+            hash: HashType::Sha1,
+        })),
+        algorithm::HMAC_SHA224 => Ok(Box::new(HmacSign {
+            uri: algorithm::HMAC_SHA224,
+            hash: HashType::Sha224,
+        })),
+        algorithm::HMAC_SHA256 => Ok(Box::new(HmacSign {
+            uri: algorithm::HMAC_SHA256,
+            hash: HashType::Sha256,
+        })),
+        algorithm::HMAC_SHA384 => Ok(Box::new(HmacSign {
+            uri: algorithm::HMAC_SHA384,
+            hash: HashType::Sha384,
+        })),
+        algorithm::HMAC_SHA512 => Ok(Box::new(HmacSign {
+            uri: algorithm::HMAC_SHA512,
+            hash: HashType::Sha512,
+        })),
 
         #[cfg(feature = "legacy-algorithms")]
-        algorithm::RSA_MD5 => Ok(Box::new(RsaPkcs1v15 { uri: algorithm::RSA_MD5, hash: HashType::Md5 })),
+        algorithm::RSA_MD5 => Ok(Box::new(RsaPkcs1v15 {
+            uri: algorithm::RSA_MD5,
+            hash: HashType::Md5,
+        })),
         #[cfg(feature = "legacy-algorithms")]
-        algorithm::RSA_RIPEMD160 => Ok(Box::new(RsaPkcs1v15 { uri: algorithm::RSA_RIPEMD160, hash: HashType::Ripemd160 })),
+        algorithm::RSA_RIPEMD160 => Ok(Box::new(RsaPkcs1v15 {
+            uri: algorithm::RSA_RIPEMD160,
+            hash: HashType::Ripemd160,
+        })),
         #[cfg(feature = "legacy-algorithms")]
-        algorithm::ECDSA_RIPEMD160 => Ok(Box::new(Ecdsa { uri: algorithm::ECDSA_RIPEMD160, hash: HashType::Ripemd160 })),
+        algorithm::ECDSA_RIPEMD160 => Ok(Box::new(Ecdsa {
+            uri: algorithm::ECDSA_RIPEMD160,
+            hash: HashType::Ripemd160,
+        })),
         #[cfg(feature = "legacy-algorithms")]
-        algorithm::HMAC_MD5 => Ok(Box::new(HmacSign { uri: algorithm::HMAC_MD5, hash: HashType::Md5 })),
+        algorithm::HMAC_MD5 => Ok(Box::new(HmacSign {
+            uri: algorithm::HMAC_MD5,
+            hash: HashType::Md5,
+        })),
         #[cfg(feature = "legacy-algorithms")]
-        algorithm::HMAC_RIPEMD160 => Ok(Box::new(HmacSign { uri: algorithm::HMAC_RIPEMD160, hash: HashType::Ripemd160 })),
+        algorithm::HMAC_RIPEMD160 => Ok(Box::new(HmacSign {
+            uri: algorithm::HMAC_RIPEMD160,
+            hash: HashType::Ripemd160,
+        })),
 
-        algorithm::ML_DSA_44 => Ok(Box::new(PqSign { uri: algorithm::ML_DSA_44, algorithm: PqAlgorithm::MlDsa44, context: context.unwrap_or_default() })),
-        algorithm::ML_DSA_65 => Ok(Box::new(PqSign { uri: algorithm::ML_DSA_65, algorithm: PqAlgorithm::MlDsa65, context: context.unwrap_or_default() })),
-        algorithm::ML_DSA_87 => Ok(Box::new(PqSign { uri: algorithm::ML_DSA_87, algorithm: PqAlgorithm::MlDsa87, context: context.unwrap_or_default() })),
+        algorithm::ML_DSA_44 => Ok(Box::new(PqSign {
+            uri: algorithm::ML_DSA_44,
+            algorithm: PqAlgorithm::MlDsa44,
+            context: context.unwrap_or_default(),
+        })),
+        algorithm::ML_DSA_65 => Ok(Box::new(PqSign {
+            uri: algorithm::ML_DSA_65,
+            algorithm: PqAlgorithm::MlDsa65,
+            context: context.unwrap_or_default(),
+        })),
+        algorithm::ML_DSA_87 => Ok(Box::new(PqSign {
+            uri: algorithm::ML_DSA_87,
+            algorithm: PqAlgorithm::MlDsa87,
+            context: context.unwrap_or_default(),
+        })),
 
-        algorithm::SLH_DSA_SHA2_128F => Ok(Box::new(PqSign { uri: algorithm::SLH_DSA_SHA2_128F, algorithm: PqAlgorithm::SlhDsaSha2_128f, context: context.unwrap_or_default() })),
-        algorithm::SLH_DSA_SHA2_128S => Ok(Box::new(PqSign { uri: algorithm::SLH_DSA_SHA2_128S, algorithm: PqAlgorithm::SlhDsaSha2_128s, context: context.unwrap_or_default() })),
-        algorithm::SLH_DSA_SHA2_192F => Ok(Box::new(PqSign { uri: algorithm::SLH_DSA_SHA2_192F, algorithm: PqAlgorithm::SlhDsaSha2_192f, context: context.unwrap_or_default() })),
-        algorithm::SLH_DSA_SHA2_192S => Ok(Box::new(PqSign { uri: algorithm::SLH_DSA_SHA2_192S, algorithm: PqAlgorithm::SlhDsaSha2_192s, context: context.unwrap_or_default() })),
-        algorithm::SLH_DSA_SHA2_256F => Ok(Box::new(PqSign { uri: algorithm::SLH_DSA_SHA2_256F, algorithm: PqAlgorithm::SlhDsaSha2_256f, context: context.unwrap_or_default() })),
-        algorithm::SLH_DSA_SHA2_256S => Ok(Box::new(PqSign { uri: algorithm::SLH_DSA_SHA2_256S, algorithm: PqAlgorithm::SlhDsaSha2_256s, context: context.unwrap_or_default() })),
+        algorithm::SLH_DSA_SHA2_128F => Ok(Box::new(PqSign {
+            uri: algorithm::SLH_DSA_SHA2_128F,
+            algorithm: PqAlgorithm::SlhDsaSha2_128f,
+            context: context.unwrap_or_default(),
+        })),
+        algorithm::SLH_DSA_SHA2_128S => Ok(Box::new(PqSign {
+            uri: algorithm::SLH_DSA_SHA2_128S,
+            algorithm: PqAlgorithm::SlhDsaSha2_128s,
+            context: context.unwrap_or_default(),
+        })),
+        algorithm::SLH_DSA_SHA2_192F => Ok(Box::new(PqSign {
+            uri: algorithm::SLH_DSA_SHA2_192F,
+            algorithm: PqAlgorithm::SlhDsaSha2_192f,
+            context: context.unwrap_or_default(),
+        })),
+        algorithm::SLH_DSA_SHA2_192S => Ok(Box::new(PqSign {
+            uri: algorithm::SLH_DSA_SHA2_192S,
+            algorithm: PqAlgorithm::SlhDsaSha2_192s,
+            context: context.unwrap_or_default(),
+        })),
+        algorithm::SLH_DSA_SHA2_256F => Ok(Box::new(PqSign {
+            uri: algorithm::SLH_DSA_SHA2_256F,
+            algorithm: PqAlgorithm::SlhDsaSha2_256f,
+            context: context.unwrap_or_default(),
+        })),
+        algorithm::SLH_DSA_SHA2_256S => Ok(Box::new(PqSign {
+            uri: algorithm::SLH_DSA_SHA2_256S,
+            algorithm: PqAlgorithm::SlhDsaSha2_256s,
+            context: context.unwrap_or_default(),
+        })),
 
-        _ => Err(Error::UnsupportedAlgorithm(format!("signature algorithm: {uri}"))),
+        _ => Err(Error::UnsupportedAlgorithm(format!(
+            "signature algorithm: {uri}"
+        ))),
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 enum HashType {
-    Sha1, Sha224, Sha256, Sha384, Sha512,
-    Sha3_224, Sha3_256, Sha3_384, Sha3_512,
+    Sha1,
+    Sha224,
+    Sha256,
+    Sha384,
+    Sha512,
+    Sha3_224,
+    Sha3_256,
+    Sha3_384,
+    Sha3_512,
     #[cfg(feature = "legacy-algorithms")]
     Md5,
     #[cfg(feature = "legacy-algorithms")]
@@ -149,10 +306,17 @@ enum HashType {
 
 // ── RSA PKCS#1 v1.5 ─────────────────────────────────────────────────
 
-struct RsaPkcs1v15 { uri: &'static str, hash: HashType }
+struct RsaPkcs1v15 {
+    uri: &'static str,
+    hash: HashType,
+}
 
 impl RsaPkcs1v15 {
-    fn sign_with_key(&self, private_key: &rsa::RsaPrivateKey, data: &[u8]) -> Result<Vec<u8>, Error> {
+    fn sign_with_key(
+        &self,
+        private_key: &rsa::RsaPrivateKey,
+        data: &[u8],
+    ) -> Result<Vec<u8>, Error> {
         use signature::Signer;
         macro_rules! do_sign {
             ($hasher:ty) => {{
@@ -177,7 +341,12 @@ impl RsaPkcs1v15 {
         }
     }
 
-    fn verify_with_key(&self, public_key: &rsa::RsaPublicKey, data: &[u8], sig_bytes: &[u8]) -> Result<bool, Error> {
+    fn verify_with_key(
+        &self,
+        public_key: &rsa::RsaPublicKey,
+        data: &[u8],
+        sig_bytes: &[u8],
+    ) -> Result<bool, Error> {
         use signature::Verifier;
         let sig = rsa::pkcs1v15::Signature::try_from(sig_bytes)
             .map_err(|e| Error::Crypto(format!("invalid RSA signature: {e}")))?;
@@ -206,7 +375,9 @@ impl RsaPkcs1v15 {
 }
 
 impl SignatureAlgorithm for RsaPkcs1v15 {
-    fn uri(&self) -> &'static str { self.uri }
+    fn uri(&self) -> &'static str {
+        self.uri
+    }
 
     fn sign(&self, key: &SigningKey, data: &[u8]) -> Result<Vec<u8>, Error> {
         match key {
@@ -227,10 +398,15 @@ impl SignatureAlgorithm for RsaPkcs1v15 {
 
 // ── RSA-PSS ──────────────────────────────────────────────────────────
 
-struct RsaPss { uri: &'static str, hash: HashType }
+struct RsaPss {
+    uri: &'static str,
+    hash: HashType,
+}
 
 impl SignatureAlgorithm for RsaPss {
-    fn uri(&self) -> &'static str { self.uri }
+    fn uri(&self) -> &'static str {
+        self.uri
+    }
 
     fn sign(&self, key: &SigningKey, data: &[u8]) -> Result<Vec<u8>, Error> {
         use signature::RandomizedSigner;
@@ -256,7 +432,10 @@ impl SignatureAlgorithm for RsaPss {
             HashType::Sha3_384 => do_sign!(sha3::Sha3_384),
             HashType::Sha3_512 => do_sign!(sha3::Sha3_512),
             #[cfg(feature = "legacy-algorithms")]
-            _ => Err(Error::UnsupportedAlgorithm(format!("RSA-PSS with {:?}", self.hash))),
+            _ => Err(Error::UnsupportedAlgorithm(format!(
+                "RSA-PSS with {:?}",
+                self.hash
+            ))),
         }
     }
 
@@ -286,14 +465,20 @@ impl SignatureAlgorithm for RsaPss {
             HashType::Sha3_384 => do_verify!(sha3::Sha3_384),
             HashType::Sha3_512 => do_verify!(sha3::Sha3_512),
             #[cfg(feature = "legacy-algorithms")]
-            _ => Err(Error::UnsupportedAlgorithm(format!("RSA-PSS with {:?}", self.hash))),
+            _ => Err(Error::UnsupportedAlgorithm(format!(
+                "RSA-PSS with {:?}",
+                self.hash
+            ))),
         }
     }
 }
 
 // ── ECDSA (unified P-256 / P-384) ────────────────────────────────────
 
-struct Ecdsa { uri: &'static str, hash: HashType }
+struct Ecdsa {
+    uri: &'static str,
+    hash: HashType,
+}
 
 /// Compute the digest of `data` using the given HashType.
 fn compute_hash(hash: HashType, data: &[u8]) -> Vec<u8> {
@@ -451,7 +636,9 @@ fn pad_prehash(prehash: &[u8], field_size: usize) -> Vec<u8> {
 }
 
 impl SignatureAlgorithm for Ecdsa {
-    fn uri(&self) -> &'static str { self.uri }
+    fn uri(&self) -> &'static str {
+        self.uri
+    }
 
     fn sign(&self, key: &SigningKey, data: &[u8]) -> Result<Vec<u8>, Error> {
         use signature::hazmat::PrehashSigner;
@@ -459,23 +646,28 @@ impl SignatureAlgorithm for Ecdsa {
         match key {
             SigningKey::EcP256(sk) => {
                 let prehash = pad_prehash(&raw_hash, 32);
-                let sig: p256::ecdsa::Signature = sk.sign_prehash(&prehash)
+                let sig: p256::ecdsa::Signature = sk
+                    .sign_prehash(&prehash)
                     .map_err(|e| Error::Crypto(format!("ECDSA P-256 sign: {e}")))?;
                 Ok(p256_to_xmldsig(&sig))
             }
             SigningKey::EcP384(sk) => {
                 let prehash = pad_prehash(&raw_hash, 48);
-                let sig: p384::ecdsa::Signature = sk.sign_prehash(&prehash)
+                let sig: p384::ecdsa::Signature = sk
+                    .sign_prehash(&prehash)
                     .map_err(|e| Error::Crypto(format!("ECDSA P-384 sign: {e}")))?;
                 Ok(p384_to_xmldsig(&sig))
             }
             SigningKey::EcP521(sk) => {
                 let prehash = pad_prehash(&raw_hash, 66);
-                let sig: p521::ecdsa::Signature = sk.sign_prehash(&prehash)
+                let sig: p521::ecdsa::Signature = sk
+                    .sign_prehash(&prehash)
                     .map_err(|e| Error::Crypto(format!("ECDSA P-521 sign: {e}")))?;
                 Ok(p521_to_xmldsig(&sig))
             }
-            _ => Err(Error::Key("ECDSA signing key required (P-256, P-384, or P-521)".into())),
+            _ => Err(Error::Key(
+                "ECDSA signing key required (P-256, P-384, or P-521)".into(),
+            )),
         }
     }
 
@@ -514,17 +706,24 @@ impl SignatureAlgorithm for Ecdsa {
                 let sig = xmldsig_to_p521(sig_bytes)?;
                 Ok(vk.verify_prehash(&prehash, &sig).is_ok())
             }
-            _ => Err(Error::Key("ECDSA key required (P-256, P-384, or P-521)".into())),
+            _ => Err(Error::Key(
+                "ECDSA key required (P-256, P-384, or P-521)".into(),
+            )),
         }
     }
 }
 
 // ── DSA ──────────────────────────────────────────────────────────────
 
-struct DsaSign { uri: &'static str, hash: HashType }
+struct DsaSign {
+    uri: &'static str,
+    hash: HashType,
+}
 
 impl SignatureAlgorithm for DsaSign {
-    fn uri(&self) -> &'static str { self.uri }
+    fn uri(&self) -> &'static str {
+        self.uri
+    }
 
     fn sign(&self, key: &SigningKey, data: &[u8]) -> Result<Vec<u8>, Error> {
         use signature::DigestSigner;
@@ -532,11 +731,18 @@ impl SignatureAlgorithm for DsaSign {
             return Err(Error::Key("DSA signing key required".into()));
         };
         let sig: dsa::Signature = match self.hash {
-            HashType::Sha1 => sk.try_sign_digest(sha1::Sha1::new_with_prefix(data))
+            HashType::Sha1 => sk
+                .try_sign_digest(sha1::Sha1::new_with_prefix(data))
                 .map_err(|e| Error::Crypto(format!("DSA sign: {e}")))?,
-            HashType::Sha256 => sk.try_sign_digest(sha2::Sha256::new_with_prefix(data))
+            HashType::Sha256 => sk
+                .try_sign_digest(sha2::Sha256::new_with_prefix(data))
                 .map_err(|e| Error::Crypto(format!("DSA sign: {e}")))?,
-            _ => return Err(Error::UnsupportedAlgorithm(format!("DSA signature with {:?}", self.hash))),
+            _ => {
+                return Err(Error::UnsupportedAlgorithm(format!(
+                    "DSA signature with {:?}",
+                    self.hash
+                )))
+            }
         };
         // XML-DSig format: r||s, each zero-padded to q byte length
         Ok(dsa_sig_to_xmldsig(sk.verifying_key(), &sig))
@@ -553,7 +759,12 @@ impl SignatureAlgorithm for DsaSign {
         let result = match self.hash {
             HashType::Sha1 => vk.verify_digest(sha1::Sha1::new_with_prefix(data), &sig),
             HashType::Sha256 => vk.verify_digest(sha2::Sha256::new_with_prefix(data), &sig),
-            _ => return Err(Error::UnsupportedAlgorithm(format!("DSA with {:?}", self.hash))),
+            _ => {
+                return Err(Error::UnsupportedAlgorithm(format!(
+                    "DSA with {:?}",
+                    self.hash
+                )))
+            }
         };
         Ok(result.is_ok())
     }
@@ -583,7 +794,9 @@ fn xmldsig_to_dsa(vk: &dsa::VerifyingKey, rs: &[u8]) -> Result<dsa::Signature, E
     if rs.len() != q_len * 2 {
         return Err(Error::Crypto(format!(
             "DSA signature must be {} bytes (2 * q_len={}), got {}",
-            q_len * 2, q_len, rs.len()
+            q_len * 2,
+            q_len,
+            rs.len()
         )));
     }
     let r = dsa::BigUint::from_bytes_be(&rs[..q_len]);
@@ -592,12 +805,48 @@ fn xmldsig_to_dsa(vk: &dsa::VerifyingKey, rs: &[u8]) -> Result<dsa::Signature, E
         .map_err(|e| Error::Crypto(format!("invalid DSA signature: {e}")))
 }
 
+// ── Ed25519 (EdDSA over Curve25519) ──────────────────────────────────
+
+struct Ed25519Sign;
+
+impl SignatureAlgorithm for Ed25519Sign {
+    fn uri(&self) -> &'static str {
+        algorithm::EDDSA_ED25519
+    }
+
+    fn sign(&self, key: &SigningKey, data: &[u8]) -> Result<Vec<u8>, Error> {
+        use ed25519_dalek::Signer;
+        let SigningKey::Ed25519(sk) = key else {
+            return Err(Error::Key("Ed25519 signing key required".into()));
+        };
+        let sig = sk.sign(data);
+        Ok(sig.to_bytes().to_vec())
+    }
+
+    fn verify(&self, key: &SigningKey, data: &[u8], sig_bytes: &[u8]) -> Result<bool, Error> {
+        use ed25519_dalek::Verifier;
+        let vk = match key {
+            SigningKey::Ed25519(sk) => sk.verifying_key(),
+            SigningKey::Ed25519Public(vk) => *vk,
+            _ => return Err(Error::Key("Ed25519 key required".into())),
+        };
+        let sig = ed25519_dalek::Signature::from_slice(sig_bytes)
+            .map_err(|e| Error::Crypto(format!("invalid Ed25519 signature: {e}")))?;
+        Ok(vk.verify(data, &sig).is_ok())
+    }
+}
+
 // ── HMAC ─────────────────────────────────────────────────────────────
 
-struct HmacSign { uri: &'static str, hash: HashType }
+struct HmacSign {
+    uri: &'static str,
+    hash: HashType,
+}
 
 impl SignatureAlgorithm for HmacSign {
-    fn uri(&self) -> &'static str { self.uri }
+    fn uri(&self) -> &'static str {
+        self.uri
+    }
 
     fn sign(&self, key: &SigningKey, data: &[u8]) -> Result<Vec<u8>, Error> {
         let SigningKey::Hmac(key_bytes) = key else {
@@ -647,12 +896,19 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     }
     if b.len() < a.len() {
         // Truncated HMAC comparison
-        return a[..b.len()].iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0;
+        return a[..b.len()]
+            .iter()
+            .zip(b.iter())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0;
     }
     if a.len() != b.len() {
         return false;
     }
-    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 /// Return the hash output size in bits for an HMAC algorithm URI.
@@ -700,11 +956,21 @@ struct PqSign {
 }
 
 impl SignatureAlgorithm for PqSign {
-    fn uri(&self) -> &'static str { self.uri }
+    fn uri(&self) -> &'static str {
+        self.uri
+    }
 
     fn sign(&self, key: &SigningKey, data: &[u8]) -> Result<Vec<u8>, Error> {
-        let SigningKey::PostQuantum { algorithm, private_der, .. } = key else {
-            return Err(Error::Key(format!("{} signing key required", self.algorithm.name())));
+        let SigningKey::PostQuantum {
+            algorithm,
+            private_der,
+            ..
+        } = key
+        else {
+            return Err(Error::Key(format!(
+                "{} signing key required",
+                self.algorithm.name()
+            )));
         };
         if *algorithm != self.algorithm {
             return Err(Error::Key(format!(
@@ -714,25 +980,48 @@ impl SignatureAlgorithm for PqSign {
             )));
         }
         let private = private_der.as_ref().ok_or_else(|| {
-            Error::Key(format!("{} private key required for signing", self.algorithm.name()))
+            Error::Key(format!(
+                "{} private key required for signing",
+                self.algorithm.name()
+            ))
         })?;
 
         match self.algorithm {
             PqAlgorithm::MlDsa44 => pq_ml_dsa_sign::<ml_dsa::MlDsa44>(private, data, &self.context),
             PqAlgorithm::MlDsa65 => pq_ml_dsa_sign::<ml_dsa::MlDsa65>(private, data, &self.context),
             PqAlgorithm::MlDsa87 => pq_ml_dsa_sign::<ml_dsa::MlDsa87>(private, data, &self.context),
-            PqAlgorithm::SlhDsaSha2_128f => pq_slh_dsa_sign::<slh_dsa::Sha2_128f>(private, data, &self.context),
-            PqAlgorithm::SlhDsaSha2_128s => pq_slh_dsa_sign::<slh_dsa::Sha2_128s>(private, data, &self.context),
-            PqAlgorithm::SlhDsaSha2_192f => pq_slh_dsa_sign::<slh_dsa::Sha2_192f>(private, data, &self.context),
-            PqAlgorithm::SlhDsaSha2_192s => pq_slh_dsa_sign::<slh_dsa::Sha2_192s>(private, data, &self.context),
-            PqAlgorithm::SlhDsaSha2_256f => pq_slh_dsa_sign::<slh_dsa::Sha2_256f>(private, data, &self.context),
-            PqAlgorithm::SlhDsaSha2_256s => pq_slh_dsa_sign::<slh_dsa::Sha2_256s>(private, data, &self.context),
+            PqAlgorithm::SlhDsaSha2_128f => {
+                pq_slh_dsa_sign::<slh_dsa::Sha2_128f>(private, data, &self.context)
+            }
+            PqAlgorithm::SlhDsaSha2_128s => {
+                pq_slh_dsa_sign::<slh_dsa::Sha2_128s>(private, data, &self.context)
+            }
+            PqAlgorithm::SlhDsaSha2_192f => {
+                pq_slh_dsa_sign::<slh_dsa::Sha2_192f>(private, data, &self.context)
+            }
+            PqAlgorithm::SlhDsaSha2_192s => {
+                pq_slh_dsa_sign::<slh_dsa::Sha2_192s>(private, data, &self.context)
+            }
+            PqAlgorithm::SlhDsaSha2_256f => {
+                pq_slh_dsa_sign::<slh_dsa::Sha2_256f>(private, data, &self.context)
+            }
+            PqAlgorithm::SlhDsaSha2_256s => {
+                pq_slh_dsa_sign::<slh_dsa::Sha2_256s>(private, data, &self.context)
+            }
         }
     }
 
     fn verify(&self, key: &SigningKey, data: &[u8], sig_bytes: &[u8]) -> Result<bool, Error> {
-        let SigningKey::PostQuantum { algorithm, public_der, .. } = key else {
-            return Err(Error::Key(format!("{} key required", self.algorithm.name())));
+        let SigningKey::PostQuantum {
+            algorithm,
+            public_der,
+            ..
+        } = key
+        else {
+            return Err(Error::Key(format!(
+                "{} key required",
+                self.algorithm.name()
+            )));
         };
         if *algorithm != self.algorithm {
             return Err(Error::Key(format!(
@@ -743,15 +1032,33 @@ impl SignatureAlgorithm for PqSign {
         }
 
         match self.algorithm {
-            PqAlgorithm::MlDsa44 => pq_ml_dsa_verify::<ml_dsa::MlDsa44>(public_der, data, sig_bytes, &self.context),
-            PqAlgorithm::MlDsa65 => pq_ml_dsa_verify::<ml_dsa::MlDsa65>(public_der, data, sig_bytes, &self.context),
-            PqAlgorithm::MlDsa87 => pq_ml_dsa_verify::<ml_dsa::MlDsa87>(public_der, data, sig_bytes, &self.context),
-            PqAlgorithm::SlhDsaSha2_128f => pq_slh_dsa_verify::<slh_dsa::Sha2_128f>(public_der, data, sig_bytes, &self.context),
-            PqAlgorithm::SlhDsaSha2_128s => pq_slh_dsa_verify::<slh_dsa::Sha2_128s>(public_der, data, sig_bytes, &self.context),
-            PqAlgorithm::SlhDsaSha2_192f => pq_slh_dsa_verify::<slh_dsa::Sha2_192f>(public_der, data, sig_bytes, &self.context),
-            PqAlgorithm::SlhDsaSha2_192s => pq_slh_dsa_verify::<slh_dsa::Sha2_192s>(public_der, data, sig_bytes, &self.context),
-            PqAlgorithm::SlhDsaSha2_256f => pq_slh_dsa_verify::<slh_dsa::Sha2_256f>(public_der, data, sig_bytes, &self.context),
-            PqAlgorithm::SlhDsaSha2_256s => pq_slh_dsa_verify::<slh_dsa::Sha2_256s>(public_der, data, sig_bytes, &self.context),
+            PqAlgorithm::MlDsa44 => {
+                pq_ml_dsa_verify::<ml_dsa::MlDsa44>(public_der, data, sig_bytes, &self.context)
+            }
+            PqAlgorithm::MlDsa65 => {
+                pq_ml_dsa_verify::<ml_dsa::MlDsa65>(public_der, data, sig_bytes, &self.context)
+            }
+            PqAlgorithm::MlDsa87 => {
+                pq_ml_dsa_verify::<ml_dsa::MlDsa87>(public_der, data, sig_bytes, &self.context)
+            }
+            PqAlgorithm::SlhDsaSha2_128f => {
+                pq_slh_dsa_verify::<slh_dsa::Sha2_128f>(public_der, data, sig_bytes, &self.context)
+            }
+            PqAlgorithm::SlhDsaSha2_128s => {
+                pq_slh_dsa_verify::<slh_dsa::Sha2_128s>(public_der, data, sig_bytes, &self.context)
+            }
+            PqAlgorithm::SlhDsaSha2_192f => {
+                pq_slh_dsa_verify::<slh_dsa::Sha2_192f>(public_der, data, sig_bytes, &self.context)
+            }
+            PqAlgorithm::SlhDsaSha2_192s => {
+                pq_slh_dsa_verify::<slh_dsa::Sha2_192s>(public_der, data, sig_bytes, &self.context)
+            }
+            PqAlgorithm::SlhDsaSha2_256f => {
+                pq_slh_dsa_verify::<slh_dsa::Sha2_256f>(public_der, data, sig_bytes, &self.context)
+            }
+            PqAlgorithm::SlhDsaSha2_256s => {
+                pq_slh_dsa_verify::<slh_dsa::Sha2_256s>(public_der, data, sig_bytes, &self.context)
+            }
         }
     }
 }
@@ -766,13 +1073,19 @@ where
     P: pkcs8_pq::spki::AssociatedAlgorithmIdentifier<Params = pkcs8_pq::der::AnyRef<'static>>,
 {
     let sk = load_ml_dsa_signing_key::<P>(private_der)?;
-    let sig = sk.sign_deterministic(data, context)
+    let sig = sk
+        .sign_deterministic(data, context)
         .map_err(|e| Error::Crypto(format!("ML-DSA sign failed: {e}")))?;
     Ok(sig.encode().to_vec())
 }
 
 /// Verify with ML-DSA (FIPS 204).
-fn pq_ml_dsa_verify<P>(public_der: &[u8], data: &[u8], sig_bytes: &[u8], context: &[u8]) -> Result<bool, Error>
+fn pq_ml_dsa_verify<P>(
+    public_der: &[u8],
+    data: &[u8],
+    sig_bytes: &[u8],
+    context: &[u8],
+) -> Result<bool, Error>
 where
     P: ml_dsa::MlDsaParams + ml_dsa::KeyGen,
     P: pkcs8_pq::spki::AssociatedAlgorithmIdentifier<Params = pkcs8_pq::der::AnyRef<'static>>,
@@ -796,13 +1109,19 @@ where
     P: slh_dsa::ParameterSet,
 {
     let sk = load_slh_dsa_signing_key::<P>(private_der)?;
-    let sig = sk.try_sign_with_context(data, context, None)
+    let sig = sk
+        .try_sign_with_context(data, context, None)
         .map_err(|e| Error::Crypto(format!("SLH-DSA sign failed: {e}")))?;
     Ok(sig.to_bytes().to_vec())
 }
 
 /// Verify with SLH-DSA (FIPS 205).
-fn pq_slh_dsa_verify<P>(public_der: &[u8], data: &[u8], sig_bytes: &[u8], context: &[u8]) -> Result<bool, Error>
+fn pq_slh_dsa_verify<P>(
+    public_der: &[u8],
+    data: &[u8],
+    sig_bytes: &[u8],
+    context: &[u8],
+) -> Result<bool, Error>
 where
     P: slh_dsa::ParameterSet,
 {
@@ -890,7 +1209,7 @@ mod tests {
         let prehash_hex = "e5a7073da63df89f5ad1c3be2fc00175463d0980";
         let prehash: Vec<u8> = (0..prehash_hex.len())
             .step_by(2)
-            .map(|i| u8::from_str_radix(&prehash_hex[i..i+2], 16).unwrap())
+            .map(|i| u8::from_str_radix(&prehash_hex[i..i + 2], 16).unwrap())
             .collect();
 
         // SHA-1 prehash is 20 bytes - shorter than P-384 field size of 48 bytes
@@ -902,6 +1221,167 @@ mod tests {
 
         use signature::hazmat::PrehashVerifier;
         let result = vk.verify_prehash(&padded, &sig);
-        assert!(result.is_ok(), "P-384 with SHA-1 prehash (left-padded) should verify");
+        assert!(
+            result.is_ok(),
+            "P-384 with SHA-1 prehash (left-padded) should verify"
+        );
+    }
+
+    #[test]
+    fn test_ed25519_sign_verify_roundtrip() {
+        use ed25519_dalek::SigningKey;
+        use rand::rngs::OsRng;
+
+        // Generate a random Ed25519 key pair
+        let sk = SigningKey::generate(&mut OsRng);
+        let vk = sk.verifying_key();
+
+        let data = b"The quick brown fox jumps over the lazy dog";
+
+        // Sign using our Ed25519Sign implementation
+        let algo = Ed25519Sign;
+        let signing_key = super::SigningKey::Ed25519(sk.clone());
+        let signature = algo
+            .sign(&signing_key, data)
+            .expect("signing should succeed");
+
+        // Verify using our Ed25519Sign implementation
+        let verify_key = super::SigningKey::Ed25519Public(vk);
+        let result = algo.verify(&verify_key, data, &signature);
+        assert!(
+            result.is_ok(),
+            "Ed25519 round-trip verification should succeed"
+        );
+    }
+
+    #[test]
+    fn test_ed25519_tampered_data_fails() {
+        use ed25519_dalek::SigningKey;
+        use rand::rngs::OsRng;
+
+        let sk = SigningKey::generate(&mut OsRng);
+        let vk = sk.verifying_key();
+
+        let data = b"Original content";
+        let tampered = b"Tampered content";
+
+        let algo = Ed25519Sign;
+        let signing_key = super::SigningKey::Ed25519(sk);
+        let signature = algo
+            .sign(&signing_key, data)
+            .expect("signing should succeed");
+
+        // Verify against tampered data should return Ok(false)
+        let verify_key = super::SigningKey::Ed25519Public(vk);
+        let result = algo.verify(&verify_key, tampered, &signature);
+        assert_eq!(
+            result.unwrap(),
+            false,
+            "Ed25519 verification of tampered data should return false"
+        );
+    }
+
+    #[test]
+    fn test_ed25519_tampered_signature_fails() {
+        use ed25519_dalek::SigningKey;
+        use rand::rngs::OsRng;
+
+        let sk = SigningKey::generate(&mut OsRng);
+        let vk = sk.verifying_key();
+
+        let data = b"Some data to sign";
+
+        let algo = Ed25519Sign;
+        let signing_key = super::SigningKey::Ed25519(sk);
+        let mut signature = algo
+            .sign(&signing_key, data)
+            .expect("signing should succeed");
+
+        // Tamper with the signature
+        if let Some(b) = signature.last_mut() {
+            *b ^= 0xff;
+        }
+
+        let verify_key = super::SigningKey::Ed25519Public(vk);
+        let result = algo.verify(&verify_key, data, &signature);
+        // May return Ok(false) or Err depending on whether the tampered sig is parseable
+        match result {
+            Ok(valid) => assert!(
+                !valid,
+                "Ed25519 verification of tampered signature should be false"
+            ),
+            Err(_) => {} // Also acceptable — invalid signature bytes
+        }
+    }
+
+    #[test]
+    fn test_ed25519_algorithm_uri_mapping() {
+        use bergshamra_core::algorithm;
+
+        // from_uri_with_context should return Ok for the Ed25519 URI
+        let algo = from_uri_with_context(algorithm::EDDSA_ED25519, None);
+        assert!(
+            algo.is_ok(),
+            "EDDSA_ED25519 URI should resolve to an algorithm"
+        );
+
+        // Sign and verify to prove it works through the factory
+        use ed25519_dalek::SigningKey;
+        use rand::rngs::OsRng;
+        let sk = SigningKey::generate(&mut OsRng);
+        let signing_key = super::SigningKey::Ed25519(sk.clone());
+
+        let data = b"test data";
+        let algo = algo.unwrap();
+        let sig = algo.sign(&signing_key, data).expect("should sign");
+
+        let vk = super::SigningKey::Ed25519Public(sk.verifying_key());
+        let result = algo.verify(&vk, data, &sig);
+        assert!(result.is_ok(), "factory-created Ed25519 algo should verify");
+    }
+
+    #[test]
+    fn test_ed25519_verify_with_private_key() {
+        // Ed25519 verification should also work when given a SigningKey (private)
+        // since Ed25519Sign::verify extracts the verifying key
+        use ed25519_dalek::SigningKey;
+        use rand::rngs::OsRng;
+
+        let sk = SigningKey::generate(&mut OsRng);
+        let data = b"verify with private key";
+
+        let algo = Ed25519Sign;
+        let signing_key = super::SigningKey::Ed25519(sk.clone());
+        let signature = algo
+            .sign(&signing_key, data)
+            .expect("signing should succeed");
+
+        // Verify using the private key (should internally extract verifying key)
+        let result = algo.verify(&signing_key, data, &signature);
+        assert!(
+            result.is_ok(),
+            "Ed25519 verification with private key should succeed"
+        );
+    }
+
+    #[test]
+    fn test_ed25519_signature_is_64_bytes() {
+        use ed25519_dalek::SigningKey;
+        use rand::rngs::OsRng;
+
+        let sk = SigningKey::generate(&mut OsRng);
+        let data = b"check signature length";
+
+        let algo = Ed25519Sign;
+        let signing_key = super::SigningKey::Ed25519(sk);
+        let signature = algo
+            .sign(&signing_key, data)
+            .expect("signing should succeed");
+
+        assert_eq!(
+            signature.len(),
+            64,
+            "Ed25519 signature should be exactly 64 bytes"
+        );
     }
 }

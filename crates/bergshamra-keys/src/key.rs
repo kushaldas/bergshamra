@@ -47,6 +47,16 @@ pub enum KeyData {
         /// Public key y = g^x mod p (big-endian bytes).
         public_key: Vec<u8>,
     },
+    /// Ed25519 (EdDSA over Curve25519) key.
+    Ed25519 {
+        private: Option<ed25519_dalek::SigningKey>,
+        public: ed25519_dalek::VerifyingKey,
+    },
+    /// X25519 (ECDH over Curve25519) key for key agreement.
+    X25519 {
+        private: Option<[u8; 32]>,
+        public: [u8; 32],
+    },
     Hmac(Vec<u8>),
     Aes(Vec<u8>),
     Des3(Vec<u8>),
@@ -104,10 +114,28 @@ impl std::fmt::Debug for KeyData {
                     write!(f, "DH-{bits} public key")
                 }
             }
+            Self::Ed25519 { private, .. } => {
+                if private.is_some() {
+                    write!(f, "Ed25519 private+public key")
+                } else {
+                    write!(f, "Ed25519 public key")
+                }
+            }
+            Self::X25519 { private, .. } => {
+                if private.is_some() {
+                    write!(f, "X25519 private+public key")
+                } else {
+                    write!(f, "X25519 public key")
+                }
+            }
             Self::Hmac(k) => write!(f, "HMAC key ({} bytes)", k.len()),
             Self::Aes(k) => write!(f, "AES key ({} bytes)", k.len()),
             Self::Des3(_) => write!(f, "3DES key"),
-            Self::PostQuantum { algorithm, private_der, .. } => {
+            Self::PostQuantum {
+                algorithm,
+                private_der,
+                ..
+            } => {
                 if private_der.is_some() {
                     write!(f, "{} private+public key", algorithm.name())
                 } else {
@@ -128,6 +156,8 @@ impl KeyData {
             Self::EcP521 { .. } => "EC-P521",
             Self::Dsa { .. } => "DSA",
             Self::Dh { .. } => "DH",
+            Self::Ed25519 { .. } => "Ed25519",
+            Self::X25519 { .. } => "X25519",
             Self::Hmac(_) => "HMAC",
             Self::Aes(_) => "AES",
             Self::Des3(_) => "3DES",
@@ -139,9 +169,7 @@ impl KeyData {
     pub fn to_spki_der(&self) -> Option<Vec<u8>> {
         use spki::EncodePublicKey;
         match self {
-            Self::Rsa { public, .. } => {
-                public.to_public_key_der().ok().map(|d| d.to_vec())
-            }
+            Self::Rsa { public, .. } => public.to_public_key_der().ok().map(|d| d.to_vec()),
             Self::EcP256 { public, .. } => {
                 let pk = p256::PublicKey::from(public);
                 pk.to_public_key_der().ok().map(|d| d.to_vec())
@@ -156,6 +184,10 @@ impl KeyData {
                 pk.to_public_key_der().ok().map(|d| d.to_vec())
             }
             Self::PostQuantum { public_der, .. } => Some(public_der.clone()),
+            Self::Ed25519 { public, .. } => {
+                use ed25519_dalek::pkcs8::spki::EncodePublicKey;
+                public.to_public_key_der().ok().map(|d| d.to_vec())
+            }
             _ => None,
         }
     }
@@ -218,14 +250,19 @@ impl KeyData {
                     ))
                 }
             }
-            Self::Dh { p, g, q, public_key, .. } => {
+            Self::Dh {
+                p,
+                g,
+                q,
+                public_key,
+                ..
+            } => {
                 let enc_ns = "http://www.w3.org/2001/04/xmlenc#";
                 let p_b64 = engine.encode(p);
                 let g_b64 = engine.encode(g);
                 let pub_b64 = engine.encode(public_key);
-                let mut xml = format!(
-                    "<xenc:DHKeyValue xmlns:xenc=\"{enc_ns}\"><xenc:P>{p_b64}</xenc:P>"
-                );
+                let mut xml =
+                    format!("<xenc:DHKeyValue xmlns:xenc=\"{enc_ns}\"><xenc:P>{p_b64}</xenc:P>");
                 if let Some(q_bytes) = q {
                     let q_b64 = engine.encode(q_bytes);
                     xml.push_str(&format!("<xenc:Q>{q_b64}</xenc:Q>"));
@@ -234,6 +271,12 @@ impl KeyData {
                     "<xenc:Generator>{g_b64}</xenc:Generator><xenc:Public>{pub_b64}</xenc:Public></xenc:DHKeyValue>"
                 ));
                 Some(xml)
+            }
+            Self::X25519 { public, .. } => {
+                let pub_b64 = engine.encode(public);
+                Some(format!(
+                    "<ECKeyValue xmlns=\"http://www.w3.org/2009/xmldsig11#\"><NamedCurve URI=\"urn:ietf:params:xml:ns:keyprov:curve:x25519\"/><PublicKey>{pub_b64}</PublicKey></ECKeyValue>"
+                ))
             }
             _ => None,
         }
@@ -273,44 +316,52 @@ impl Key {
     /// Convert to a `SigningKey` for use with crypto algorithms.
     pub fn to_signing_key(&self) -> Option<bergshamra_crypto::sign::SigningKey> {
         match &self.data {
-            KeyData::Rsa { private: Some(pk), .. } => {
-                Some(bergshamra_crypto::sign::SigningKey::Rsa(pk.clone()))
-            }
-            KeyData::Rsa { public, .. } => {
-                Some(bergshamra_crypto::sign::SigningKey::RsaPublic(public.clone()))
-            }
-            KeyData::EcP256 { private: Some(sk), .. } => {
-                Some(bergshamra_crypto::sign::SigningKey::EcP256(sk.clone()))
-            }
+            KeyData::Rsa {
+                private: Some(pk), ..
+            } => Some(bergshamra_crypto::sign::SigningKey::Rsa(pk.clone())),
+            KeyData::Rsa { public, .. } => Some(bergshamra_crypto::sign::SigningKey::RsaPublic(
+                public.clone(),
+            )),
+            KeyData::EcP256 {
+                private: Some(sk), ..
+            } => Some(bergshamra_crypto::sign::SigningKey::EcP256(sk.clone())),
             KeyData::EcP256 { public, .. } => {
                 Some(bergshamra_crypto::sign::SigningKey::EcP256Public(*public))
             }
-            KeyData::EcP384 { private: Some(sk), .. } => {
-                Some(bergshamra_crypto::sign::SigningKey::EcP384(sk.clone()))
-            }
+            KeyData::EcP384 {
+                private: Some(sk), ..
+            } => Some(bergshamra_crypto::sign::SigningKey::EcP384(sk.clone())),
             KeyData::EcP384 { public, .. } => {
                 Some(bergshamra_crypto::sign::SigningKey::EcP384Public(*public))
             }
-            KeyData::EcP521 { private: Some(sk), .. } => {
-                Some(bergshamra_crypto::sign::SigningKey::EcP521(sk.clone()))
-            }
-            KeyData::EcP521 { public, .. } => {
-                Some(bergshamra_crypto::sign::SigningKey::EcP521Public(public.clone()))
-            }
-            KeyData::Dsa { private: Some(sk), .. } => {
-                Some(bergshamra_crypto::sign::SigningKey::Dsa(sk.clone()))
-            }
-            KeyData::Dsa { public, .. } => {
-                Some(bergshamra_crypto::sign::SigningKey::DsaPublic(public.clone()))
+            KeyData::EcP521 {
+                private: Some(sk), ..
+            } => Some(bergshamra_crypto::sign::SigningKey::EcP521(sk.clone())),
+            KeyData::EcP521 { public, .. } => Some(
+                bergshamra_crypto::sign::SigningKey::EcP521Public(public.clone()),
+            ),
+            KeyData::Dsa {
+                private: Some(sk), ..
+            } => Some(bergshamra_crypto::sign::SigningKey::Dsa(sk.clone())),
+            KeyData::Dsa { public, .. } => Some(bergshamra_crypto::sign::SigningKey::DsaPublic(
+                public.clone(),
+            )),
+            KeyData::Ed25519 {
+                private: Some(sk), ..
+            } => Some(bergshamra_crypto::sign::SigningKey::Ed25519(sk.clone())),
+            KeyData::Ed25519 { public, .. } => {
+                Some(bergshamra_crypto::sign::SigningKey::Ed25519Public(*public))
             }
             KeyData::Hmac(k) => Some(bergshamra_crypto::sign::SigningKey::Hmac(k.clone())),
-            KeyData::PostQuantum { algorithm, private_der, public_der } => {
-                Some(bergshamra_crypto::sign::SigningKey::PostQuantum {
-                    algorithm: *algorithm,
-                    private_der: private_der.clone(),
-                    public_der: public_der.clone(),
-                })
-            }
+            KeyData::PostQuantum {
+                algorithm,
+                private_der,
+                public_der,
+            } => Some(bergshamra_crypto::sign::SigningKey::PostQuantum {
+                algorithm: *algorithm,
+                private_der: private_der.clone(),
+                public_der: public_der.clone(),
+            }),
             _ => None,
         }
     }
@@ -334,7 +385,9 @@ impl Key {
     /// Get the RSA private key if available.
     pub fn rsa_private_key(&self) -> Option<&rsa::RsaPrivateKey> {
         match &self.data {
-            KeyData::Rsa { private: Some(pk), .. } => Some(pk),
+            KeyData::Rsa {
+                private: Some(pk), ..
+            } => Some(pk),
             _ => None,
         }
     }
@@ -342,9 +395,13 @@ impl Key {
     /// Get the DH key data if available.
     pub fn dh_data(&self) -> Option<(&[u8], &[u8], Option<&[u8]>, Option<&[u8]>, &[u8])> {
         match &self.data {
-            KeyData::Dh { p, g, q, private_key, public_key } => {
-                Some((p, g, q.as_deref(), private_key.as_deref(), public_key))
-            }
+            KeyData::Dh {
+                p,
+                g,
+                q,
+                private_key,
+                public_key,
+            } => Some((p, g, q.as_deref(), private_key.as_deref(), public_key)),
             _ => None,
         }
     }
@@ -361,6 +418,24 @@ impl Key {
             KeyData::EcP521 { public, .. } => {
                 Some(public.to_encoded_point(false).as_bytes().to_vec())
             }
+            _ => None,
+        }
+    }
+
+    /// Get the X25519 public key bytes (32 bytes).
+    pub fn x25519_public_key_bytes(&self) -> Option<&[u8; 32]> {
+        match &self.data {
+            KeyData::X25519 { public, .. } => Some(public),
+            _ => None,
+        }
+    }
+
+    /// Get the X25519 private key bytes (32 bytes), if available.
+    pub fn x25519_private_key_bytes(&self) -> Option<&[u8; 32]> {
+        match &self.data {
+            KeyData::X25519 {
+                private: Some(pk), ..
+            } => Some(pk),
             _ => None,
         }
     }

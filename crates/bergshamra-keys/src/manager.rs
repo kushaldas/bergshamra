@@ -44,37 +44,51 @@ impl KeysManager {
 
     /// Find the first key matching the given usage.
     pub fn find_by_usage(&self, usage: KeyUsage) -> Option<&Key> {
-        self.keys.iter().find(|k| k.usage == usage || k.usage == KeyUsage::Any)
+        self.keys
+            .iter()
+            .find(|k| k.usage == usage || k.usage == KeyUsage::Any)
     }
 
     /// Find the first key that has an RSA public key.
     pub fn find_rsa(&self) -> Option<&Key> {
-        self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::Rsa { .. }))
+        self.keys
+            .iter()
+            .find(|k| matches!(&k.data, crate::key::KeyData::Rsa { .. }))
     }
 
     /// Find the first key that has an EC P-256 key.
     pub fn find_ec_p256(&self) -> Option<&Key> {
-        self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::EcP256 { .. }))
+        self.keys
+            .iter()
+            .find(|k| matches!(&k.data, crate::key::KeyData::EcP256 { .. }))
     }
 
     /// Find the first key that has an EC P-384 key.
     pub fn find_ec_p384(&self) -> Option<&Key> {
-        self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::EcP384 { .. }))
+        self.keys
+            .iter()
+            .find(|k| matches!(&k.data, crate::key::KeyData::EcP384 { .. }))
     }
 
     /// Find the first key that has an EC P-521 key.
     pub fn find_ec_p521(&self) -> Option<&Key> {
-        self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::EcP521 { .. }))
+        self.keys
+            .iter()
+            .find(|k| matches!(&k.data, crate::key::KeyData::EcP521 { .. }))
     }
 
     /// Find the first HMAC key.
     pub fn find_hmac(&self) -> Option<&Key> {
-        self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::Hmac(_)))
+        self.keys
+            .iter()
+            .find(|k| matches!(&k.data, crate::key::KeyData::Hmac(_)))
     }
 
     /// Find the first AES key.
     pub fn find_aes(&self) -> Option<&Key> {
-        self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::Aes(_)))
+        self.keys
+            .iter()
+            .find(|k| matches!(&k.data, crate::key::KeyData::Aes(_)))
     }
 
     /// Find an AES key with the specified byte length.
@@ -90,22 +104,50 @@ impl KeysManager {
 
     /// Find the first 3DES key.
     pub fn find_des3(&self) -> Option<&Key> {
-        self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::Des3(_)))
+        self.keys
+            .iter()
+            .find(|k| matches!(&k.data, crate::key::KeyData::Des3(_)))
     }
 
     /// Find the first post-quantum key.
     pub fn find_pq(&self) -> Option<&Key> {
-        self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::PostQuantum { .. }))
+        self.keys
+            .iter()
+            .find(|k| matches!(&k.data, crate::key::KeyData::PostQuantum { .. }))
     }
 
     /// Find the first DH key.
     pub fn find_dh(&self) -> Option<&Key> {
-        self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::Dh { .. }))
+        self.keys
+            .iter()
+            .find(|k| matches!(&k.data, crate::key::KeyData::Dh { .. }))
+    }
+
+    /// Find the first Ed25519 key.
+    pub fn find_ed25519(&self) -> Option<&Key> {
+        self.keys
+            .iter()
+            .find(|k| matches!(&k.data, crate::key::KeyData::Ed25519 { .. }))
+    }
+
+    /// Find the first X25519 key.
+    pub fn find_x25519(&self) -> Option<&Key> {
+        self.keys
+            .iter()
+            .find(|k| matches!(&k.data, crate::key::KeyData::X25519 { .. }))
     }
 
     /// Find an RSA key with a private key component.
     pub fn find_rsa_private(&self) -> Option<&Key> {
-        self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::Rsa { private: Some(_), .. }))
+        self.keys.iter().find(|k| {
+            matches!(
+                &k.data,
+                crate::key::KeyData::Rsa {
+                    private: Some(_),
+                    ..
+                }
+            )
+        })
     }
 
     /// Iterator over all keys.
@@ -115,7 +157,9 @@ impl KeysManager {
 
     /// Get the first key available (for simple single-key scenarios).
     pub fn first_key(&self) -> Result<&Key, Error> {
-        self.keys.first().ok_or_else(|| Error::KeyNotFound("no keys in manager".into()))
+        self.keys
+            .first()
+            .ok_or_else(|| Error::KeyNotFound("no keys in manager".into()))
     }
 
     /// Number of keys.

@@ -57,6 +57,9 @@ cbc = "0.1"
 aes-gcm = "0.10"
 des = "0.8"
 aes-kw = "0.2"
+ed25519-dalek = { version = "2.1", features = ["pkcs8", "rand_core"] }
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+hkdf = "0.12"
 signature = "2"
 rand = "0.8"
 

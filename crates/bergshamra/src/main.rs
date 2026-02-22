@@ -304,7 +304,29 @@ fn main() {
             enabled_key_data,
             untrusted,
             crl,
-        } => cmd_verify(file, key, key_name, cert, trusted, pkcs12, pwd, hmac_key, keys_file, url_map, id_attr, hmac_min_out_len, debug, verbose, insecure, verify_keys, verification_gmt_time, x509_skip_time_checks, enabled_key_data, untrusted, crl),
+        } => cmd_verify(
+            file,
+            key,
+            key_name,
+            cert,
+            trusted,
+            pkcs12,
+            pwd,
+            hmac_key,
+            keys_file,
+            url_map,
+            id_attr,
+            hmac_min_out_len,
+            debug,
+            verbose,
+            insecure,
+            verify_keys,
+            verification_gmt_time,
+            x509_skip_time_checks,
+            enabled_key_data,
+            untrusted,
+            crl,
+        ),
 
         Commands::Sign {
             template,
@@ -322,7 +344,23 @@ fn main() {
             session_key,
             debug,
             verbose,
-        } => cmd_sign(template, key, key_name, cert, trusted, pkcs12, pwd, hmac_key, keys_file, url_map, output, id_attr, session_key, debug, verbose),
+        } => cmd_sign(
+            template,
+            key,
+            key_name,
+            cert,
+            trusted,
+            pkcs12,
+            pwd,
+            hmac_key,
+            keys_file,
+            url_map,
+            output,
+            id_attr,
+            session_key,
+            debug,
+            verbose,
+        ),
 
         Commands::Decrypt {
             file,
@@ -337,7 +375,20 @@ fn main() {
             id_attr,
             no_cipher_reference,
             verbose,
-        } => cmd_decrypt(file, key, key_name, pkcs12, pwd, hmac_key, aes_key, keys_file, output, id_attr, no_cipher_reference, verbose),
+        } => cmd_decrypt(
+            file,
+            key,
+            key_name,
+            pkcs12,
+            pwd,
+            hmac_key,
+            aes_key,
+            keys_file,
+            output,
+            id_attr,
+            no_cipher_reference,
+            verbose,
+        ),
 
         Commands::Encrypt {
             template,
@@ -353,7 +404,10 @@ fn main() {
             node_name,
             node_id,
             verbose,
-        } => cmd_encrypt(template, data, cert, key_name, pkcs12, pwd, aes_key, keys_file, output, id_attr, node_name, node_id, verbose),
+        } => cmd_encrypt(
+            template, data, cert, key_name, pkcs12, pwd, aes_key, keys_file, output, id_attr,
+            node_name, node_id, verbose,
+        ),
 
         Commands::Info => cmd_info(),
     };
@@ -392,7 +446,17 @@ fn cmd_verify(
     // so they're available for key resolution by X509Digest, IssuerSerial, etc.
     let mut all_certs = certs;
     all_certs.extend(untrusted.iter().cloned());
-    let mut mgr = build_keys_manager(key, key_name, all_certs, trusted.clone(), pkcs12, pwd.as_deref(), hmac_key, None, keys_file)?;
+    let mut mgr = build_keys_manager(
+        key,
+        key_name,
+        all_certs,
+        trusted.clone(),
+        pkcs12,
+        pwd.as_deref(),
+        hmac_key,
+        None,
+        keys_file,
+    )?;
 
     // Load trusted certs as DER into the manager's trusted cert store
     for path in &trusted {
@@ -478,7 +542,17 @@ fn cmd_sign(
     verbose: bool,
 ) -> Result<(), Error> {
     let template_xml = read_file(&template)?;
-    let mut mgr = build_keys_manager(key, key_name, certs, trusted, pkcs12, pwd.as_deref(), hmac_key, None, keys_file)?;
+    let mut mgr = build_keys_manager(
+        key,
+        key_name,
+        certs,
+        trusted,
+        pkcs12,
+        pwd.as_deref(),
+        hmac_key,
+        None,
+        keys_file,
+    )?;
 
     // Generate a random session key if requested (e.g. "hmac-192", "aes-128")
     // Insert it first so it takes priority for signing
@@ -524,7 +598,17 @@ fn cmd_decrypt(
     verbose: bool,
 ) -> Result<(), Error> {
     let xml = read_file(&file)?;
-    let mgr = build_keys_manager(key, key_name, vec![], vec![], pkcs12, pwd.as_deref(), hmac_key, aes_key, keys_file)?;
+    let mgr = build_keys_manager(
+        key,
+        key_name,
+        vec![],
+        vec![],
+        pkcs12,
+        pwd.as_deref(),
+        hmac_key,
+        aes_key,
+        keys_file,
+    )?;
 
     let mut ctx = bergshamra_enc::EncContext::new(mgr);
     for attr in &id_attr {
@@ -570,7 +654,17 @@ fn cmd_encrypt(
         data
     };
 
-    let mgr = build_keys_manager(None, key_name, certs, vec![], pkcs12, pwd.as_deref(), None, aes_key, keys_file)?;
+    let mgr = build_keys_manager(
+        None,
+        key_name,
+        certs,
+        vec![],
+        pkcs12,
+        pwd.as_deref(),
+        None,
+        aes_key,
+        keys_file,
+    )?;
 
     let mut ctx = bergshamra_enc::EncContext::new(mgr);
     for attr in &id_attr {
@@ -613,8 +707,7 @@ fn extract_node_data(
 
     let xml_str = std::str::from_utf8(data)
         .map_err(|e| Error::Other(format!("data is not valid UTF-8: {e}")))?;
-    let doc = uppsala::parse(xml_str)
-        .map_err(|e| Error::XmlParse(e.to_string()))?;
+    let doc = uppsala::parse(xml_str).map_err(|e| Error::XmlParse(e.to_string()))?;
 
     let target_node_id = if let Some(name) = node_name {
         // Parse namespace:localname format
@@ -643,7 +736,9 @@ fn extract_node_data(
             .into_iter()
             .find(|&nid| {
                 if let Some(elem) = doc.element(nid) {
-                    id_attr_names.iter().any(|attr| elem.get_attribute(attr) == Some(id))
+                    id_attr_names
+                        .iter()
+                        .any(|attr| elem.get_attribute(attr) == Some(id))
                 } else {
                     false
                 }
@@ -654,7 +749,8 @@ fn extract_node_data(
     };
 
     // Extract the element's serialized form from the original XML
-    let range = doc.node_range(target_node_id)
+    let range = doc
+        .node_range(target_node_id)
         .ok_or_else(|| Error::Other("could not determine source range for node".into()))?;
     Ok(xml_str[range.start..range.end].as_bytes().to_vec())
 }
@@ -671,6 +767,7 @@ fn cmd_info() -> Result<(), Error> {
     println!("  RSA-PSS (SHA-1, SHA-224, SHA-256, SHA-384, SHA-512)");
     println!("  ECDSA P-256/P-384 (SHA-1, SHA-256, SHA-384, SHA-512)");
     println!("  HMAC (SHA-1, SHA-256, SHA-384, SHA-512)");
+    println!("  EdDSA Ed25519");
     println!();
     println!("Supported encryption algorithms:");
     println!("  AES-128/192/256-CBC, AES-128/256-GCM, 3DES-CBC");
@@ -681,27 +778,31 @@ fn cmd_info() -> Result<(), Error> {
     println!("Supported key transport algorithms:");
     println!("  RSA PKCS#1 v1.5, RSA-OAEP (SHA-1)");
     println!();
+    println!("Supported key agreement algorithms:");
+    println!("  ECDH-ES (P-256, P-384, P-521), DH-ES (X9.42), X25519");
+    println!();
+    println!("Supported key derivation functions:");
+    println!("  ConcatKDF, PBKDF2, HKDF (SHA-256/384/512)");
+    println!();
     println!("Supported canonicalization:");
     println!("  C14N 1.0 (±comments)");
     println!("  C14N 1.1 (±comments)");
     println!("  Exclusive C14N 1.0 (±comments)");
     println!();
     println!("Supported key formats:");
-    println!("  PEM, DER (RSA, EC), raw binary (HMAC, AES)");
+    println!("  PEM, DER (RSA, EC, Ed25519, X25519), raw binary (HMAC, AES)");
     Ok(())
 }
 
 // ── Utility functions ────────────────────────────────────────────────
 
 fn read_file(path: &PathBuf) -> Result<String, Error> {
-    std::fs::read_to_string(path)
-        .map_err(|e| Error::Other(format!("{}: {e}", path.display())))
+    std::fs::read_to_string(path).map_err(|e| Error::Other(format!("{}: {e}", path.display())))
 }
 
 /// Load certificate(s) from a PEM or DER file and return as DER-encoded bytes.
 fn load_certs_as_der(path: &PathBuf) -> Result<Vec<Vec<u8>>, Error> {
-    let data = std::fs::read(path)
-        .map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
+    let data = std::fs::read(path).map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
 
     // Try PEM first
     if data.starts_with(b"-----") {
@@ -723,8 +824,7 @@ fn load_certs_as_der(path: &PathBuf) -> Result<Vec<Vec<u8>>, Error> {
 
 /// Load CRL(s) from a PEM or DER file and return as DER-encoded bytes.
 fn load_crl_as_der(path: &PathBuf) -> Result<Vec<Vec<u8>>, Error> {
-    let data = std::fs::read(path)
-        .map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
+    let data = std::fs::read(path).map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
 
     // Try PEM first
     if data.starts_with(b"-----") {
@@ -777,8 +877,7 @@ fn pem_decode_all(text: &str, label: &str) -> Result<Vec<Vec<u8>>, Error> {
 fn write_output(path: Option<PathBuf>, data: &[u8]) -> Result<(), Error> {
     match path {
         Some(p) => {
-            std::fs::write(&p, data)
-                .map_err(|e| Error::Other(format!("{}: {e}", p.display())))
+            std::fs::write(&p, data).map_err(|e| Error::Other(format!("{}: {e}", p.display())))
         }
         None => {
             use std::io::Write;
@@ -794,13 +893,18 @@ fn generate_session_key(spec: &str) -> Result<Key, Error> {
     use rand::RngCore;
     let parts: Vec<&str> = spec.splitn(2, '-').collect();
     if parts.len() != 2 {
-        return Err(Error::Other(format!("invalid session-key spec: {spec} (expected TYPE-BITS, e.g. hmac-192)")));
+        return Err(Error::Other(format!(
+            "invalid session-key spec: {spec} (expected TYPE-BITS, e.g. hmac-192)"
+        )));
     }
     let key_type = parts[0];
-    let bits: usize = parts[1].parse()
+    let bits: usize = parts[1]
+        .parse()
         .map_err(|_| Error::Other(format!("invalid bit size in session-key spec: {spec}")))?;
     if bits % 8 != 0 || bits == 0 {
-        return Err(Error::Other(format!("session-key bit size must be a positive multiple of 8: {bits}")));
+        return Err(Error::Other(format!(
+            "session-key bit size must be a positive multiple of 8: {bits}"
+        )));
     }
     let byte_len = bits / 8;
     let mut key_bytes = vec![0u8; byte_len];
@@ -810,7 +914,11 @@ fn generate_session_key(spec: &str) -> Result<Key, Error> {
         "hmac" => KeyData::Hmac(key_bytes),
         "aes" => KeyData::Aes(key_bytes),
         "des" | "des3" | "tripledes" => KeyData::Des3(key_bytes),
-        _ => return Err(Error::Other(format!("unsupported session-key type: {key_type}"))),
+        _ => {
+            return Err(Error::Other(format!(
+                "unsupported session-key type: {key_type}"
+            )))
+        }
     };
     Ok(Key::new(key_data, KeyUsage::Any))
 }
@@ -846,26 +954,29 @@ fn build_keys_manager(
     for spec in &key_names {
         if let Some((name, file_str)) = spec.split_once(':') {
             let path = PathBuf::from(file_str);
-            let mut key = match bergshamra_keys::loader::load_key_file_with_password(&path, password) {
-                Ok(k) => k,
-                Err(_) => {
-                    // Fallback: load as raw symmetric key (for concatkdf/pbkdf2 master keys)
-                    let bytes = std::fs::read(&path)
-                        .map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
-                    Key::new(KeyData::Aes(bytes), KeyUsage::Any)
-                }
-            };
+            let mut key =
+                match bergshamra_keys::loader::load_key_file_with_password(&path, password) {
+                    Ok(k) => k,
+                    Err(_) => {
+                        // Fallback: load as raw symmetric key (for concatkdf/pbkdf2 master keys)
+                        let bytes = std::fs::read(&path)
+                            .map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
+                        Key::new(KeyData::Aes(bytes), KeyUsage::Any)
+                    }
+                };
             key.name = Some(name.to_owned());
             mgr.add_key(key);
         } else {
-            return Err(Error::Other(format!("invalid key-name format: {spec} (expected NAME:FILE)")));
+            return Err(Error::Other(format!(
+                "invalid key-name format: {spec} (expected NAME:FILE)"
+            )));
         }
     }
 
     // Load PKCS#12 key file
     if let Some(path) = pkcs12_path {
-        let data = std::fs::read(&path)
-            .map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
+        let data =
+            std::fs::read(&path).map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
         let key = bergshamra_keys::loader::load_pkcs12(&data, password.unwrap_or(""))?;
         mgr.add_key(key);
     }
@@ -895,8 +1006,8 @@ fn build_keys_manager(
         } else {
             (None, spec.clone())
         };
-        let bytes = std::fs::read(&path)
-            .map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
+        let bytes =
+            std::fs::read(&path).map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
         let mut key = Key::new(KeyData::Hmac(bytes), KeyUsage::Any);
         key.name = name;
         mgr.add_key(key);
@@ -904,8 +1015,8 @@ fn build_keys_manager(
 
     // Load AES key
     if let Some(path) = aes_key_path {
-        let bytes = std::fs::read(&path)
-            .map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
+        let bytes =
+            std::fs::read(&path).map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
         let key = Key::new(KeyData::Aes(bytes), KeyUsage::Any);
         mgr.add_key(key);
     }

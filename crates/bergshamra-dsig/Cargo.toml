@@ -22,3 +22,4 @@ dsa.workspace = true
 p256.workspace = true
 p384.workspace = true
 p521.workspace = true
+ed25519-dalek.workspace = true
