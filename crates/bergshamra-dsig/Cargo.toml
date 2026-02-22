@@ -3,6 +3,7 @@ name = "bergshamra-dsig"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 description = "XML Digital Signatures for Bergshamra XML Security library"
 

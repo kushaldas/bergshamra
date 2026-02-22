@@ -9,31 +9,43 @@ unsafe code, no libxml2.
 ## Features
 
 - **XML Digital Signatures** — sign and verify (enveloped, enveloping, detached)
-- **XML Encryption** — encrypt and decrypt (element, content, key wrapping, key transport)
-- **XML Canonicalization** — all 6 W3C C14N variants (inclusive/exclusive, with/without comments, 1.0/1.1)
+- **XML Encryption** — encrypt and decrypt (element, content, key wrapping, key transport, multi-recipient)
+- **XML Canonicalization** — all 6 W3C C14N variants (inclusive/exclusive, with/without comments, 1.0/1.1) with document-subset filtering via XPath
 - **X.509 certificate chain** — validation with expiry, trust anchors, CRL revocation, chain building
-- **Post-quantum signatures** — ML-DSA (FIPS 204) and SLH-DSA (FIPS 205)
-- **Key agreement** — ECDH-ES with ConcatKDF (P-256/P-384/P-521)
+- **Post-quantum signatures** — ML-DSA (FIPS 204) and SLH-DSA (FIPS 205) with context strings
+- **EdDSA** — Ed25519 signatures (RFC 8032)
+- **Key agreement** — ECDH-ES (P-256/P-384/P-521), X25519, DH-ES (X9.42 finite-field)
+- **Key derivation** — ConcatKDF, HKDF (SHA-256/384/512), PBKDF2
+- **RSA-OAEP** — configurable digest (SHA-1/224/256/384/512), MGF1, and OAEPparams
+- **HMAC truncation** — HMACOutputLength with CVE-2009-0217 minimum length protection
+- **SAML support** — SAML v1.1 `AssertionID` attribute as default ID, `cid:` URI scheme for WS-Security MIME references
+- **CipherReference** — resolve encrypted content via URI with XPath and Base64 transforms
 - **XPath** — XPath, XPath Filter 2.0, XPointer for reference processing
 - **XSLT** — identity transform and minimal XSLT for document-subset operations
-- **OPC Relationship Transform** — for Office Open XML signatures
-- **Key formats** — PEM, DER, PKCS#8, PKCS#12, X.509, xmlsec keys.xml
+- **OPC Relationship Transform** — for Office Open XML signatures (ECMA-376 Part 2)
+- **Key formats** — PEM, DER, PKCS#8 (plain and encrypted), PKCS#12, X.509 (PEM and DER), xmlsec keys.xml, raw symmetric keys
+- **KeyInfo resolution** — KeyName, X509Certificate (multi-cert chain with leaf detection), X509IssuerSerial, RSA/EC/DSA KeyValue, DEREncodedKeyValue, RetrievalMethod, EncryptedKey, KeyInfoReference
 - **`#![forbid(unsafe_code)]`** across every crate
 
 ### Supported algorithms
 
 | Category | Algorithms |
 |----------|-----------|
-| Digest | SHA-1, SHA-224/256/384/512, SHA3-224/256/384/512, MD5, RIPEMD-160 |
-| Signature | RSA PKCS#1 v1.5, RSA-PSS, DSA, ECDSA (P-256/P-384/P-521), HMAC |
+| Digest | SHA-1, SHA-224/256/384/512, SHA3-224/256/384/512, MD5†, RIPEMD-160† |
+| Signature (RSA) | RSA PKCS#1 v1.5 (SHA-1/224/256/384/512, MD5†, RIPEMD-160†), RSA-PSS (SHA-1/224/256/384/512, SHA3-224/256/384/512) |
+| Signature (EC) | ECDSA (P-256/P-384/P-521 × SHA-1/224/256/384/512, SHA3-224/256/384/512, RIPEMD-160†) |
+| Signature (other) | DSA (SHA-1, SHA-256), Ed25519, HMAC (SHA-1/224/256/384/512, MD5†, RIPEMD-160†) |
 | Post-quantum | ML-DSA-44/65/87 (FIPS 204), SLH-DSA SHA2-128f/128s/192f/192s/256f/256s (FIPS 205) |
 | Block cipher | AES-128/192/256-CBC, AES-128/192/256-GCM, 3DES-CBC |
-| Key wrap | AES-KW-128/192/256, 3DES-KW |
-| Key transport | RSA PKCS#1 v1.5, RSA-OAEP (SHA-1/256/384/512, MGF1) |
-| Key agreement | ECDH-ES (P-256/P-384/P-521) with ConcatKDF |
-| C14N | Inclusive 1.0/1.1, Exclusive, each ± comments |
+| Key wrap | AES-KW-128/192/256 (RFC 3394), 3DES-KW (RFC 3217) |
+| Key transport | RSA PKCS#1 v1.5, RSA-OAEP (SHA-1/224/256/384/512 digest, MGF1-SHA-1/224/256/384/512) |
+| Key agreement | ECDH-ES (P-256/P-384/P-521), X25519, DH-ES (X9.42) |
+| Key derivation | ConcatKDF, HKDF (SHA-256/384/512), PBKDF2 |
+| C14N | Inclusive 1.0/1.1, Exclusive 1.0, each ± comments |
 | Transforms | Enveloped signature, Base64, XPath, XPath Filter 2.0, XSLT (identity), OPC Relationship |
-| Key formats | PEM, DER, PKCS#8, PKCS#12, X.509, xmlsec keys.xml |
+| Key formats | PEM, DER, PKCS#8, PKCS#12, X.509, xmlsec keys.xml, raw HMAC/AES/3DES |
+
+† MD5 and RIPEMD-160 are behind the `legacy-algorithms` feature flag.
 
 ## xmlsec test suite compatibility
 

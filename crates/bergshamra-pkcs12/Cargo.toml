@@ -3,6 +3,7 @@ name = "bergshamra-pkcs12"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 description = "PKCS#12 parser for Bergshamra XML Security library"
 
