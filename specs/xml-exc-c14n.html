@@ -1,0 +1,835 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <title>Exclusive XML Canonicalization Version 1.0</title>
+  <style type="text/css">
+<!--
+/*<![CDATA[*/
+    em {font-weight: normal; font-style: italic;}
+    u,ins,.ins  { background: white; color: red;}
+    del,strike,.strike   { background: white; color: silver; text-decoration: line-through;}
+    code     {font-weight: normal; }
+    .def        { background: #FFFFFF; font-weight: bold}
+    .link-def   { background: #FFFFFF; color: teal;  font-style: italic;}
+    .comment    { background: #FFFFF5; color: black; padding: .7em; border:
+                  navy thin solid;}
+    .discuss    { color: blue; background: yellow; }
+    .xml-example,.xml-dtd { margin-left: -1em; padding: .5em; white-space:
+                            pre; border: none;}
+    .xml-dtd    { background: #efeff8; color: black;}
+/*]]>*/
+-->
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  </style>
+  <link href="https://www.w3.org/StyleSheets/TR/W3C-REC" type="text/css" rel="stylesheet" />
+</head>
+
+<body xml:lang="en" lang="en">
+
+<div class="head">
+<p><a href="https://www.w3.org/"><img src="https://www.w3.org/Icons/w3c_home" alt="W3C" border="0" height="48" width="72" /></a></p>
+
+<h1 class="notoc">Exclusive XML Canonicalization<br />
+Version 1.0</h1>
+
+<h2 class="notoc">W3C Recommendation 18 July 2002</h2>
+<dl>
+  <dt>This version:</dt>
+    <dd><a href="https://www.w3.org/TR/2002/REC-xml-exc-c14n-20020718/">http://www.w3.org/TR/2002/REC-xml-exc-c14n-20020718/</a></dd>
+  <dt>Latest version:</dt>
+    <dd><a href="https://www.w3.org/TR/xml-exc-c14n/">http://www.w3.org/TR/xml-exc-c14n/</a></dd>
+  <dt>Previous version:</dt>
+    <dd><a href="https://www.w3.org/TR/2002/PR-xml-exc-c14n-20020524/">http://www.w3.org/TR/2002/PR-xml-exc-c14n-20020524/</a></dd>
+  <dt>Authors/Editors:</dt>
+    <dd>John Boyer, PureEdge Solutions Inc., <a
+      href="mailto:jboyer@PureEdge.com">jboyer@PureEdge.com</a></dd>
+    <dd>Donald E. Eastlake 3rd, Motorola, <a
+      href="mailto:Donald.Eastlake@motorola.com">Donald.Eastlake@Motorola.com</a></dd>
+    <dd>Joseph Reagle, W3C, <a
+    href="mailto:reagle@w3.org">reagle@w3.org</a></dd>
+</dl>
+
+<p>Please see the <a href="https://www.w3.org/2002/07/xml-exc-c14n-errata"><strong>errata</strong></a>
+for this document, which may include some normative corrections. See also <a href="https://www.w3.org/Signature/2002/02/xmldsig-translations"><strong>translations</strong></a>.</p>
+
+<p class="copyright"><a href="https://www.w3.org/Consortium/Legal/ipr-notice-20000612#Copyright">Copyright</a>
+© 2002 <a href="https://www.w3.org/"><abbr
+title="World Wide Web Consortium">W3C</abbr></a><sup>®</sup> (<a
+href="http://www.lcs.mit.edu/"><abbr
+title="Massachusetts Institute of Technology">MIT</abbr></a>, <a
+href="http://www.inria.fr/"><abbr xml:lang="fr" lang="fr"
+title="Institut National de Recherche en Informatique et Automatique">INRIA</abbr></a>,
+<a href="http://www.keio.ac.jp/">Keio</a>), All Rights Reserved. W3C <a href="https://www.w3.org/Consortium/Legal/ipr-notice-20000612#Legal_Disclaimer">liability</a>,
+<a href="https://www.w3.org/Consortium/Legal/ipr-notice-20000612#W3C_Trademarks">trademark</a>,
+<a href="https://www.w3.org/Consortium/Legal/copyright-documents-19990405">document
+use</a> and <a href="https://www.w3.org/Consortium/Legal/copyright-software-19980720">software
+licensing</a> rules apply.</p>
+<hr title="Separator from Header" />
+</div>
+
+<h2 class="notoc">Abstract</h2>
+
+<p>Canonical XML [<a href="#ref-XML-C14N">XML-C14N</a>] specifies a standard
+serialization of XML that, when applied to a subdocument, includes the
+subdocument's ancestor context including all of the namespace declarations
+and attributes in the "xml:" namespace. However, some applications require a
+method which, to the extent practical, excludes ancestor context from a
+canonicalized subdocument. For example, one might require a digital signature
+over an XML payload (subdocument) in an XML message that will not break when
+that subdocument is removed from its original message and/or inserted into a
+different context. This requirement is satisfied by Exclusive XML
+Canonicalization.</p>
+
+<h2><a id="status" name="status">Status of this document</a></h2>
+
+<div class="">
+<p>This document is the W3C Exclusive Canonicalization <a href="https://www.w3.org/Consortium/Process-20010719/process.html#RecsW3C">Recommendation</a>.
+This document has been reviewed by W3C Members and other interested parties
+and has been endorsed by the Director as a W3C Recommendation. It is a stable
+document and may be used as reference material or cited as a normative
+reference from another document. W3C's role in making the Recommendation is
+to draw attention to the specification and to promote its widespread
+deployment. This enhances the functionality and interoperability of the
+Web.</p>
+
+<p>This specification was produced by the IETF/W3C <a href="https://www.w3.org/Signature/">XML Signature Working Group</a> (<a href="https://www.w3.org/Signature/Activity.html">W3C Activity Statement</a>)
+which believes the specification is sufficient for the creation of
+independent interoperable implementations as demonstrated in the <a href="https://www.w3.org/Signature/2002/02/01-exc-c14n-interop.html">Interoperability
+Report.</a></p>
+
+<p>Patent disclosures relevant to this specification may be found on the
+Working Group's <a href="https://www.w3.org/Signature/Disclosures.html">patent
+disclosure page</a>, in conformance with W3C policy, and the <a
+href="http://www.ietf.org/ipr.html">IETF Page of Intellectual Property Rights
+Notices</a>, in conformance with IETF policy. At the time of publication,
+there are no declarations specific to this document.</p>
+
+<p>Please report errors in this document to <a
+href="mailto:w3c-ietf-xmldsig@w3.org">w3c-ietf-xmldsig@w3.org</a> (<a
+href="http://lists.w3.org/Archives/Public/xml-encryption/">archive</a>).</p>
+
+<p>The list of known errors in this specification is available at <a href="https://www.w3.org/2002/07/xml-exc-c14n-errata">http://www.w3.org/2002/07/xml-exc-c14n-errata</a>.</p>
+
+<p>The English version of this specification is the only normative version.
+Information about translations of this document (if any) is available <a href="https://www.w3.org/Signature/2002/02/xmldsig-translations">http://www.w3.org/Signature/2002/02/xmldsig-translations</a></p>
+
+<p>A list of current W3C Technical Reports can be found at <a href="https://www.w3.org/TR/">http://www.w3.org/TR/</a>.</p>
+</div>
+
+<h2><a id="contents" name="contents">Table of Contents</a></h2>
+<ol>
+  <li><a href="#sec-Intro">Introduction</a> 
+    <ol>
+      <li><a href="#sec-Terminology">Terminology</a></li>
+      <li><a href="#sec-Applications">Applications</a></li>
+      <li><a href="#sec-Limitations">Limitations</a></li>
+    </ol>
+  </li>
+  <li><a href="#sec-ExclusiveNeed">The Need for Exclusive XML
+    Canonicalization</a> 
+    <ol>
+      <li><a href="#sec-Simple">A Simple Example</a></li>
+      <li><a href="#sec-Enveloping">General Problems with Enveloping and
+        de-Enveloping</a></li>
+    </ol>
+  </li>
+  <li><a href="#sec-Specification">Specification of Exclusive XML
+    Canonicalization</a> 
+    <ol>
+      <li><a href="#sec-Implementation">Constrained Implementation
+        (non-normative)</a></li>
+    </ol>
+  </li>
+  <li><a href="#sec-Use">Use in XML Security</a></li>
+  <li><a href="#sec-Considerations">Security Considerations</a> 
+    <ol>
+      <li><a href="#sec-Target-Context">Target Context</a></li>
+      <li><a href="#sec-EsotericNodesets">"Esoteric" Node-sets</a></li>
+    </ol>
+  </li>
+  <li><a href="#sec-References">References</a></li>
+  <li><a href="#sec-Acknowledgements">Acknowledgements</a></li>
+</ol>
+<hr />
+<!-- =============================================================================== -->
+
+<h2><a id="sec-Intro" name="sec-Intro"></a>1. Introduction</h2>
+
+<p>The XML Recommendation <a href="#ref-XML">[XML]</a> specifies the syntax
+of a class of objects called XML documents. The Namespaces in XML
+Recommendation [<a href="#ref-XML-NS">XML-NS</a>] specifies additional syntax
+and semantics for XML documents. It is normal for XML documents and
+subdocuments which are equivalent for the purposes of many applications to
+differ in their physical representation. For example, they may differ in
+their entity structure, attribute ordering, and character encoding. The goal
+of this specification is to establish a method for serializing the XPath
+node-set representation of an XML document or subset such that:</p>
+<ol>
+  <li>The node-set is minimally affected by any XML context which has been
+    omitted.</li>
+  <li>The canonicalization of a node-set representing <a href="https://www.w3.org/TR/2001/CR-xml-fragment-20010212#defn-well-balanced">well-balanced</a>
+    XML [<a href="#ref-XML-Fragment">XML-Fragment</a>] will be unaltered by
+    further applications of exclusive canonicalization.</li>
+  <li>It can be determined whether two node-sets are identical except for
+    transformations considered insignificant by this specification under [<a
+    href="#ref-XML">XML</a>,<a href="#ref-XML-NS">XML-NS</a>].</li>
+</ol>
+
+<p>An understanding of the Canonical XML Recommendation [<a
+href="#ref-XML-C14N">XML-C14N</a>] is required.</p>
+
+<h3><a id="sec-Terminology" name="sec-Terminology">1.1 Terminology</a></h3>
+
+<p>The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT",
+"SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document
+are to be interpreted as described in RFC 2119 <a
+href="#ref-Keywords">[Keywords]</a>.</p>
+
+<p>The XPath 1.0 Recommendation <a href="#ref-XPath">[XPath]</a> defines the
+term <a class="link-def" name="def-node-set" id="def-node-set">node-set</a>
+and specifies a data model for representing an input XML document as a set of
+nodes of various types (element, attribute, namespace, text, comment,
+processing instruction, and root). The nodes are included in or excluded from
+a node-set based on the evaluation of an expression. Within this
+specification and [<a href="#ref-XML-C14N">XML-C14N</a>], a node-set is used
+to directly indicate whether or not each node should be rendered in the
+canonical form (in this sense, it is used as a formal mathematical set). A
+node that is excluded from the set is not rendered in the canonical form
+being generated, even if its parent node is included in the node-set.
+However, an omitted node may still impact the rendering of its descendants
+(e.g. by affecting the namespace context of the descendants).</p>
+
+<p>A <a class="def" name="def-document-subset"
+id="def-document-subset">document subset</a> is a portion of an XML document
+indicated by an XPath node-set that may not include all of the nodes in the
+document. As <a class="link-def" href="https://www.w3.org/TR/xpath#dt-parent">defined</a> in [<a
+href="#ref-XPath">XPath</a>] every node (e.g., element, attribute, and
+namespace), has exactly one <a class="def" name="def-parent-node"
+id="def-parent-node">parent</a>, which is either an element node or the root
+node. An <a class="def" name="def-apex-node" id="def-apex-node">apex node</a>
+is an element node in a document subset having no element node ancestor in
+the document subset. An <a class="def" name="def-orphan-node"
+id="def-orphan-node">orphan node</a> is an element node whose parent element
+node is not in the document subset. The <a class="def"
+name="def-output-parent" id="def-output-parent">output parent</a> of an
+orphan node that is not an apex node is the nearest ancestor element of the
+orphan node that is in the document subset; an <a href="#def-apex-node"
+class="link-def">apex node</a> has no <a href="#def-output-parent"
+class="link-def">output parent</a>. The output parent of a non-orphan node is
+the parent of the node. An <a class="def" name="def-output-ancestor"
+id="def-output-ancestor">output ancestor</a> is any ancestor element node in
+the document subset.</p>
+
+<p>For example given a document tree with three generations under the root
+node <code>A</code> and where capitalization denotes the node is in the
+document subset (<code>A,E,G</code>).</p>
+
+<p>Pictorial Representation:</p>
+
+<p><img alt="diagram of nodes" src="exc-c14n.png" /></p>
+
+<p>Textual Representation:</p>
+<pre>  A-+-b
+    `-c-+-d
+        `-E-+-f
+            `-G</pre>
+
+<p>The following characteristics apply:</p>
+<ul>
+  <li><code>A</code> is an apex node, output parent of <code>E</code>, and
+    output ancestor of (<code>E,G</code>);</li>
+  <li><code>E</code> is an orphan node and the output parent of
+    <code>G.</code></li>
+</ul>
+
+<p>An element <em>E</em> in a document subset <a class="def"
+name="def-visibly-utilizes" id="def-visibly-utilizes">visibly utilizes</a> a
+namespace declaration, i.e. a namespace prefix <em>P</em> and bound value
+<em>V</em>, if <em>E</em> or an attribute node in the document subset with
+parent <em>E</em> has a qualified name in which <em>P</em> is the namespace
+prefix. A similar definition applies for an element <em>E</em> in a document
+subset that <a class="link-def" href="#def-visibly-utilizes">visibly
+utilizes</a> the default namespace declaration, which occurs if <em>E</em>
+has no namespace prefix.</p>
+
+<p>The namespace axis of an element contains nodes for all non-default
+namespace declarations made within the element as well as non-default
+namespace declarations inherited from ancestors of the element. The namespace
+axis also contains a node representing the default namespace if it is not the
+empty string, whether the default namespace was declared within the element
+or by an ancestor of the element. Any subset of the nodes in a namespace axis
+can be included in a document subset.</p>
+
+<p>The method of canonicalization described in this specification receives an
+<a class="def" name="def-InclusiveNamespaces-PrefixList"
+id="def-InclusiveNamespaces-PrefixList">InclusiveNamespaces PrefixList</a>
+parameter, which lists namespace prefixes that are handled in the manner
+described by the Canonical XML Recommendation [<a
+href="#ref-XML-C14N">XML-C14N</a>].</p>
+
+<p>The <a class="def" name="def-exclusive-canonical-form"
+id="def-exclusive-canonical-form">exclusive canonical form</a> of a document
+subset is a physical representation of the XPath node-set, as an octet
+sequence, produced by the method described in this specification. It is as
+defined in the Canonical XML Recommendation [<a
+href="#ref-XML-C14N">XML-C14N</a>] except for the changes summarized as
+follows:</p>
+<ul>
+  <li>attributes in the XML namespace, such as <code>xml:lang</code> and
+    <code>xml:space</code> are not imported into orphan nodes of the document
+    subset, and</li>
+  <li>namespace nodes that are not on the <a class="link-def"
+    href="#def-InclusiveNamespaces-PrefixList">InclusiveNamespaces
+    PrefixList</a> are expressed only in start tags where they are visible
+    and if they are not in effect from an <a class="link-def"
+    href="#def-output-ancestor">output ancestor</a> of that tag.</li>
+</ul>
+
+<p>The term <a class="def" name="def-exclusive-canonical-XML"
+id="def-exclusive-canonical-XML">exclusive canonical XML</a> refers to XML
+that is in exclusive canonical form. The <a class="def"
+name="def-exclusive-XML-canonicalization-method"
+id="def-exclusive-XML-canonicalization-method">exclusive XML canonicalization
+method</a> is the algorithm defined by this specification that generates the
+exclusive canonical form of a given XML document subset. The term <a
+class="def" name="def-exclusive-XML-canonicalization"
+id="def-exclusive-XML-canonicalization">exclusive XML canonicalization</a>
+refers to the process of applying the exclusive XML canonicalization method
+to an XML document subset.</p>
+
+<h3><a id="sec-Applications" name="sec-Applications">1.2 Applications</a></h3>
+
+<p>The applications of Exclusive XML Canonicalization are very similar to
+those for Canonical XML [<a href="#ref-XML-C14N">XML-C14N</a>]. However,
+exclusive canonicalization, or equivalent means of excluding most XML
+context, is necessary for signature applications where the XML context of
+signed XML will change. This sort of change is typical of many protocol
+applications.</p>
+
+<p>Note that in the case of the <code>SignedInfo</code> element of [<a
+href="#ref-XML-DSig">XML-DSig</a>], the specification of an appropriate
+canonicalization method is the only technique available to protect the
+signature from insignificant changes in physical form and changes in XML
+context.</p>
+
+<h3><a id="sec-Limitations" name="sec-Limitations">1.3 Limitations</a></h3>
+
+<p>Exclusive XML Canonicalization has the limitations of Canonical XML [<a
+href="#ref-XML-C14N">XML-C14N</a>] plus two additional limitations as
+follows:</p>
+<ol>
+  <li>The XML being canonicalized may depend on the effect of XML namespace
+    attributes, such as <code>xml:lang</code>, <code>xml:space</code>, and
+    <code>xml:base</code> appearing in ancestor nodes. To avoid problems due
+    to the non-importation of such attributes into an enveloped document
+    subset, either they must be explicitly given in the <a
+    href="#def-apex-node" class="link-def">apex nodes</a> of the XML document
+    subset being canonicalized or they must always be declared with an
+    equivalent value in every context in which the XML document subset will
+    be interpreted.</li>
+  <li>Applications that use the XML being canonicalized may depend on the
+    effect of XML namespace declarations where the namespace prefix being
+    bound is not <a class="link-def" href="#def-visibly-utilizes">visibly
+    utilized</a>. An example would be an attribute whose value is an XPath
+    expression and whose evaluation therefore depends upon namespace prefixes
+    referenced in the expression. Or, an attribute value might be considered
+    a <a href="https://www.w3.org/TR/1999/REC-xml-names-19990114/#dt-qname">QName</a>
+    [<a href="#ref-XML-NS">XML-NS</a>] by some applications, but it is only a
+    string-value to XPath: 
+    <p><code>&lt;number
+    xsi:type="xsd:decimal"&gt;10.09&lt;/number&gt;</code>.</p>
+    <p>To avoid problems with such namespace declarations,</p>
+    <ul>
+      <li>the XML must be modified so that use of the namespace prefix
+        involved is visible, or</li>
+      <li>the namespace declarations must appear and be bound to the same
+        values in every context in which the XML will be interpreted, or</li>
+      <li>the prefixes for such namespaces must appear in the
+        <em>InclusiveNamespaces PrefixList</em>.</li>
+    </ul>
+  </li>
+</ol>
+<!-- =============================================================================== -->
+
+<h2><a id="sec-ExclusiveNeed" name="sec-ExclusiveNeed">2. The Need for
+Exclusive XML Canonicalization</a></h2>
+
+<p>In some cases, particularly for signed XML in protocol applications, there
+is a need to canonicalize a subdocument in such a way that it is
+substantially independent of its XML context. This is because, in protocol
+applications, it is common to envelope XML in various layers of message or
+transport elements, to strip off such enveloping, and to construct new
+protocol messages, parts of which were extracted from different messages
+previously received. If the pieces of XML in question are signed, they need
+to be canonicalized in a way such that these operations do not break the
+signature but the signature still provides as much security as can be
+practically obtained.</p>
+
+<h3><a id="sec-Simple" name="sec-Simple">2.1 A Simple Example</a></h3>
+
+<p>As a simple example of the type of problem that changes in XML context can
+cause for signatures, consider the following document:</p>
+<pre class="xml-example">   &lt;n1:elem1 xmlns:n1="http://b.example"&gt;
+       content
+   &lt;/n1:elem1&gt;</pre>
+
+<p>this is then enveloped in another document:</p>
+<pre class="xml-example">   &lt;n0:pdu xmlns:n0="http://a.example"&gt;
+      &lt;n1:elem1 xmlns:n1="http://b.example"&gt;
+          content
+      &lt;/n1:elem1&gt;
+   &lt;/n0:pdu&gt;</pre>
+
+<p>The first document above is in canonical form. But assume that document is
+enveloped as in the second case. The subdocument with <code>elem1</code> as
+its apex node can be extracted from this second case with an XPath expression
+such as:</p>
+<pre class="xml-example"> (//. | //@* | //namespace::*)[ancestor-or-self::n1:elem1]</pre>
+
+<p>The result of applying Canonical XML to the resulting XPath node-set is
+the following (except for line wrapping to fit this document):</p>
+<pre class="xml-example">   &lt;n1:elem1 xmlns:n0="http://a.example"
+             xmlns:n1="http://b.example"&gt;
+       content
+   &lt;/n1:elem1&gt;</pre>
+
+<p>Note that the <code>n0</code> namespace has been included by Canonical XML
+because it includes namespace context. This change which would break a
+signature over <code>elem1</code> based on the first version.</p>
+
+<h3><a id="sec-Enveloping" name="sec-Enveloping"></a>2.2 General Problems
+with re-Enveloping</h3>
+
+<p>As a more complete example of the changes in canonical form that can occur
+when the enveloping context of a document subset is changed, consider the
+following document:</p>
+<pre class="xml-example">   &lt;n0:local xmlns:n0="foo:bar"
+             xmlns:n3="ftp://example.org"&gt;
+      &lt;n1:elem2 xmlns:n1="http://example.net"
+                xml:lang="en"&gt;
+          &lt;n3:stuff xmlns:n3="ftp://example.org"/&gt;
+      &lt;/n1:elem2&gt;
+   &lt;/n0:local&gt;</pre>
+
+<p>And the following which has been produced by changing the enveloping of
+<code>elem2</code>:</p>
+<pre class="xml-example">   &lt;n2:pdu xmlns:n1="http://example.com"
+           xmlns:n2="http://foo.example"
+           xml:lang="fr"
+           xml:space="retain"&gt;
+      &lt;n1:elem2 xmlns:n1="http://example.net"
+                xml:lang="en"&gt;
+          &lt;n3:stuff xmlns:n3="ftp://example.org"/&gt;
+      &lt;/n1:elem2&gt;
+   &lt;/n2:pdu&gt;</pre>
+
+<p>Assume an XPath node-set produced from each case by applying the following
+XPath expression:</p>
+<pre class="xml-example"> (//. | //@* | //namespace::*)[ancestor-or-self::n1:elem2]</pre>
+
+<p>Applying Canonical XML to the node-set produced from the first document
+yields the following serialization (except for line wrapping to fit in this
+document):</p>
+<pre class="xml-example">   &lt;n1:elem2 xmlns:n0="foo:bar"
+             xmlns:n1="http://example.net"
+             xmlns:n3="ftp://example.org"
+             xml:lang="en"&gt;
+       &lt;n3:stuff&gt;&lt;/n3:stuff&gt;
+   &lt;/n1:elem2&gt;</pre>
+
+<p>However, although <code>elem2</code> is represented by the same octet
+sequence in both pieces of external XML above, the Canonical XML version of
+<code>elem2</code> from the second case would be (except for line wrapping so
+it will fit into this document) as follows:</p>
+<pre class="xml-example">   &lt;n1:elem2 xmlns:n1="http://example.net"
+             xmlns:n2="http://foo.example"
+             xml:lang="en"
+             xml:space="retain"&gt;
+       &lt;n3:stuff xmlns:n3="ftp://example.org"&gt;&lt;/n3:stuff&gt;
+   &lt;/n1:elem2&gt;</pre>
+
+<p>Note that the change in context has resulted in lots of changes in the
+subdocument as serialized by the inclusive Canonical XML [<a
+href="#ref-XML-C14N">XML-C14N</a>]. In the first example, <code>n0</code> had
+been included from the context and the presence of an identical
+<code>n3</code> namespace declaration in the context had elevated that
+declaration to the apex of the canonicalized form. In the second example,
+<code>n0</code> has gone away but <code>n2</code> has appeared,
+<code>n3</code> is no longer elevated, and an <code>xml:space</code>
+declaration has appeared, due to changes in context. But not all context
+changes have effect. In the second example, the presence at ancestor nodes of
+an <code>xml:lang</code> and <code>n1</code> prefix namespace declaration
+have no effect because of existing declarations at the <code>elem2</code>
+node.</p>
+
+<p>On the other hand, using Exclusive XML Canonicalization as specified
+herein, the physical form of <code>elem2</code> as extracted by the XPath
+expression above is (except for line wrapping so it will fit into this
+document) as follows:</p>
+<pre class="xml-example">   &lt;n1:elem2 xmlns:n1="http://example.net"
+             xml:lang="en"&gt;
+       &lt;n3:stuff xmlns:n3="ftp://example.org"&gt;&lt;/n3:stuff&gt;
+   &lt;/n1:elem2&gt;</pre>
+
+<p>in both cases.</p>
+<!-- =============================================================================== -->
+
+<h2><a id="sec-Specification" name="sec-Specification"></a>3. Specification
+of Exclusive XML Canonicalization</h2>
+
+<p>The data model, processing, input parameters, and output data for
+Exclusive XML Canonicalization are the same as for Canonical XML [<a
+href="#ref-XML-C14N">XML-C14N</a>] with the following exceptions:</p>
+<ol>
+  <li>Canonical XML applied to a document subset requires the search of the
+    ancestor nodes of each orphan element node for attributes in the XML
+    namespace, such as <code>xml:lang</code> and <code>xml:space</code>.
+    These are copied into the element node except if a declaration of the
+    same attribute is already in the attribute axis of the element (whether
+    or not it is included in the document subset). This search and copying
+    are <em>omitted</em> from the Exclusive XML Canonicalization method.</li>
+  <li>The Exclusive XML Canonicalization method may receive an additional,
+    possibly null, parameter <a class="link-def"
+    href="#def-InclusiveNamespaces-PrefixList">InclusiveNamespaces
+    PrefixList</a> containing a list of namespace prefixes and/or a token
+    indicating the presence of the default namespace. All namespace nodes
+    appearing on this list are handled as provided in Canonical XML [<a
+    href="#ref-XML-C14N">XML-C14N</a>].</li>
+  <li class="">A namespace node <strong>N</strong> with a prefix that does
+    not appear in the <a class="link-def"
+    href="#def-InclusiveNamespaces-PrefixList">InclusiveNamespaces
+    PrefixList</a> is rendered if all of the conditions are met: 
+    <ol>
+      <li>Its parent element is in the node-set, and</li>
+      <li>it is <a class="link-def" href="#def-visibly-utilizes">visibly
+        utilized</a> by its parent element, and</li>
+      <li>the prefix has not yet been rendered by any <a
+        href="#def-output-ancestor" class="link-def">output ancestor</a>, or
+        the nearest <a href="#def-output-ancestor" class="link-def">output
+        ancestor</a> of its parent element that <a class="link-def"
+        href="#def-visibly-utilizes">visibly utilizes</a> the namespace
+        prefix does not have a namespace node in the node-set with the same
+        namespace prefix <em>and</em> value as <strong>N</strong>.</li>
+    </ol>
+  </li>
+  <li class="">If the token representing the default namespace is not present
+    in <a class="link-def"
+    href="#def-InclusiveNamespaces-PrefixList">InclusiveNamespaces
+    PrefixList</a>, then the rules for rendering <code>xmlns=""</code> are
+    changed as follows. When canonicalizing the namespace axis of an element
+    <strong>E</strong> that is in the node-set, output <code>xmlns=""</code>
+    if and only if all of the conditions are met: 
+    <ol>
+      <li><strong>E</strong> <a class="link-def"
+        href="#def-visibly-utilizes">visibly utilizes</a> the default
+        namespace (i.e., it has no namespace prefix), and</li>
+      <li>it has no default namespace node in the node-set, and</li>
+      <li>the nearest output ancestor of E that visibly utilizes the default
+        namespace has a default namespace node in the node-set.</li>
+    </ol>
+    <p>(This step for for <code>xmlns=""</code> is necessary because it is
+    not represented in the XPath data model as a namespace node, but as the
+    absence of a namespace node; see §4.7 <a href="https://www.w3.org/TR/2001/REC-xml-c14n-20010315#PropagateDefaultNSDecl">Propagation
+    of Default Namespace Declaration in Document Subsets</a> [<a
+    href="#ref-XML-C14N">XML-C14N</a>].)</p>
+  </li>
+</ol>
+
+<h3>3.1 <a name="sec-Implementation" id="sec-Implementation">Constrained
+Implementation</a> (non-normative)</h3>
+
+<p>The following is a (non-normative) method for implementing the Exclusive
+XML Canonicalization method for many straightforward cases -- it assumes a
+well-formed subset and that if an element is in the node-set, so is all of
+its namespace axis; if the element is not in the subset, neither is its
+namespace axis.</p>
+<ol>
+  <li>Recursively process the <em>entire</em> tree (from which the XPath
+    node-set was selected) in document order starting with the root. (The
+    operation of copying ancestor <code>xml:</code> namespace attributes into
+    output <a href="#def-apex-node" class="link-def">apex element nodes</a>
+    is <em>not</em> done.)</li>
+  <li>If the node is not in the XPath subset, continue to process its
+    children element nodes recursively.</li>
+  <li>If the element node is in the XPath subset then output the node in
+    accordance with Canonical XML except for namespace nodes which are
+    rendered as follows: 
+    <ol>
+      <li class=""><code>ns_rendered</code> is a copy of a dictionary, off
+        the top of the <code>state</code> stack, of prefixes and their values
+        which have already been rendered by an <a href="#def-output-parent"
+        class="link-def">output ancestor</a> of the namespace node's parent
+        element.</li>
+      <li>Render each namespace node if and only if all of the conditions are
+        met: 
+        <ol>
+          <li>it is <a class="link-def" href="#def-visibly-utilizes">visibly
+            utilized</a> by the immediate parent element or one of its
+            attributes, <em>or</em> is present in <a class="link-def"
+            href="#def-InclusiveNamespaces-PrefixList">InclusiveNamespaces
+            PrefixList</a>, and</li>
+          <li>its prefix and value <em>do not</em> appear in
+            <code>ns_rendered</code>.</li>
+        </ol>
+      </li>
+      <li class="">Render <code>xmlns=""</code> if and only if all of the
+        conditions are met:</li>
+      <li style="list-style: none"><ol class="">
+          <li>The default namespace is <a class="link-def"
+            href="#def-visibly-utilizes">visibly utilized</a> by the
+            immediate parent element node, or the default prefix token is
+            present in <a class="link-def"
+            href="#def-InclusiveNamespaces-PrefixList">InclusiveNamespaces
+            PrefixList</a>, and</li>
+          <li>the element does not have a namespace node in the node-set
+            declaring a value for the default namespace, and</li>
+          <li>the default namespace prefix is present in the dictionary
+            <code>ns_rendered</code>.</li>
+        </ol>
+      </li>
+      <li class="">Insert all the rendered namespace nodes (including
+        <code>xmlns=""</code>) into the <code>ns_rendered</code> dictionary,
+        replacing any existing entries. Push <code>ns_rendered</code> onto
+        the state stack and recurse.</li>
+      <li>After the recursion returns, pop the <code>state</code> stack.</li>
+    </ol>
+  </li>
+</ol>
+<!-- =============================================================================== -->
+
+<h2><a id="sec-Use" name="sec-Use"></a>4. Use in XML Security</h2>
+
+<p>Exclusive Canonicalization may be used as a <code>Transform</code> or
+<code>CanonicalizationMethod</code> algorithm in XML Digital Signature [<a
+href="#ref-XML-DSig">XML-DSig</a>] and XML Encryption [<a
+href="#ref-XML-Enc">XML-Enc</a>].</p>
+<dl>
+  <dt>Identifier:</dt>
+    <dd><a href="https://www.w3.org/2001/10/xml-exc-c14n#">http://www.w3.org/2001/10/xml-exc-c14n#</a> 
+      <p><a href="https://www.w3.org/2001/10/xml-exc-c14n#WithComments">http://www.w3.org/2001/10/xml-exc-c14n#WithComments</a></p>
+    </dd>
+</dl>
+
+<p>Just as with [<a href="#ref-XML-C14N">XML-C14N</a>] one may use the "<a
+name="WithComments" id="WithComments">#WithComments</a>" parameter to include
+the serialization of XML comments. This algorithm also takes an optional
+explicit parameter of an empty <code>InclusiveNamespaces</code> element with
+a <code>PrefixList</code> attribute. The value of this attribute, which may
+be null, is a white space delimited list of namespace prefixes, and where
+#default indicates the default namespace, to be handled as per [<a
+href="#ref-XML-C14N">XML-C14N</a>]. The list is in NMTOKENS format (a white
+space separated list). For example:</p>
+<pre class="xml-example">   &lt;ds:Transform
+      Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"&gt;
+      &lt;ec:InclusiveNamespaces PrefixList="dsig soap #default"
+          xmlns:ec="http://www.w3.org/2001/10/xml-exc-c14n#"/&gt;
+   &lt;/ds:Transform&gt;</pre>
+
+<p>indicates the exclusive canonicalization transform, but that namespaces
+with prefix "dsig" or "soap" and default namespaces should be processed
+according to [<a href="#ref-XML-C14N">XML-C14N</a>].</p>
+<pre class="xml-dtd">   <a href="exc-c14n.xsd">Schema Definition</a>:
+
+   &lt;?xml version="1.0" encoding="utf-8"?&gt;
+   &lt;!DOCTYPE schema
+     PUBLIC "-//W3C//DTD XMLSchema 200102//EN" "http://www.w3.org/2001/XMLSchema.dtd"
+    [
+      &lt;!ATTLIST schema 
+        xmlns:ec CDATA #FIXED 'http://www.w3.org/2001/10/xml-exc-c14n#'&gt;
+      &lt;!ENTITY ec 'http://www.w3.org/2001/10/xml-exc-c14n#'&gt; 
+      &lt;!ENTITY % p ''&gt;
+      &lt;!ENTITY % s ''&gt;
+     ]&gt;
+
+   &lt;schema xmlns="http://www.w3.org/2001/XMLSchema"
+           xmlns:ec="http://www.w3.org/2001/10/xml-exc-c14n#"
+           targetNamespace="http://www.w3.org/2001/10/xml-exc-c14n#"
+           version="0.1" elementFormDefault="qualified"&gt;
+
+     &lt;element name="InclusiveNamespaces"
+              type="ec:InclusiveNamespaces"/&gt;
+     &lt;complexType name="InclusiveNamespaces"&gt;
+        &lt;attribute name="PrefixList" type="NMTOKENS"/&gt;
+     &lt;/complexType&gt;
+   &lt;/schema&gt;</pre>
+<pre class="xml-dtd">   <a href="exc-c14n.dtd">DTD</a>:
+   &lt;!ELEMENT InclusiveNamespaces    EMPTY &gt;
+   &lt;!ATTLIST InclusiveNamespaces
+      PrefixList    NMTOKENS    #REQUIRED &gt;</pre>
+
+<h2>5. <a id="sec-Considerations" name="sec-Considerations">Security
+Considerations</a></h2>
+
+<p>This specification is used to serialize an XPath node-set under certain
+assumptions given in [<a href="#ref-XML-C14N">XML-C14N</a>] and this
+specification. Three such examples include:</p>
+<ol>
+  <li>implementations of [<a href="#ref-XML-C14N">XML-C14N</a>] and this
+    specification do not render an XML declaration;</li>
+  <li>implementations of this specification only render attributes from the
+    "XML" namespace (e.g., <code>xml:lang</code>, <code>xml:space</code>, and
+    <code>xml:base</code>) when they are in the subset being serialized;</li>
+  <li>implementations of this specification do not consider the appearance of
+    a namespace prefix within an attribute value to be <a class="link-def"
+    href="#def-visibly-utilizes">visibly utilized</a>.</li>
+</ol>
+
+<p>While such choices are consistent with other XML specifications and
+satisfy the Working Group's application requirements it is important that an
+XML application carefully construct its transforms such that the result is
+meaningful and unambiguous in its application context. In addition to this
+section, the <a href="#sec-Limitations">Limitations</a> of this
+specification, the <a href="https://www.w3.org/TR/2001/REC-xml-c14n-20010315#Resolutions">Resolutions</a>
+of [<a href="#ref-XML-C14N">XML-C14N</a>], and the <a href="https://www.w3.org/TR/2001/PR-xmldsig-core-20010820/#sec-Security">Security
+Considerations</a> of [<a href="#ref-XML-DSig">XML-DSig</a>] should be
+carefully attended to.</p>
+
+<h3>5.1 <a name="sec-Target-Context" id="sec-Target-Context">Target
+Context</a></h3>
+
+<div class="">
+<p>The requirement of this specification is to satisfy applications that
+"require a method which, to the extent practical, excludes ancestor context
+from a canonicalized subdocument." Given a fragment being removed from its
+source instance, this specification satisfies this requirement by excluding
+from the fragment any context from its ancestors that is not utilized.
+Consequently, a signature [<a href="#ref-XML-DSig">XML-DSig</a>] over that
+fragment will remain valid in its source context, removed from the source
+context, and even in a new target context. However, this specification does
+not insulate the fragment against confused interpretation in a target
+context.</p>
+
+<p>For example, if the <code>&lt;Foo/&gt;</code> element is signed in its
+source instance of <code>&lt;Bar/&gt;&lt;Foo/&gt;&lt;/Bar&gt;</code> and then
+removed and placed in the target instance <code>&lt;Baz
+xmlns="http://example.org/bar"/&gt;&lt;Foo/&gt;&lt;/Baz&gt;</code>, the
+signature should still be valid, but won't be if <code>&lt;Foo/&gt;</code> is
+interprated as belonging to the <code>http://example.org/bar</code>
+namespace: this is dependent on how nodes are processed.</p>
+
+<p>This specification does not define mechanisms of removing, inserting, and
+"fixing up" a node-set. (For an example of this sort of specification, see
+the processing required of <a href="https://www.w3.org/TR/xinclude/#creating-result">Creating the Result
+Infoset</a> (section 4.5) when an [<a href="#ref-XInclude">XInclude</a>] is
+performed.) Instead, applications must carefully specify the XML (i.e.,
+source, fragment, and target) or define the node-set processing (i.e.,
+removal, replacement, and insertion) with respect to default namespace
+declarations (e.g., <code>xmlns=""</code>) and XML attributes (e.g.,
+<code>xml:lang</code>, <code>xml:space</code>, and <code>xml:base</code>).</p>
+</div>
+
+<h3>5.2 <a name="sec-EsotericNodesets" id="sec-EsotericNodesets">"Esoteric"
+Node-sets</a></h3>
+
+<div class="">
+<p>Consider an application that might use this specification or [<a
+href="#ref-XML-C14N">XML-C14N</a>] to serialize a single attribute node. An
+implementation of either specification will <em>not</em> emit a namespace
+declaration for that single attribute node. Consequently, a "carefully
+constructed" transform should create a node-set containing the attribute and
+the relevant namespace declaration for serialization.</p>
+
+<p>This example is provided to caution that as one moves beyond <a href="https://www.w3.org/TR/2000/REC-xml-20001006#dt-wellformed">well-formed</a>
+[<a href="#ref-XML">XML</a>] and then <a href="https://www.w3.org/TR/2001/CR-xml-fragment-20010212#defn-well-balanced">well-balanced</a>
+XML [<a href="#ref-XML-Fragment">XML-Fragment</a>], it becomes increasingly
+difficult to create a result that "is meaningful and unambiguous in its
+application context."</p>
+</div>
+
+<h2>6. <a id="sec-References" name="sec-References">References</a></h2>
+<dl>
+  <dt><a id="ref-Keywords" name="ref-Keywords">Keywords</a></dt>
+    <dd><a>RFC 2119.</a> <em>Key words for use in RFCs to Indicate
+      Requirement Levels</em>. S. Bradner. Best Current Practice, March
+    1997.</dd>
+    <dd>Available at <a
+      href="http://www.ietf.org/rfc/rfc2119.txt">http://www.ietf.org/rfc/rfc2119.txt</a></dd>
+  <dt><a id="ref-URI" name="ref-URI">URI</a></dt>
+    <dd><a href="http://www.ietf.org/rfc/rfc2396.txt">RFC 2396</a> .
+      <em>Uniform Resource Identifiers (URI): Generic Syntax.</em> T.
+      Berners-Lee, R. Fielding, and L. Masinter. Standards Track, August
+    1998.</dd>
+    <dd>Available at <a
+      href="http://www.ietf.org/rfc/rfc2396.txt">http://www.ietf.org/rfc/rfc2396.txt</a></dd>
+  <dt><a id="ref-XML" name="ref-XML">XML</a></dt>
+    <dd><a href="https://www.w3.org/TR/2000/REC-xml-20001006">Extensible
+      Markup Language (XML) 1.0 (Second Edition).</a> T. Bray, E. Maler, J.
+      Paoli, and C. M. Sperberg-McQueen. W3C Recommendation, October
+    2000.</dd>
+    <dd>Available at <a href="https://www.w3.org/TR/2000/REC-xml-20001006">http://www.w3.org/TR/2000/REC-xml-20001006</a>
+      .</dd>
+  <dt><a id="ref-XML-C14N" name="ref-XML-C14N">XML-C14N</a></dt>
+    <dd><a href="https://www.w3.org/TR/2001/REC-xml-c14n-20010315">Canonical
+      XML.</a> J. Boyer. W3C Recommendation, March 2001.</dd>
+    <dd>Available at <a href="https://www.w3.org/TR/2001/REC-xml-c14n-20010315">http://www.w3.org/TR/2001/REC-xml-c14n-20010315</a></dd>
+    <dd>Available at <a
+      href="http://www.ietf.org/rfc/rfc3076.txt">http://www.ietf.org/rfc/rfc3076.txt</a></dd>
+  <dt><a id="ref-XML-DSig" name="ref-XML-DSig">XML-DSig</a></dt>
+    <dd><a href="https://www.w3.org/TR/2002/REC-xmldsig-core-20020212/">XML-Signature
+      Syntax and Processing</a>. D. Eastlake, J. Reagle, and D. Solo. IETF
+      Draft Standard/W3C Recommendation, August 2001.</dd>
+    <dd>Available at <a href="https://www.w3.org/TR/2002/REC-xmldsig-core-20020212/">http://www.w3.org/TR/2002/REC-xmldsig-core-20020212/</a></dd>
+  <dt><a name="ref-XML-Fragment" id="ref-XML-Fragment">XML-Fragment</a></dt>
+    <dd><a href="https://www.w3.org/TR/2001/CR-xml-fragment-20010212">XML
+      Fragment Interchange</a>. P. Grosso, and D. Veillard. W3C Candidate
+      Recommendation, February 2001.</dd>
+    <dd>Available at <a href="https://www.w3.org/TR/2001/CR-xml-fragment-20010212">http://www.w3.org/TR/2001/CR-xml-fragment-20010212</a></dd>
+  <dt><a name="ref-XInclude" id="ref-XInclude">XInclude</a></dt>
+    <dd>XML Inclusions (XInclude) Version 1.0. J. Marsh, and D. Orchad. W3C
+      Candidate Recommendation, February 2002.</dd>
+    <dd>Available at <a href="https://www.w3.org/TR/2002/CR-xinclude-20020221/">http://www.w3.org/TR/2002/CR-xinclude-20020221/</a></dd>
+  <dt><a id="ref-XML-NS" name="ref-XML-NS">XML-NS</a></dt>
+    <dd><a href="https://www.w3.org/TR/1999/REC-xml-names-19990114/">Namespaces in
+      XML</a>. T. Bray, D. Hollander, and A. Layman. W3C Recommendation,
+      January 1999.</dd>
+    <dd>Available at <a href="https://www.w3.org/TR/1999/REC-xml-names-19990114/">http://www.w3.org/TR/1999/REC-xml-names-19990114/</a></dd>
+  <dt><a id="ref-XML-Enc" name="ref-XML-Enc">XML-Enc</a></dt>
+    <dd><a href="https://www.w3.org/TR/2002/CR-xmlenc-core-20020304/">XML
+      Encryption Syntax and Processing</a>. D. Eastlake, and J. Reagle. W3C
+      Candidate Recommendation, March 2002.</dd>
+    <dd>Available at <a href="https://www.w3.org/TR/2002/CR-xmlenc-core-20020304/">http://www.w3.org/TR/2002/CR-xmlenc-core-20020304/</a></dd>
+  <dt><a id="ref-XML-schema" name="ref-XML-schema">XML-schema</a></dt>
+    <dd><a href="https://www.w3.org/TR/2001/REC-xmlschema-1-20010502/">XML
+      Schema Part 1: Structures</a> D. Beech, M. Maloney, N. Mendelsohn, and
+      H. Thompson. W3C Recommendation, May 2001.</dd>
+    <dd>Available at <a href="https://www.w3.org/TR/2001/REC-xmlschema-2-20010502/">http://www.w3.org/TR/2001/REC-xmlschema-2-20010502/</a></dd>
+  <dt><a id="ref-XPath" name="ref-XPath">XPath</a></dt>
+    <dd><a href="https://www.w3.org/TR/1999/REC-xpath-19991116">XML Path
+      Language (XPath) Version 1.0</a>. J. Clark and S. DeRose. W3C
+      Recommendation, November 1999.</dd>
+    <dd>Available at <a href="https://www.w3.org/TR/1999/REC-xpath-19991116">http://www.w3.org/TR/1999/REC-xpath-19991116</a>.</dd>
+</dl>
+<!-- =============================================================================== -->
+
+<h2><a id="sec-Acknowledgements" name="sec-Acknowledgements"></a>7.
+Acknowledgements (Informative)</h2>
+
+<p>The following people provided valuable feedback that improved the quality
+of this specification:</p>
+<ul>
+  <li>Merlin Hughes, Baltimore</li>
+  <li>Thomas Maslen, DSTC</li>
+  <li>Paul Denning, MITRE</li>
+  <li>Christian Geuer-Pollmann, University Siegen</li>
+  <li>Bob Atkinson, Microsoft</li>
+</ul>
+<script type="application/javascript" src="https://www.w3.org/scripts/TR/fixup.js"></script></body>
+</html>

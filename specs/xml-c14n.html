@@ -1,0 +1,1708 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--Arbortext, Inc., 1988-2008, v.4002-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+ "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html lang="EN" xml:lang="EN" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Canonical XML Version 1.1</title>
+<style type="text/css">
+code { font-family: monospace }
+</style>
+<link href="https://www.w3.org/StyleSheets/TR/W3C-REC" rel="stylesheet" type="text/css" />
+<meta content="text/html; charset=utf-8" http-equiv="Content-Type"/>
+</head>
+<body> <div class="head"> <p> <a href="https://www.w3.org/"><img alt="W3C" height="48" src="https://www.w3.org/Icons/w3c_home" width="72" /></a
+> </p> <h1 class="notoc">Canonical XML Version 1.1</h1> <h2 class="notoc"
+>W3C Recommendation 2 May 2008</h2> <dl>
+<dt>This version:</dt>
+<dd><a href="https://www.w3.org/TR/2008/REC-xml-c14n11-20080502/">http://www.w3.org/TR/2008/REC-xml-c14n11-20080502/</a
+></dd>
+<dt>Latest version:</dt>
+<dd><a href="https://www.w3.org/TR/xml-c14n11/">http://www.w3.org/TR/xml-c14n11/</a
+></dd>
+<dt>Previous version:</dt>
+<dd><a href="https://www.w3.org/TR/2008/PR-xml-c14n11-20080129/">http://www.w3.org/TR/2008/PR-xml-c14n11-20080129/</a
+><br/> </dd>
+<dt>Authors:</dt>
+<dd>John Boyer, IBM (formerly PureEdge Solutions Inc.) Version 1.0</dd>
+<dd>Glenn Marcy, IBM</dd>
+</dl> 
+
+<p>Please refer to the <a href="https://www.w3.org/2008/05/xml-c14n11-errata"><strong>errata</strong></a> 
+for this document, which may include some normative corrections.</p>
+
+<p>See also <a href="https://www.w3.org/2003/03/Translations/byTechnology?technology=xml-c14n11"><strong>translations</strong></a>.</p>
+
+<p class="copyright"><a href="https://www.w3.org/Consortium/Legal/ipr-notice#Copyright">Copyright</a
+> &copy; 2008 <a href="https://www.w3.org/"><acronym
+title="World Wide Web Consortium">W3C</acronym></a><sup>&reg;</sup
+> (<a href="http://www.csail.mit.edu/"><acronym
+title="Massachusetts Institute of Technology">MIT</acronym></a>, <a
+href="http://www.ercim.org/"><acronym
+title="European Research Consortium for Informatics and Mathematics"
+>ERCIM</acronym></a>, <a href="http://www.keio.ac.jp/">Keio</a>),
+All Rights Reserved. W3C <a href="https://www.w3.org/Consortium/Legal/ipr-notice#Legal_Disclaimer">liability</a>, <a href="https://www.w3.org/Consortium/Legal/ipr-notice#W3C_Trademarks">trademark</a> and <a href="https://www.w3.org/Consortium/Legal/copyright-documents">document
+use</a> rules apply.</p> <hr title="Separator from Header"/></div
+> <h2 class="notoc">Abstract</h2> <p>Canonical XML Version 1.1 is a revision
+to Canonical XML Version 1.0 to address   issues related to inheritance of
+attributes in the XML namespace when   canonicalizing document subsets,
+including the requirement not to   inherit <code>xml:id</code>, and
+to treat <code>xml:base</code> URI path processing properly.</p> <p
+>Any XML document is part of a set of XML documents that are logically
+ equivalent within an application context, but which vary in physical
+ representation based on syntactic changes permitted by XML 1.0 <a
+href="#XML">[XML]</a> and Namespaces in XML 1.0 <a href="#namespaces"
+>[Names]</a>. This specification describes a method  for generating
+a physical representation, the canonical form, of an  XML document
+that accounts for the permissible changes. Except for  limitations
+regarding a few unusual cases, if two documents have the  same canonical
+form, then the two documents are logically equivalent  within the
+given application context. Note that two documents may have  differing
+canonical forms yet still be equivalent in a given context  based
+on application-specific equivalence rules for which no generalized
+XML specification could account.</p> <p>Canonical XML Version 1.1 is applicable
+to XML 1.0 and defined in terms of the XPath   1.0 data model. It
+is not defined for XML 1.1.</p><h2><a id="status" name="status">Status
+of this Document</a></h2> <p><em>This section describes the status
+of this document at  the time of its publication. Other documents
+may supersede  this document. A list of current W3C publications and
+the  latest revision of this technical report can be found in  the</em
+> <em><a href="https://www.w3.org/TR/">W3C technical reports index</a
+> at http://www.w3.org/TR/.</em></p> 
+<p>This is a <a href="https://www.w3.org/2005/10/Process-20051014/tr.html#RecsW3C">W3C 
+Recommendation</a>.</p>
+<p>This document has been reviewed by W3C Members, by software developers, 
+and by other W3C groups and interested parties, and is endorsed by the 
+Director as a W3C Recommendation. It is a stable document and may be used 
+as reference material or cited from another document. W3C's role in making 
+the Recommendation is to draw attention to the specification and to promote 
+its widespread deployment. This enhances the functionality and interoperability 
+of the Web.</p><p>Comments on this document should be sent to <a
+href="mailto:www-xml-canonicalization-comments@w3.org">www-xml-canonicalization-comments@w3.org</a
+> which is an automatically <a
+href="http://lists.w3.org/Archives/Public/www-xml-canonicalization-comments/"
+>archived</a> public email list. </p> <p>The <a href="https://www.w3.org/2007/xmlsec/interop/xmldsig/c14n11/report.html">implementation  report</a> details CR implementation feedback from
+several implementations.   It should be noted that this IR reflects
+results implemented against the CR as clarified based on issues raised
+during the CR period and subsequently reflected in the wording of
+this Recommendation.</p> <p>This document has been produced
+by the <a href="https://www.w3.org/XML/Core/">W3C XML Core Working
+Group</a> as part of the W3C <a href="https://www.w3.org/XML/Activity">XML Activity</a>. The authors of this document are the members of
+the XML Core Working Group and invited experts from the Digital Signature
+community.</p> <p>This document was produced by a group operating
+under the <a href="https://www.w3.org/Consortium/Patent-Policy-20040205/">5 February 2004 W3C Patent Policy</a>. W3C maintains a <a href="https://www.w3.org/2004/01/pp-impl/18796/status" rel="disclosure">public list of any patent disclosures</a> made in connection with
+the deliverables of the group; that page also includes instructions
+for disclosing a patent. An individual who has actual knowledge of
+a patent which the individual believes contains <a href="https://www.w3.org/Consortium/Patent-Policy-20040205/#def-essential"> Essential Claim(s)</a> must disclose the information in accordance
+with <a href="https://www.w3.org/Consortium/Patent-Policy-20040205/#sec-Disclosure"> section 6 of the W3C Patent Policy</a>.</p> <p>The English version
+of this specification is the only normative version.</p> <div> <hr
+/></div> <h2><a id="contents" name="contents">Table of Contents</a
+></h2> <ol>
+<li><a href="#Intro">Introduction</a> <ol>
+<li><a href="#Terminology">Terminology</a></li>
+<li><a href="#Applications">Applications</a></li>
+<li><a href="#Limitations">Limitations</a></li>
+</ol> </li>
+<li><a href="#XMLCanonicalization">XML Canonicalization</a> <ol>
+<li><a href="#DataModel">Data Model</a></li>
+<li><a href="#DocumentOrder">Document Order</a></li>
+<li><a href="#ProcessingModel">Processing Model</a></li>
+<li><a href="#DocSubsets">Document Subsets</a></li>
+</ol> </li>
+<li><a href="#Examples">Examples of XML Canonicalization</a> <ol>
+<li><a href="#Example-OutsideDoc">PIs, Comments, and Outside of Document
+Element</a></li>
+<li><a href="#Example-WhitespaceInContent">Whitespace in Document
+Content</a></li>
+<li><a href="#Example-SETags">Start and End Tags</a></li>
+<li><a href="#Example-Chars">Character Modifications and Character
+References</a></li>
+<li><a href="#Example-Entities">Entity References</a></li>
+<li><a href="#Example-UTF8">UTF-8 Encoding</a></li>
+<li><a href="#Example-DocSubsets">Document Subsets</a></li>
+<li><a href="#Example-DocSubsetsXMLAttrs">Document Subsets and XML
+Attributes</a></li>
+</ol> </li>
+<li><a href="#Resolutions">Resolutions</a> <ol>
+<li><a href="#NoXMLDecl">No XML Declaration</a></li>
+<li><a href="#NoCharModelNorm">No Character Model Normalization</a
+></li>
+<li><a href="#WhitespaceRoot">Handling of Whitespace Outside Document
+Element</a></li>
+<li><a href="#NoNSPrefixRewriting">No Namespace Prefix Rewriting</a
+></li>
+<li><a href="#NSAttrOrder">Order of Namespace Declarations and Attributes</a
+></li>
+<li><a href="#SuperfluousNSDecl">Superfluous Namespace Declarations</a
+></li>
+<li><a href="#PropagateDefaultNSDecl">Propagation of Default Namespace
+Declaration in Document Subsets</a></li>
+<li><a href="#SortByNSURI">Sorting Attributes by Namespace URI</a
+></li>
+</ol> </li>
+<li><a href="#bibliography">References</a></li>
+</ol> <ol style="list-style-type: upper-alpha;">
+<li type="A"><a href="#appendix">Appendix</a></li>
+</ol> <hr/> <!-- =============================================================================== --> <h2
+><a id="Intro" name="Intro"></a>1 Introduction</h2> <p>The XML 1.0
+Recommendation <a href="#XML">[XML]</a> specifies the syntax of a
+class of resources called XML documents. The Namespaces in XML 1.0 Recommendation <a
+href="#namespaces">[Names]</a> specifies additional syntax and semantics
+for XML documents. It is possible for XML documents which are equivalent
+for the purposes of many applications to differ in physical representation.
+For example, they may differ in their entity structure, attribute
+ordering, and character encoding. It is the goal of this specification
+to establish a method for determining whether two documents are identical,
+or whether an application has not changed a document, except for transformations
+permitted by XML 1.0 and Namespaces in XML 1.0.</p><p>Canonical XML Version 1.1
+is a revision to Canonical XML Version 1.0 <a href="#C14N10">[C14N10]</a> to address
+issues related to
+inheritance of attributes in the XML namespace when   canonicalizing
+document subsets, including the requirement not to   inherit <code
+>xml:id</code>, and to treat <code>xml:base</code> URI path processing
+properly. See also the Working Group Notes on <a href="#C14N-Issues"
+>[C14N-Issues]</a> and <a href="#DSig-Usage">[DSig-Usage]</a> for
+further discussion of the relationship of Canonical XML Version 1.1 to Canonical
+XML Version 1.0.</p><p>Canonical XML Version 1.1 is applicable to XML 1.0 and defined
+in terms of the XPath   1.0 data model. It is not defined for XML
+1.1.</p> <h3><a id="Terminology" name="Terminology">1.1 Terminology</a
+></h3> <p>The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL
+NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL"
+in this document are to be interpreted as described in RFC 2119 <a
+href="#Keywords">[Keywords]</a>.</p> <p>See <a href="#namespaces"
+>[Names]</a> for the definition of <a href="https://www.w3.org/TR/REC-xml-names/#NT-QName">QName</a>.</p
+> <p>A <i>document subset</i> is a portion of an XML document indicated
+by a node-set that may not include all of the nodes in the document.</p
+> <p>The <i>canonical form</i> of an XML document is physical representation
+of the document produced by the method described in this specification.
+The changes are summarized in the following list:</p> <ul>
+<li>The document is encoded in <a href="#UTF-8">UTF-8</a></li>
+<li>Line breaks normalized to #xA on input, before parsing</li>
+<li>Attribute values are normalized, as if by a validating processor</li>
+<li>Character and parsed entity references are replaced</li>
+<li>CDATA sections are replaced with their character content</li>
+<li>The XML declaration and document type declaration are removed</li>
+<li>Empty elements are converted to start-end tag pairs</li>
+<li>Whitespace outside of the document element and within start and
+end tags is normalized</li>
+<li>All whitespace in character content is retained (excluding characters
+removed during line feed normalization)</li>
+<li>Attribute value delimiters are set to quotation marks (double
+quotes)</li>
+<li>Special characters in attribute values and character content are
+replaced by character references</li>
+<li>Superfluous namespace declarations are removed from each element</li>
+<li>Default attributes are added to each element</li>
+<li>Fixup of <code>xml:base</code> attributes <a href="#C14N-Issues"
+>[C14N-Issues]</a> is performed</li>
+<li>Lexicographic order is imposed on the namespace declarations and
+attributes of each element</li>
+</ul> <p>The term <i>canonical XML</i> refers to XML that is in canonical
+form. The <i>XML canonicalization method</i> is the algorithm defined
+by this specification that generates the canonical form of a given
+XML document or document subset. The term <i>XML canonicalization</i
+> refers to the process of applying the XML canonicalization method
+to an XML document or document subset.</p> <p>The XPath 1.0 Recommendation <a
+href="#XPath">[XPath]</a> defines the term <i>node-set</i> and specifies
+a data model for representing an input XML document as a set of nodes
+of various types (element, attribute, namespace, text, comment, processing
+instruction, and root). The nodes are included in or excluded from
+a node-set based on the evaluation of an expression. Within this specification,
+a node-set is used to directly indicate whether or not each node should
+be rendered in the canonical form (in this sense, it is used as a
+formal mathematical set). A node that is excluded from the set is
+not rendered in the canonical form being generated, even if its parent
+node is included in the node-set. However, an omitted node may still
+impact the rendering of its descendants (e.g. by augmenting the namespace
+context of the descendants or supplying a base URI through <code>xml:base</code
+>).</p> <h3><a id="Applications" name="Applications">1.2 Applications</a
+></h3> <p>Since the XML 1.0 Recommendation <a href="#XML">[XML]</a
+> and the Namespaces in XML 1.0 Recommendation <a href="#namespaces">[Names]</a
+> define multiple syntactic methods for expressing the same information,
+XML applications tend to take liberties with changes that have no
+impact on the information content of the document. XML canonicalization
+is designed to be useful to applications that require the ability
+to test whether the information content of a document or document
+subset has been changed. This is done by comparing the canonical form
+of the original document before application processing with the canonical
+form of the document result of the application processing.</p> <p
+>For example, a digital signature over the canonical form of an XML
+document or document subset would allow the signature digest calculations
+to be oblivious to changes in the original document's physical representation,
+provided that the changes are defined to be logically equivalent by
+the XML 1.0 or Namespaces in XML 1.0. During signature generation, the
+digest is computed over the canonical form of the document. The document
+is then transferred to the relying party, which validates the signature
+by reading the document and computing a digest of the canonical form
+of the received document. The equivalence of the digests computed
+by the signing and relying parties (and hence the equivalence of the
+canonical forms over which they were computed) ensures that the information
+content of the document has not been altered since it was signed.</p> <p
+><b>Note:</b> Although not stated as a requirement on implementations, nor
+formally proved to be the case, it is the intent of this
+specification that if the text generated by canonicalizing a
+document according to this specification is itself parsed and
+canonicalized according to this specification, the text generated by
+the second canonicalization will be the same as that generated by
+the first canonicalization.</p
+> <h3><a id="Limitations" name="Limitations">1.3 Limitations</a></h3
+> <p>Two XML documents may have differing information content that
+is nonetheless logically equivalent within a given application context.
+Although two XML documents are equivalent (aside from limitations
+given in this section) if their canonical forms are identical, it
+is not a goal of this work to establish a method such that two XML
+documents are equivalent if <i>and only if</i> their canonical forms
+are identical. Such a method is unachievable, in part due to application-specific
+rules such as those governing unimportant whitespace and equivalent
+data (e.g. <code>&lt;color>black&lt;/color></code> versus <code>&lt;color>rgb(0,0,0)&lt;/color></code
+>). There are also equivalencies established by other W3C Recommendations
+and Working Drafts. Accounting for these additional equivalence rules
+is beyond the scope of this work. They can be applied by the application
+or become the subject of future specifications.</p> <p>The canonical
+form of an XML document may not be completely operational within the
+application context, though the circumstances under which this occurs
+are unusual. This problem may be of concern in certain applications
+since the canonical form of a document and the canonical form of the
+canonical form of the document are equivalent. For example, in a digital
+signature application, it cannot be established whether the operational
+original document or the non-operational canonical form was signed
+because the canonical form can be substituted for the original document
+without changing the digest calculation. However, the security risk
+only occurs in the unusual circumstances described below, which can
+all be resolved or at least detected prior to digital signature generation.</p
+> <p>The difficulties arise due to the loss of the following information
+not available in the <a href="#DataModel">data model</a>:</p> <ol>
+<li>base URI, especially in content derived from the replacement text
+of external general parsed entity references</li>
+<li>notations and external unparsed entity references</li>
+<li>attribute types in the document type declaration</li>
+</ol> <p>In the first case, note that a document containing a relative
+URI <a href="#URI">[URI]</a> is only operational when accessed from
+a specific URI that provides the proper base URI. In addition, if
+the document contains external general parsed entity references to
+content containing relative URIs, then the relative URIs will not
+be operational in the canonical form, which replaces the entity reference
+with internal content (thereby implicitly changing the default base
+URI of that content). Both of these problems can typically be solved
+by adding support for the <code>xml:base</code> attribute <a
+href="#XBase">[XBase]</a> to the application, then adding appropriate <code
+>xml:base</code> attributes to document element and all top-level
+elements in external entities. In addition, applications often have
+an opportunity to resolve relative URIs prior to the need for a canonical
+form. For example, in a digital signature application, a document
+is often retrieved and processed prior to signature generation. The
+processing SHOULD create a new document in which relative URIs have
+been converted to absolute URIs, thereby mitigating any security risk
+for the new document.</p> <p>In the second case, the loss of external
+unparsed entity references and the notations that bind them to applications
+means that canonical forms cannot properly distinguish among XML documents
+that incorporate unparsed data via this mechanism. This is an unusual
+case precisely because most XML processors currently discard the document
+type declaration, which discards the notation, the entity's binding
+to a URI, and the attribute type that binds the attribute value to
+an entity name. For documents that must be subjected to more than
+one XML processor, the XML design typically indicates a reference
+to unparsed data using a URI in the attribute value.</p> <p>In the
+third case, the loss of attribute types can affect the canonical form
+in different ways depending on the type. Attributes of type ID, other
+than the <code>xml:id</code> attribute, cease to be ID attributes.
+Hence, any XPath expressions that refer to the canonical form using
+the <code>id()</code> function cease to operate. The attribute types
+ENTITY and ENTITIES are not part of this case; they are covered in
+the second case above. Attributes of enumerated type and of type ID,
+IDREF, IDREFS, NMTOKEN, NMTOKENS, and NOTATION fail to be appropriately
+constrained during future attempts to change the attribute value if
+the canonical form replaces the original document during application
+processing. Applications can avoid the difficulties of this case by
+ensuring that an appropriate document type declaration is prepended
+prior to using the canonical form in further XML processing. This
+is likely to be an easy task since attribute lists are usually acquired
+from a standard external DTD subset, and any entity and notation declarations
+not also in the external DTD subset are typically constructed from
+application configuration information and added to the internal DTD
+subset.</p> <p>While these limitations are not severe, it would be
+possible to resolve them in a future version of XML canonicalization
+if, for example, a new version of XPath were created based on the
+XML Information Set <a href="#Infoset">[Infoset]</a> currently under
+development at the W3C.</p> <!-- =============================================================================== --> <h2
+><a id="XMLCanonicalization" name="XMLCanonicalization">2 XML Canonicalization</a
+></h2> <h3><a id="DataModel" name="DataModel"></a>2.1 Data Model</h3
+> <p>The data model defined in the XPath 1.0 Recommendation <a
+href="#XPath">[XPath]</a> is used to represent the input XML document
+or document subset. Implementations SHOULD but need not be based on
+an XPath implementation. XML canonicalization is defined in terms
+of the XPath definition of a node-set, and implementations MUST produce
+equivalent results.</p> <p>The first parameter of input to the XML
+canonicalization method is either an XPath node-set or an octet stream
+containing a well-formed XML document. Implementations MUST support
+the octet stream input and SHOULD also support the document subset
+feature via node-set input. For the purpose of describing canonicalization
+in terms of an XPath node-set, this section describes how an octet
+stream is converted to an XPath node-set.</p> <p><a id="WithComments"
+name="WithComments">The second parameter of input to the XML canonicalization
+method is a boolean flag indicating whether or not comments should
+be included in the canonical form output by the XML canonicalization
+method.</a> If a canonical form contains comments corresponding to
+the comment nodes in the input node-set, the result is called <i>canonical
+XML with comments</i>. Note that the XPath data model does not create
+comment nodes for comments appearing within the document type declaration.
+Implementations are REQUIRED to be capable of producing canonical
+XML excluding all comments that may have appeared in the input document
+or document subset. Support for canonical XML with comments is RECOMMENDED.</p
+> <p>If an XML document must be converted to a node-set, XPath REQUIRES
+that an XML processor be used to create the nodes of its data model
+to fully represent the document. The XML processor performs the following
+tasks in order:</p> <ol>
+<li>normalize line feeds</li>
+<li>normalize attribute values</li>
+<li>replace CDATA sections with their character content</li>
+<li>resolve character and parsed entity references</li>
+</ol> <p>The input octet stream MUST contain a well-formed XML document,
+but the input need not be validated. However, the attribute value
+normalization and entity reference resolution MUST be performed in
+accordance with the behaviors of a validating XML processor. As well,
+nodes for default attributes (declared in the ATTLIST with an <a href="https://www.w3.org/TR/REC-xml/#NT-AttValue">AttValue</a> but not
+specified) are created in each element. Thus, the declarations in
+the document type declaration are used to help create the canonical
+form, even though the document type declaration is not retained in
+the canonical form.</p> <p>The XPath data model represents data using
+UCS characters. Implementations MUST use XML processors that support <a
+href="#UTF-8">UTF-8</a> and <a href="#UTF-16">UTF-16</a> and translate
+to the UCS character domain. For UTF-16, the leading byte order mark
+is treated as an artifact of encoding and stripped from the UCS character
+data (subsequent zero width non-breaking spaces appearing within the
+UTF-16 data are not removed) <a href="#UTF-16">[UTF-16, Section 3.2]</a
+>. Support for <a href="#ISO-8859-1">ISO-8859-1</a> encoding is RECOMMENDED,
+and all other character encodings are OPTIONAL.</p> <p>All whitespace
+within the root document element MUST be preserved (except for any
+#xD characters deleted by line delimiter normalization). This includes
+all whitespace in external entities. Whitespace outside of the root
+document element MUST be discarded.</p> <p>In the XPath data model,
+there exist the following node types: root, element, comment, processing
+instruction, text, attribute and namespace. There exists a single
+root node whose children are processing instruction nodes and comment
+nodes to represent information outside of the document element (and
+outside of the document type declaration). The root node also has
+a single element node representing the top-level document element.
+Each element node can have child nodes of type element, text, processing
+instruction, and comment. The attributes and namespaces associated
+with an element are not considered to be child nodes of the element,
+but they are associated with the element by inclusion in the element's
+attribute and namespace axes. Note that attribute and namespace axes
+may not directly correspond to the text appearing in the element's
+start tag in the original document.</p> <p><b>Note:</b> An element
+has attribute nodes to represent the non-namespace attribute declarations
+appearing in its start tag <i>as well as</i> nodes to represent the
+default attributes.</p> <p>By virtue of the XPath data model, XML
+canonicalization is namespace-aware <a href="#namespaces">[Names]</a
+>. However, it cannot and therefore does not account for namespace
+equivalencies using namespace prefix rewriting (see <a
+href="#NoNSPrefixRewriting">explanation in Section 4</a>). In the
+XPath data model, each element and attribute has a name returned by
+the function <code>name()</code> which can, at the discretion of the
+application, be the QName appearing in the original document. XML
+canonicalization REQUIRES that the XML processor retain sufficient
+information such that the QName of the element as it appeared in the
+original document can be provided.</p> <p><b>Note:</b> An element <b
+><i>E</i></b> has namespace nodes that represent its namespace declarations <i
+>as well as</i> any namespace declarations made by its ancestors that
+have not been overridden in <b><i>E</i></b>'s declarations, the default
+namespace if it is non-empty, and the declaration of the prefix <code
+>xml</code>.</p> <p><b>Note:</b> This specification supports the recent <a
+href="#PlenaryDecision">XML plenary decision</a> to deprecate relative
+namespace URIs as follows: implementations of XML canonicalization
+MUST report an operation failure on documents containing relative
+namespace URIs. XML canonicalization MUST NOT be implemented with
+an XML parser that converts relative URIs to absolute URIs.</p> <p
+>Character content is represented in the XPath data model with text
+nodes. All consecutive characters are placed into a single text node.
+Furthermore, the text node's characters are represented in the UCS
+character domain. The XML canonicalization method does not perform
+character model normalization (see <a href="#NoCharModelNorm">explanation
+in Section 4</a>). However, the XML processor used to prepare the
+XPath data model input is REQUIRED to use Unicode Normalization Form
+C [<a href="#ref-NFC">NFC</a>, <a href="#NFC-Corrigendum">NFC-Corrigendum</a
+>] when converting an XML document to the UCS character domain from
+any encoding that is not UCS-based (currently, UCS-based encodings
+include UTF-8, UTF-16, UTF-16BE, and UTF-16LE, UCS-2, and UCS-4).</p
+> <p>Since XML canonicalization converts an XPath node-set into a
+canonical form, the first parameter MUST either be an XPath node-set
+or it must be converted from an octet stream to a node-set by performing
+the XML processing necessary to create the XPath nodes described above,
+then setting an initial XPath evaluation context of:</p> <ul>
+<li>A <b>context node</b>, initialized to the root node of the input
+XML document.</li>
+<li>A <b>context position</b>, initialized to 1.</li>
+<li>A <b>context size</b>, initialized to 1.</li>
+<li>Any <b>library of functions</b> conforming to the XPath Recommendation.</li>
+<li>An empty set of <b>variable bindings</b>.</li>
+<li>An empty set of <b>namespace declarations</b>.</li>
+</ul> <p>and evaluating the following default expression:</p> <table
+bgcolor="#80FFFF" border="1" cellpadding="5" width="100%">
+<tbody>
+<tr align="left">
+<td><strong>Comment Parameter Value</strong></td>
+<td><strong><a id="DefaultExpression" name="DefaultExpression">Default
+XPath Expression</a></strong></td>
+</tr>
+<tr>
+<td>Without (false)</td>
+<td><code>(//. | //@* | //namespace::*)[not(self::comment())]</code
+></td>
+</tr>
+<tr>
+<td>With (true)</td>
+<td><code>(//. | //@* | //namespace::*)</code></td>
+</tr>
+</tbody>
+</table> <p>The expressions in this table generate a node-set containing
+every node of the XML document (except the comments if the comment
+parameter value is false).</p> <p>If the input is an XPath node-set,
+then the node-set must explicitly contain every node to be rendered
+to the canonical form. For example, the result of the XPath expression <code
+>id("E")</code> is a node-set containing only the node corresponding
+to the element with an ID attribute value of "E". Since none of its
+descendant nodes, attribute nodes and namespace nodes are in the set,
+the canonical form would consist solely of the element's start and
+end tags, less the attribute and namespace declarations, with no internal
+content. <a href="#Example-DocSubsets">Section 3.7</a> exemplifies
+how to serialize an identified element along with its internal content,
+attributes and namespace declarations.</p> <!-- =============================================================================== --> <h3
+><a id="DocumentOrder" name="DocumentOrder"></a>2.2 Document Order</h3
+> <p>Although an XPath node-set is defined to be unordered, the XPath
+1.0 Recommendation <a href="#XPath">[XPath]</a> defines the term <i
+>document order</i> to be the order in which the first character of
+the XML representation of each node occurs in the XML representation
+of the document after expansion of general entities, except for namespace
+and attribute nodes whose document order is application-dependent.</p
+> <p>The XML canonicalization method processes a node-set by imposing
+the following additional document order rules on the namespace and
+attribute nodes of each element:</p> <ul>
+<li>An element's namespace and attribute nodes have a document order
+position greater than the element but less than any child node of
+the element.</li>
+<li>Namespace nodes have a lesser document order position than attribute
+nodes.</li>
+<li>An element's namespace nodes are sorted lexicographically by local
+name (the default namespace node, if one exists, has no local name
+and is therefore lexicographically least).</li>
+<li>An element's attribute nodes are sorted lexicographically with
+namespace URI as the primary key and local name as the secondary key
+(an empty namespace URI is lexicographically least).</li>
+</ul> <p>Lexicographic comparison, which orders strings from least
+to greatest alphabetically, is based on the UCS codepoint values,
+which is equivalent to lexicographic ordering based on UTF-8.</p> <!-- =============================================================================== --> <h3
+><a id="ProcessingModel" name="ProcessingModel"></a>2.3 Processing
+Model</h3> <p>The XPath node-set is converted into an octet stream,
+the canonical form, by generating the representative UCS characters
+for each node in the node-set in ascending <a href="#DocumentOrder"
+>document order</a>, then encoding the result in UTF-8 (without a
+leading byte order mark). No node is processed more than once. Note
+that processing an element node <b><i>E</i></b> includes the processing
+of all members of the node-set for which <b><i>E</i></b> is an ancestor.
+Therefore, directly after the representative text for <b><i>E</i></b
+> is generated, <b><i>E</i></b> and all nodes for which <b><i>E</i
+></b> is an ancestor are removed from the node-set (or some logically
+equivalent operation occurs such that the node-set's next node in
+document order has not been processed). Note, however, that an element
+node is not removed from the node-set until after its children are
+processed.</p> <p>The result of processing a node depends on its type
+and on whether or not it is in the node-set. If a node is not in the
+node-set, then no text is generated for the node except for the result
+of processing its namespace and attribute axes (elements only) and
+its children (elements and the root node). If the node is in the node-set,
+then text is generated to represent the node in the canonical form
+in addition to the text generated by processing the node's namespace
+and attribute axes and child nodes.</p> <p><b>NOTE:</b> The node-set
+is treated as a set of nodes, not a list of subtrees. To canonicalize
+an element including its namespaces, attributes, and content, the
+node-set must actually contain all of the nodes corresponding to these
+parts of the document, not just the element node.</p> <p>The text
+generated for a node is dependent on the node type and given in the
+following list:</p> <ul>
+<li><b>Root Node-</b> The root node is the parent of the top-level
+document element. The result of processing each of its child nodes
+that is in the node-set in document order. The root node does not
+generate a byte order mark, XML declaration, nor anything from within
+the document type declaration.</li>
+<li><b>Element Nodes-</b> If the element is not in the node-set, then
+the result is obtained by processing the namespace axis, then the
+attribute axis, then processing the child nodes of the element that
+are in the node-set (in document order). If the element is in the
+node-set, then the result is an open angle bracket (&lt;), the element
+QName, the result of processing the namespace axis, the result of
+processing the attribute axis, a close angle bracket (>), the result
+of processing the child nodes of the element that are in the node-set
+(in document order), an open angle bracket, a forward slash (/), the
+element QName, and a close angle bracket.</li>
+<li
+style="list-style-type: none; list-style-image: none; list-style-position: outside;"
+> <ul>
+<li><i>Namespace Axis-</i> Consider a list <b><i>L</i></b> containing
+only namespace nodes in the axis and in the node-set in lexicographic
+order (ascending). To begin processing <b><i>L</i></b>, if the first
+node is not the default namespace node (a node with no namespace URI
+and no local name), then generate a space followed by <code>xmlns=""</code
+> <i>if and only</i> if the following conditions are met:<br/> <br
+/> <ul>
+<li>the element <b><i>E</i></b> that owns the axis is in the node-set</li>
+<li>The nearest ancestor element of <b><i>E</i></b> in the node-set
+has a default namespace node in the node-set (default namespace nodes
+always have non-empty values in XPath)</li>
+</ul> <p>The latter condition eliminates unnecessary occurrences of <code
+>xmlns=""</code> in the canonical form since an element only receives
+an <code>xmlns=""</code> if its default namespace is empty and if
+it has an immediate parent in the canonical form that has a non-empty
+default namespace. To finish processing <b><i>L</i></b>, simply process
+every namespace node in <b><i>L</i></b>, except omit namespace node
+with local name <code>xml</code>, which defines the <code>xml</code
+> prefix, if its string value is <code>http://www.w3.org/XML/1998/namespace</code
+>.</p> </li>
+<li><i>Attribute Axis-</i> In lexicographic order (ascending), process
+each node that is in the element's attribute axis and in the node-set.</li>
+</ul> </li>
+<li><b>Namespace Nodes-</b> A namespace node <b><i>N</i></b> is ignored
+if the nearest ancestor element of the node's parent element that
+is in the node-set has a namespace node in the node-set with the same
+local name and value as <b><i>N</i></b>. Otherwise, process the namespace
+node <b><i>N</i></b> in the same way as an attribute node, unless
+it is the default namespace node.&nbsp; For the default namespace
+node, use <code>xmlns</code> for the text of the local name in place
+of the empty local name (in XPath, the default namespace node has
+an empty URI and local name).</li>
+<li><b>Attribute Nodes-</b> a space, the node's QName, an equals sign,
+an open quotation mark (double quote), the modified string value,
+and a close quotation mark (double quote). The string value of the
+node is modified by replacing all ampersands (&amp;) with <code>&amp;amp;</code
+>, all open angle brackets (&lt;) with <code>&amp;lt;</code>, all
+quotation mark characters with <code>&amp;quot;</code>, and the whitespace
+characters #x9, #xA, and #xD, with character references. The character
+references are written in uppercase hexadecimal with no leading zeroes
+(for example, #xD is represented by the character reference <code
+>&amp;#xD;</code>).</li>
+<li><b>Text Nodes-</b> the string value, except all ampersands are
+replaced by <code>&amp;amp;</code>, all open angle brackets (&lt;)
+are replaced by <code>&amp;lt;</code>, all closing angle brackets
+(>) are replaced by <code>&amp;gt;</code>, and all #xD characters
+are replaced by <code>&amp;#xD;</code>.</li>
+<li><b>Processing Instruction (PI) Nodes-</b> The opening PI symbol
+(<code>&lt;?</code>), the PI target name of the node, a leading space
+and the string value if it is not empty, and the closing PI symbol
+(<code>?></code>). If the string value is empty, then the leading
+space is not added. Also, a trailing #xA is rendered after the closing
+PI symbol for PI children of the root node with a lesser document
+order than the document element, and a leading #xA is rendered before
+the opening PI symbol of PI children of the root node with a greater
+document order than the document element.</li>
+<li><b>Comment Nodes-</b> Nothing if generating canonical XML without
+comments. For canonical XML with comments, generate the opening comment
+symbol (<code>&lt;!--</code>), the string value of the node, and the
+closing comment symbol (<code>--></code>). Also, a trailing #xA is
+rendered after the closing comment symbol for comment children of
+the root node with a lesser document order than the document element,
+and a leading #xA is rendered before the opening comment symbol of
+comment children of the root node with a greater document order than
+the document element. (Comment children of the root node represent
+comments outside of the top-level document element and outside of
+the document type declaration).</li>
+</ul> <p>The <a href="https://www.w3.org/TR/REC-xml-names/#NT-QName">QName</a> of a node is either the local name if the namespace prefix
+string is empty or the namespace prefix, a colon, then the local name
+of the element. The namespace prefix used in the QName MUST be the
+same one which appeared in the input document.</p> <!-- =============================================================================== --> <h3
+><a id="DocSubsets" name="DocSubsets"></a>2.4 Document Subsets</h3
+> <p>Some applications require the ability to create a physical representation
+for an XML document subset (other than the one generated by default,
+which can be a proper subset of the document if the comments are omitted).
+Implementations of XML canonicalization that are based on XPath can
+provide this functionality with little additional overhead by accepting
+a node-set as input rather than an octet stream. The processing of
+an element node <b><i>E</i></b> MUST be modified slightly when an
+XPath node-set is given as input and the element's parent is omitted
+from the node-set. This is necessary because omitted nodes SHALL not
+break the inheritance rules of inheritable attributes <a
+href="#C14N-Issues">[C14N-Issues]</a> defined in the xml namespace.</p
+> <p><a id="dt-SimpleHeritableAtts" name="dt-SimpleHeritableAtts"
+></a>[Definition:] <b>Simple inheritable attributes</b> are attributes
+that have a value that requires at most a simple redeclaration. This
+redeclaration is done by supplying a new value in the child axis.
+The redeclaration of a simple inheritable attribute <b><i>A</i></b
+> contained in one of <b><i>E</i></b>'s ancestors is done by supplying
+a value to an attribute <b><i>Ae</i></b> inside <b><i>E</i></b> with
+the same name. Simple inheritable attributes are <code>xml:lang</code
+> and <code>xml:space</code>.</p> <p>The method for processing the
+attribute axis of an element <b><i>E</i></b> in the node-set is hence
+enhanced. All element nodes along <b><i>E</i></b>'s ancestor axis
+are examined for the nearest occurrences of simple inheritable attributes
+in the xml namespace, such as <code>xml:lang</code> and <code>xml:space</code
+> (whether or not they are in the node-set). From this list of attributes,
+any simple inheritable attributes that are already in <b><i>E</i></b
+>'s attribute axis (whether or not they are in the node-set) are removed.
+Then, lexicographically merge this attribute list with the nodes of <b
+><i>E</i></b>'s attribute axis that are in the node-set. The result
+of visiting the attribute axis is computed by processing the attribute
+nodes in this merged attribute list.</p> <p>The <code>xml:id</code
+> attribute is not a simple inheritable attribute and no processing
+of these attributes is performed.</p> <p>The <code>xml:base</code
+> attribute is not a simple inheritable attribute and requires special
+processing beyond a simple redeclaration. Hence the processing of <b
+><i>E</i></b>'s attribute axis needs to be enhanced further. A "join-URI-References"
+function is used for <code>xml:base</code> fix up.  It incorporates <code
+>xml:base</code> attribute values from omitted <code>xml:base</code
+> attributes and updates the <code>xml:base</code> attribute value
+of the element being fixed up.</p> <p>An <code>xml:base</code> fixup
+is performed on an element <b><i>E</i></b> as follows.  Let <b><i
+>E</i></b> be an element in the node set whose ancestor axis contains
+successive elements <b><i>En</i></b> ... <b><i>E1</i></b> (in reverse
+document order) that are omitted and <b><i>E</i></b>=<b><i>En+1</i
+></b> is included.  (It is important to note that <b><i>En</i></b
+> ... <b><i>E1</i></b> is for contiguously omitted elements, for example
+only <i>e2</i> in the example in Section 3.8.) The fix-up is only
+performed if at least one of <b><i>E1</i></b> ... <b><i>En</i></b
+> had an <code>xml:base</code> attribute. In that case let <b><i>X1</i
+></b> ... <b><i>Xm</i></b> be the values of the <code>xml:base</code
+> attributes on <b><i>E1</i></b> ... <b><i>En+1</i></b> (in document
+order, from outermost to innermost, <b><i>m</i></b> &lt;= <b><i>n+1</i
+></b>). The sequence of values is reduced in reverse document order
+to a single value by first combining <b><i>Xm</i></b> with <b><i>Xm-1</i
+></b>, then the result with <b><i>Xm-2</i></b>, and so on by calling
+the "join-URI-References" function until the new value for <b><i>E</i
+></b>'s <code>xml:base</code> attribute remains. The result may also
+be null or empty (<code>xml:base=""</code>) in which case <code>xml:base</code
+> MUST NOT be rendered.</p> <p>Note that this <code>xml:base</code
+> fixup is only performed if an element with an <code>xml:base</code
+> attribute is removed. Specifically, it is not performed if the element
+is present but the attribute is removed.</p> <p>The join-URI-References
+function takes an <code>xml:base</code> attribute value from an omitted
+element and combines it with other contiguously omitted values to
+create a value for an updated <code>xml:base</code> attribute. A simple
+method for doing this is similar to that found in sections 5.2.1,
+5.2.2 and 5.2.4 of <a href="#URI">RFC 3986</a> with the following
+modifications: </p> <ul>
+<li>Perform <a href="#URI">RFC 3986</a> section 5.2.1. "Pre-parse
+the Base URI" modified as follows. <ul>
+<li>The scheme component is not required in the base URI (Base). (i.e.
+Base.scheme may be null)</li>
+<li>Replace a trailing ".." segment with "../" segment before processing.</li>
+</ul></li>
+<li>Section 5.2.4. "Remove Dot Segments" is modified as follows: <ul>
+<li>Keep leading "../" segments</li>
+<li>Replace multiple consecutive "/" characters with a single "/"
+character.</li>
+<li>Append a "/" character to a trailing ".." segment</li>
+</ul></li>
+<li>The "Remove Dot Segments" algorithm is modified to ensure that
+a combination of two <code>xml:base</code> attribute values that include
+relative path components (i.e., path components that do not begin
+with a '/' character) results in an attribute value that is a relative
+path component.</li>
+<li>Perform <a href="#URI">RFC 3986</a> section 5.2.2. "Transform
+References" modified as follows to ignore the fragment part of R <ul>
+<li>After parsing R set R.fragment = null</li>
+</ul></li>
+</ul> <p>Then, lexicographically merge this fixed up attribute with
+the nodes of <b><i>E</i></b>'s attribute axis that are in the node-set.
+The result of visiting the attribute axis is computed by processing
+the attribute nodes in this merged attribute list.</p><p>Attributes
+in the XML namespace other than <code>xml:base</code>, <code>xml:id</code
+>, <code>xml:lang</code>, and <code>xml:space</code> MUST be processed
+as ordinary attributes.</p> <p> The following examples illustrate
+the modification of the "Remove Dot Segments" algorithm:</p> <ul>
+<li><code>"abc/"</code> and <code>"../"</code> should result in <code
+>""</code></li>
+<li><code>"../"</code> and <code>"../"</code> are combined as <code
+>"../../"</code> and the result is <code>"../../"</code></li>
+<li><code>".."</code> and <code>".."</code> are combined as <code
+>"../../"</code> and the result is <code>"../../"</code></li>
+</ul> <p> To illustrate the last example, when the elements <i>b</i
+> and <i>c</i> are removed from the following sample XML document,
+the correct result for the <code>xml:base</code> attribute on element <i
+>d</i> would be <code>"../../x"</code>:</p> <p> <code>&nbsp;&nbsp;&nbsp;&nbsp;&lt;a
+xml:base="foo/bar"> <br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;b
+xml:base=".."> <br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;c
+xml:base=".."> <br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;d
+xml:base="x"> <br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;/d> <br
+/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;/c> <br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;/b> <br
+/> &nbsp;&nbsp;&nbsp;&nbsp;&lt;/a> </code></p> <!-- =============================================================================== --> <h2
+><a id="Examples" name="Examples"></a>3 Examples of XML Canonicalization</h2
+> <p>The examples in this section assume a non-validating processor,
+primarily so that a document type declaration can be used to declare
+entities as well as default attributes and attributes of various types
+(such as ID and enumerated) without having to declare all attributes
+for all elements in the document. As well, one example contains an
+element that deliberately violates a validity constraint (because
+it is still well-formed).</p> <h3><a id="Example-OutsideDoc"
+name="Example-OutsideDoc"></a>3.1 PIs, Comments, and Outside of Document
+Element</h3> <table bgcolor="#80FFFF" border="1" cellpadding="5"
+width="100%">
+<tbody>
+<tr>
+<td width="30%"><strong>Input Document</strong></td>
+<td><code>&lt;?xml version="1.0"?><br/> <br/> &lt;?xml-stylesheet&nbsp;&nbsp;&nbsp;href="doc.xsl"<br
+/> &nbsp;&nbsp;&nbsp;type="text/xsl"&nbsp;&nbsp;&nbsp;?><br/> <br
+/> &lt;!DOCTYPE doc SYSTEM "doc.dtd"><br/> <br/> &lt;doc>Hello, world!&lt;!--
+Comment 1 -->&lt;/doc><br/> <br/> &lt;?pi-without-data&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;?><br
+/> <br/> &lt;!-- Comment 2 --><br/> <br/> &lt;!-- Comment 3 --><br
+/></code><!--
+<?xml version="1.0"?>
+
+<?xml-stylesheet   href="doc.xsl"
+   type="text/xsl"   ?>
+
+<!DOCTYPE doc SYSTEM "doc.dtd">
+
+<doc>Hello, world!<!== Comment 1 ==></doc>
+
+<?pi-without-data     ?>
+
+<!== Comment 2 ==>
+
+<!== Comment 3 ==>
+--></td>
+</tr>
+<tr>
+<td width="30%"><strong>Canonical Form (uncommented)</strong></td>
+<td><code>&lt;?xml-stylesheet href="doc.xsl"<br/> &nbsp;&nbsp;&nbsp;type="text/xsl"&nbsp;&nbsp;&nbsp;?><br
+/> &lt;doc>Hello, world!&lt;/doc><br/> &lt;?pi-without-data?></code
+> <!--
+<?xml-stylesheet href="doc.xsl"
+   type="text/xsl"   ?>
+<doc>Hello, world!</doc>
+<?pi-without-data?>--></td>
+</tr>
+<tr>
+<td width="30%"><strong>Canonical Form (commented)</strong></td>
+<td><code>&lt;?xml-stylesheet href="doc.xsl"<br/> &nbsp;&nbsp;&nbsp;type="text/xsl"&nbsp;&nbsp;&nbsp;?><br
+/> &lt;doc>Hello, world!&lt;!-- Comment 1 -->&lt;/doc><br/> &lt;?pi-without-data?><br
+/> &lt;!-- Comment 2 --><br/> &lt;!-- Comment 3 --></code> <!--
+<?xml-stylesheet href="doc.xsl"
+   type="text/xsl"   ?>
+<doc>Hello, world!<!== Comment 1 ==></doc>
+<?pi-without-data?>
+<!== Comment 2 ==>
+<!== Comment 3 ==>--></td>
+</tr>
+</tbody>
+</table> <p>Demonstrates:</p> <ul>
+<li>Loss of XML declaration</li>
+<li>Loss of DTD</li>
+<li>Normalization of whitespace outside of document element (first
+character of both canonical forms is '&lt;'; single line breaks separate
+PIs and comments outside of document element)</li>
+<li>Loss of whitespace between PITarget and its data</li>
+<li>Retention of whitespace inside PI data</li>
+<li>Comment removal from uncommented canonical form, including delimiter
+for comments outside document element (the last character in both
+canonical forms is '>')</li>
+</ul> <h3><a id="Example-WhitespaceInContent"
+name="Example-WhitespaceInContent"></a>3.2 Whitespace in Document
+Content</h3> <table bgcolor="#80FFFF" border="1" cellpadding="5"
+width="100%">
+<tbody>
+<tr>
+<td width="30%"><strong>Input Document</strong></td>
+<td><code>&lt;doc><br/> &nbsp;&nbsp;&nbsp;&lt;clean>&nbsp;&nbsp;&nbsp;&lt;/clean><br
+/>  &nbsp;&nbsp;&nbsp;&lt;dirty>&nbsp;&nbsp;&nbsp;A&nbsp;&nbsp;&nbsp;B&nbsp;&nbsp;&nbsp;&lt;/dirty><br
+/>  &nbsp;&nbsp;&nbsp;&lt;mixed><br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;A<br
+/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;clean>&nbsp;&nbsp;&nbsp;&lt;/clean><br
+/>  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;B<br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;dirty>&nbsp;&nbsp;&nbsp;A&nbsp;&nbsp;&nbsp;B&nbsp;&nbsp;&nbsp;&lt;/dirty><br
+/>  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;C<br/> &nbsp;&nbsp;&nbsp;&lt;/mixed><br
+/> &lt;/doc></code> <!--
+<doc>
+   <clean>   </clean>
+   <dirty>   A   B   </dirty>
+   <mixed>
+      A
+      <clean>   </clean>
+      B
+      <dirty>   A   B   </dirty>
+      C
+   </mixed>
+</doc>
+--></td>
+</tr>
+<tr>
+<td width="30%"><strong>Canonical Form</strong></td>
+<td><code>&lt;doc><br/> &nbsp;&nbsp;&nbsp;&lt;clean>&nbsp;&nbsp;&nbsp;&lt;/clean><br
+/>  &nbsp;&nbsp;&nbsp;&lt;dirty>&nbsp;&nbsp;&nbsp;A&nbsp;&nbsp;&nbsp;B&nbsp;&nbsp;&nbsp;&lt;/dirty><br
+/>  &nbsp;&nbsp;&nbsp;&lt;mixed><br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;A<br
+/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;clean>&nbsp;&nbsp;&nbsp;&lt;/clean><br
+/>  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;B<br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;dirty>&nbsp;&nbsp;&nbsp;A&nbsp;&nbsp;&nbsp;B&nbsp;&nbsp;&nbsp;&lt;/dirty><br
+/>  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;C<br/> &nbsp;&nbsp;&nbsp;&lt;/mixed><br
+/> &lt;/doc></code> <!--
+<doc>
+   <clean>   </clean>
+   <dirty>   A   B   </dirty>
+   <mixed>
+      A
+      <clean>   </clean>
+      B
+      <dirty>   A   B   </dirty>
+      C
+   </mixed>
+</doc>
+--></td>
+</tr>
+</tbody>
+</table> <p>Demonstrates:</p> <ul>
+<li>Retain all whitespace between consecutive start tags, clean or
+dirty</li>
+<li>Retain all whitespace between consecutive end tags, clean or dirty</li>
+<li>Retain all whitespace between end tag/start tag pair, clean or
+dirty</li>
+<li>Retain all whitespace in character content, clean or dirty</li>
+</ul> <p><b>Note:</b> In this example, the input document and canonical
+form are identical. Both end with '>' character.</p> <h3><a
+id="Example-SETags" name="Example-SETags"></a>3.3 Start and End Tags</h3
+> <table bgcolor="#80FFFF" border="1" cellpadding="5" width="100%">
+<tbody>
+<tr>
+<td width="30%"><strong>Input Document</strong></td>
+<td><code>&lt;!DOCTYPE doc [&lt;!ATTLIST e9 attr CDATA "default">]><br
+/> &lt;doc><br/> &nbsp;&nbsp;&nbsp;&lt;e1&nbsp;&nbsp;&nbsp;/><br/> &nbsp;&nbsp;&nbsp;&lt;e2&nbsp;&nbsp;&nbsp;>&lt;/e2><br
+/> &nbsp;&nbsp;&nbsp;&lt;e3&nbsp;&nbsp;&nbsp;name = "elem3"&nbsp;&nbsp;&nbsp;id="elem3"&nbsp;&nbsp;&nbsp;/><br
+/> &nbsp;&nbsp;&nbsp;&lt;e4&nbsp;&nbsp;&nbsp;name="elem4"&nbsp;&nbsp;&nbsp;id="elem4"&nbsp;&nbsp;&nbsp;>&lt;/e4><br
+/>  &nbsp;&nbsp;&nbsp;&lt;e5 a:attr="out" b:attr="sorted" attr2="all"
+attr="I'm"<br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; xmlns:b="http://www.ietf.org"<br
+/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; xmlns:a="http://www.w3.org"<br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+xmlns="http://example.org"/><br/> &nbsp;&nbsp;&nbsp;&lt;e6 xmlns=""
+xmlns:a="http://www.w3.org"><br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;e7
+xmlns="http://www.ietf.org"><br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;e8
+xmlns="" xmlns:a="http://www.w3.org"><br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;e9
+xmlns="" xmlns:a="http://www.ietf.org"/><br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;/e8><br
+/>  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;/e7><br/> &nbsp;&nbsp;&nbsp;&lt;/e6><br
+/> &lt;/doc></code> <!--
+<!DOCTYPE doc [<!ATTLIST e9 attr CDATA "default">]>
+<doc>
+   <e1   />
+   <e2   ></e2>
+   <e3    name = "elem3"   id="elem3"    />
+   <e4    name="elem4"   id="elem4"    ></e4>
+   <e5 a:attr="out" b:attr="sorted" attr2="all" attr="I'm"
+       xmlns:b="http://www.ietf.org" 
+       xmlns:a="http://www.w3.org"
+       xmlns="http://example.org"/>
+   <e6 xmlns="" xmlns:a="http://www.w3.org">
+       <e7 xmlns="http://www.ietf.org">
+           <e8 xmlns="" xmlns:a="http://www.w3.org">
+               <e9 xmlns="" xmlns:a="http://www.ietf.org"/>
+           </e8>
+       </e7>
+   </e6>
+</doc>
+--></td>
+</tr>
+<tr>
+<td width="30%"><strong>Canonical Form</strong></td>
+<td><code>&lt;doc><br/> &nbsp;&nbsp;&nbsp;&lt;e1>&lt;/e1><br/> &nbsp;&nbsp;&nbsp;&lt;e2>&lt;/e2><br
+/> &nbsp;&nbsp;&nbsp;&lt;e3 id="elem3" name="elem3">&lt;/e3><br/> &nbsp;&nbsp;&nbsp;&lt;e4
+id="elem4" name="elem4">&lt;/e4><br/> &nbsp;&nbsp;&nbsp;&lt;e5 xmlns="http://example.org"
+xmlns:a="http://www.w3.org" xmlns:b="http://www.ietf.org" attr="I'm"
+attr2="all" b:attr="sorted" a:attr="out">&lt;/e5><br/> &nbsp;&nbsp;&nbsp;&lt;e6
+xmlns:a="http://www.w3.org"><br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;e7
+xmlns="http://www.ietf.org"><br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;e8
+xmlns=""><br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;e9
+xmlns:a="http://www.ietf.org" attr="default">&lt;/e9><br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;/e8><br
+/>  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;/e7><br/> &nbsp;&nbsp;&nbsp;&lt;/e6><br
+/> &lt;/doc></code> <!--
+<doc>
+   <e1></e1>
+   <e2></e2>
+   <e3 id="elem3" name="elem3"></e3>
+   <e4 id="elem4" name="elem4"></e4>
+   <e5 xmlns="http://example.org" xmlns:a="http://www.w3.org" xmlns:b="http://www.ietf.org" attr="I'm" attr2="all" b:attr="sorted" a:attr="out"></e5> 
+   <e6 xmlns:a="http://www.w3.org">
+       <e7 xmlns="http://www.ietf.org">
+           <e8 xmlns="">
+               <e9 xmlns:a="http://www.ietf.org" attr="default"></e9>
+           </e8>
+       </e7>
+   </e6>
+</doc>
+--></td>
+</tr>
+</tbody>
+</table> <p>Demonstrates:</p> <ul>
+<li>Empty element conversion to start-end tag pair</li>
+<li>Normalization of whitespace in start and end tags</li>
+<li>Relative order of namespace and attribute axes</li>
+<li>Lexicographic ordering of namespace and attribute axes</li>
+<li>Retention of namespace prefixes from original document</li>
+<li>Elimination of superfluous namespace declarations</li>
+<li>Addition of default attribute</li>
+</ul> <p><b>Note:</b> Some start tags in the canonical form are very
+long, but each start tag in this example is entirely on a single line.</p
+> <p><b>Note:</b> In <code>e5</code>, <code>b:attr</code> precedes <code
+>a:attr</code> because the primary key is namespace URI not namespace
+prefix, and <code>attr2</code> precedes <code>b:attr</code> because
+the default namespace is not applied to unqualified attributes (so
+the namespace URI for <code>attr2</code> is empty).</p> <h3><a
+id="Example-Chars" name="Example-Chars"></a>3.4 Character Modifications
+and Character References</h3> <table bgcolor="#80FFFF" border="1"
+cellpadding="5" width="100%">
+<tbody>
+<tr>
+<td width="30%"><strong>Input Document</strong></td>
+<td><code>&lt;!DOCTYPE doc [<br/> &lt;!ATTLIST normId id ID #IMPLIED><br
+/> &lt;!ATTLIST normNames attr NMTOKENS #IMPLIED><br/> ]><br/> &lt;doc><br
+/> &nbsp;&nbsp;&nbsp;&lt;text>First line&amp;#x0d;&amp;#10;Second
+line&lt;/text><br/> &nbsp;&nbsp;&nbsp;&lt;value>&amp;#x32;&lt;/value><br
+/> &nbsp;&nbsp;&nbsp;&lt;compute>&lt;![CDATA[value>"0" &amp;&amp;
+value&lt;"10" ?"valid":"error"]]&gt;&lt;/compute><br/> &nbsp;&nbsp;&nbsp;&lt;compute
+expr='value>"0" &amp;amp;&amp;amp; value&amp;lt;"10" ?"valid":"error"'>valid&lt;/compute><br
+/> &nbsp;&nbsp;&nbsp;&lt;norm attr=' &amp;apos;&nbsp;&nbsp;&nbsp;&amp;#x20;&amp;#13;&amp;#xa;&amp;#9;&nbsp;&nbsp;&nbsp;&amp;apos;
+'/><br/> &nbsp;&nbsp;&nbsp;&lt;normNames attr='&nbsp;&nbsp;&nbsp;A&nbsp;&nbsp;&nbsp;&amp;#x20;&amp;#13;&amp;#xa;&amp;#9;&nbsp;&nbsp;&nbsp;B&nbsp;&nbsp;&nbsp;'/><br
+/>  &nbsp;&nbsp;&nbsp;&lt;normId id=' &amp;apos;&nbsp;&nbsp;&nbsp;&amp;#x20;&amp;#13;&amp;#xa;&amp;#9;&nbsp;&nbsp;&nbsp;&amp;apos;
+'/><br/> &lt;/doc><br/></code><!--
+<!DOCTYPE doc [
+<!ATTLIST normId id ID #IMPLIED>
+<!ATTLIST normNames attr NMTOKENS #IMPLIED>
+]>
+<doc>
+   <text>First line&#x0d;&#10;Second line</text>
+   <value>&#x32;</value>
+   <compute><![CDATA[value>"0" && value<"10" ?"valid":"error"]]></compute>
+   <compute expr='value>"0" &amp;&amp; value&lt;"10" ?"valid":"error"'>valid</compute>
+   <norm attr=' &apos;   &#x20;&#13;&#xa;&#9;   &apos; '/>
+   <normNames attr='   A   &#x20;&#13;&#xa;&#9;   B   '/>
+   <normId id=' &apos;   &#x20;&#13;&#xa;&#9;   &apos; '/>
+</doc>
+--></td>
+</tr>
+<tr>
+<td width="30%"><strong>Canonical Form</strong></td>
+<td><code>&lt;doc><br/> &nbsp;&nbsp;&nbsp;&lt;text>First line&amp;#xD;<br
+/> Second line&lt;/text><br/> &nbsp;&nbsp;&nbsp;&lt;value>2&lt;/value><br
+/> &nbsp;&nbsp;&nbsp;&lt;compute>value&amp;gt;"0" &amp;amp;&amp;amp;
+value&amp;lt;"10" ?"valid":"error"&lt;/compute><br/> &nbsp;&nbsp;&nbsp;&lt;compute
+expr="value>&amp;quot;0&amp;quot; &amp;amp;&amp;amp; value&amp;lt;&amp;quot;10&amp;quot;
+?&amp;quot;valid&amp;quot;:&amp;quot;error&amp;quot;">valid&lt;/compute><br
+/>  &nbsp;&nbsp;&nbsp;&lt;norm attr=" '&nbsp;&nbsp;&nbsp;&nbsp;&amp;#xD;&amp;#xA;&amp;#x9;&nbsp;&nbsp;&nbsp;'
+">&lt;/norm><br/> &nbsp;&nbsp;&nbsp;&lt;normNames attr="A &amp;#xD;&amp;#xA;&amp;#x9;
+B">&lt;/normNames><br/> &nbsp;&nbsp;&nbsp;&lt;normId id="' &amp;#xD;&amp;#xA;&amp;#x9;
+'">&lt;/normId><br/> &lt;/doc></code> <!--
+<doc>
+   <text>First line&#xD;
+Second line</text>
+   <value>2</value>
+   <compute>value&gt;"0" &amp;&amp; value&lt;"10" ?"valid":"error"</compute>
+   <compute expr="value>&quot;0&quot; &amp;&amp; value&lt;&quot;10&quot; ?&quot;valid&quot;:&quot;error&quot;">valid</compute>
+   <norm attr=" '    &#xD;&#xA;&#x9;   ' "></norm>
+   <normNames attr="A &#xD;&#xA;&#x9; B"></normNames>
+   <normId id="' &#xD;&#xA;&#x9; '"></normId>
+</doc>
+--></td>
+</tr>
+</tbody>
+</table> <p>Demonstrates:</p> <ul>
+<li>Character reference replacement</li>
+<li>Attribute value delimiters set to quotation marks (double quotes)</li>
+<li>Attribute value normalization</li>
+<li>CDATA section replacement</li>
+<li>Encoding of special characters as character references in attribute
+values (&amp;amp;, &amp;lt;, &amp;quot;, &amp;#xD;, &amp;#xA;, &amp;#x9;)</li>
+<li>Encoding of special characters as character references in text
+(&amp;amp;, &amp;lt;, &amp;gt;, &amp;#xD;)</li>
+</ul> <p><b>Note:</b> The last element, <code>normId</code>, is well-formed
+but violates a validity constraint for attributes of type ID. For
+testing canonical XML implementations based on validating processors,
+remove the line containing this element from the input and canonical
+form. In general, XML consumers should be discouraged from using this
+feature of XML.</p> <p><b>Note:</b> Whitespace character references
+other than &amp;#x20; are not affected by attribute value normalization <a
+href="#XML">[XML]</a>.</p> <p><b>Note:</b> In the canonical form,
+the value of the attribute named <code>attr</code> in the element <code
+>norm</code> begins with a space, an apostrophe (single quote), then <i
+>four</i> spaces before the first character reference.</p> <p><b>Note:</b
+> The <code>expr</code> attribute of the second <code>compute</code
+> element contains no line breaks.</p> <h3><a id="Example-Entities"
+name="Example-Entities"></a>3.5 Entity References</h3> <table
+bgcolor="#80FFFF" border="1" cellpadding="5" width="100%">
+<tbody>
+<tr>
+<td width="30%"><strong>Input Document</strong></td>
+<td><code>&lt;!DOCTYPE doc [<br/> &lt;!ATTLIST doc attrExtEnt ENTITY
+#IMPLIED><br/> &lt;!ENTITY ent1 "Hello"><br/> &lt;!ENTITY ent2 SYSTEM
+"world.txt"><br/> &lt;!ENTITY entExt SYSTEM "earth.gif" NDATA gif><br
+/> &lt;!NOTATION gif SYSTEM "viewgif.exe"><br/> ]><br/> &lt;doc attrExtEnt="entExt"><br
+/> &nbsp;&nbsp;&nbsp;&amp;ent1;, &amp;ent2;!<br/> &lt;/doc><br/> <br
+/> &lt;!-- Let world.txt contain "world" (excluding the quotes) --></code
+> <!--
+<!DOCTYPE doc [
+<!ATTLIST doc attrExtEnt ENTITY #IMPLIED>
+<!ENTITY ent1 "Hello">
+<!ENTITY ent2 SYSTEM "world.txt">
+<!ENTITY entExt SYSTEM "earth.gif" NDATA gif>
+<!NOTATION gif SYSTEM "viewgif.exe">
+]>
+<doc attrExtEnt="entExt">
+   &ent1;, &ent2;!
+</doc>
+
+<!== Let world.txt contain "world" (excluding the quotes) ==>
+--></td>
+</tr>
+<tr>
+<td width="30%"><strong>Canonical Form (uncommented)</strong></td>
+<td><code>&lt;doc attrExtEnt="entExt"><br/> &nbsp;&nbsp;&nbsp;Hello,
+world!<br/> &lt;/doc></code> <!--
+<doc attrExtEnt="entExt">
+   Hello, world!
+</doc>
+--></td>
+</tr>
+</tbody>
+</table> <p>Demonstrates:</p> <ul>
+<li>Internal parsed entity reference replacement</li>
+<li>External parsed entity reference replacement (including whitespace
+outside elements and PIs)</li>
+<li>External unparsed entity reference</li>
+</ul> <h3><a id="Example-UTF8" name="Example-UTF8"></a>3.6 UTF-8 Encoding</h3
+> <table bgcolor="#80FFFF" border="1" cellpadding="5" width="100%">
+<tbody>
+<tr>
+<td width="30%"><strong>Input Document</strong></td>
+<td><code>&lt;?xml version="1.0" encoding="ISO-8859-1"?><br/> &lt;doc>&amp;#169;&lt;/doc></code
+> <!--
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<doc>&#169;</doc>
+--></td>
+</tr>
+<tr>
+<td width="30%"><strong>Canonical Form</strong></td>
+<td><code>&lt;doc>#xC2#xA9&lt;/doc></code> <!--
+<doc>#xC2#xA9</doc>
+--></td>
+</tr>
+</tbody>
+</table> <p>Demonstrates:</p> <ul>
+<li>Effect of transcoding from a sample encoding to UTF-8</li>
+</ul> <p><b>Note:</b> The content of the doc element is NOT the string
+#xC2#xA9 but rather the two octets whose hexadecimal values are C2
+and A9, which is the UTF-8 encoding of the UCS codepoint for the copyright
+sign (&copy;).</p> <h3><a id="Example-DocSubsets"
+name="Example-DocSubsets"></a>3.7 Document Subsets</h3> <table
+bgcolor="#80FFFF" border="1" cellpadding="5" width="100%">
+<tbody>
+<tr>
+<td width="30%"><strong>Input Document</strong></td>
+<td><code>&lt;!DOCTYPE doc [<br/> &lt;!ATTLIST e2 xml:space (default|preserve)
+'preserve'><br/> &lt;!ATTLIST e3 id ID #IMPLIED><br/> ]><br/> &lt;doc
+xmlns="http://www.ietf.org" xmlns:w3c="http://www.w3.org"><br/> &nbsp;&nbsp;&nbsp;&lt;e1><br
+/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;e2 xmlns=""><br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;e3
+id="E3"/><br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;/e2><br/> &nbsp;&nbsp;&nbsp;&lt;/e1><br
+/> &lt;/doc></code> <!--
+<!DOCTYPE doc [
+<!ATTLIST e2 xml:space (default|preserve) 'preserve'>
+<!ATTLIST e3 id ID #IMPLIED>
+]>
+<doc xmlns="http://www.ietf.org" xmlns:w3c="http://www.w3.org">
+   <e1>
+      <e2 xmlns="">
+         <e3 id="E3"/>
+      </e2>
+   </e1>
+</doc>
+--></td>
+</tr>
+<tr>
+<td width="30%"><strong>Document Subset Expression</strong></td>
+<td><code>&lt;!-- Evaluate with declaration xmlns:ietf="http://www.ietf.org"
+--><br/> <br/> (//. | //@* | //namespace::*)<br/> [<br/> &nbsp;&nbsp;&nbsp;self::ietf:e1
+or (parent::ietf:e1 and not(self::text() or self::e2))<br/> &nbsp;&nbsp;&nbsp;or<br
+/> &nbsp;&nbsp;&nbsp;count(id("E3")|ancestor-or-self::node()) = count(ancestor-or-self::node())<br
+/> ]</code></td>
+</tr>
+<tr>
+<td width="30%"><strong>Canonical Form</strong></td>
+<td><code>&lt;e1 xmlns="http://www.ietf.org" xmlns:w3c="http://www.w3.org">&lt;e3
+xmlns="" id="E3" xml:space="preserve">&lt;/e3>&lt;/e1></code> <!--
+<e1 xmlns="http://www.ietf.org" xmlns:w3c="http://www.w3.org"><e3 xmlns="" id="E3" xml:space="preserve"></e3></e1>
+--></td>
+</tr>
+</tbody>
+</table> <p>Demonstrates:</p> <ul>
+<li>Empty default namespace propagation from omitted parent element</li>
+<li>Propagation of attributes in the <code>xml</code> namespace in
+document subsets</li>
+<li>Persistence of omitted namespace declarations in descendants</li>
+</ul> <p><b>Note:</b> In the document subset expression, the subexpression <code
+>(//. | //@* | //namespace::*)</code> selects all nodes in the input
+document, subjecting each to the predicate expression in square brackets.
+The expression is true for <code>e1</code> and its implicit namespace
+nodes, and it is true if the element identified by E3 is in the <code
+>ancestor-or-self</code> path of the context node (such that ancestor-or-self
+stays the same size under union with the element identified by E3).</p
+> <p><b>Note:</b> The canonical form contains no line delimiters.</p
+>  <h3><a id="Example-DocSubsetsXMLAttrs"
+name="Example-DocSubsetsXMLAttrs"></a>3.8 Document Subsets and XML
+Attributes</h3> <table bgcolor="#80FFFF" border="1" cellpadding="5"
+width="100%">
+<tbody>
+<tr>
+<td width="30%"><strong>Input Document</strong></td>
+<td><code>&lt;!DOCTYPE doc [<br/> &lt;!ATTLIST e2 xml:space (default|preserve)
+'preserve'><br/> &lt;!ATTLIST e3 id ID #IMPLIED><br/> ]><br/> &lt;doc
+xmlns="http://www.ietf.org" xmlns:w3c="http://www.w3.org" xml:base="something/else"><br
+/> &nbsp;&nbsp;&nbsp;&lt;e1><br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;e2
+xmlns="" xml:id="abc" xml:base="bar/"><br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;e3
+id="E3" xml:base="foo"/><br/> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;/e2><br
+/> &nbsp;&nbsp;&nbsp;&lt;/e1><br/> &lt;/doc></code> <!--
+<!DOCTYPE doc [
+<!ATTLIST e2 xml:space (default|preserve) 'preserve'>
+<!ATTLIST e3 id ID #IMPLIED>
+]>
+<doc xmlns="http://www.ietf.org" xmlns:w3c="http://www.w3.org" xml:base="something/else">
+   <e1>
+      <e2 xmlns="" xml:id="abc" xml:base="bar/">
+         <e3 id="E3" xml:base="foo"/>
+      </e2>
+   </e1>
+</doc>
+--></td>
+</tr>
+<tr>
+<td width="30%"><strong>Document Subset Expression</strong></td>
+<td><code>&lt;!-- Evaluate with declaration xmlns:ietf="http://www.ietf.org"
+--><br/> <br/> (//. | //@* | //namespace::*)<br/> [<br/> &nbsp;&nbsp;&nbsp;self::ietf:e1
+or (parent::ietf:e1 and not(self::text() or self::e2))<br/> &nbsp;&nbsp;&nbsp;or<br
+/> &nbsp;&nbsp;&nbsp;count(id("E3")|ancestor-or-self::node()) = count(ancestor-or-self::node())<br
+/> ]</code></td>
+</tr>
+<tr>
+<td width="30%"><strong>Canonical Form</strong></td>
+<td><code>&lt;e1 xmlns="http://www.ietf.org" xmlns:w3c="http://www.w3.org"
+xml:base="something/else">&lt;e3 xmlns="" id="E3" xml:base="something/bar/foo"
+xml:space="preserve">&lt;/e3>&lt;/e1></code> <!--
+<e1 xmlns="http://www.ietf.org" xmlns:w3c="http://www.w3.org"><e3 xmlns="" id="E3" xml:space="preserve"></e3></e1>
+--></td>
+</tr>
+</tbody>
+</table> <p>Demonstrates:</p> <ul>
+<li><code>xml:id</code> not inherited.</li>
+<li>simple inheritable XML attribute inherited (<code>xml:space</code
+>)</li>
+<li><code>xml:base</code> fixup performed</li>
+</ul> <!-- =============================================================================== --> <h2
+><a id="Resolutions" name="Resolutions"></a>4 Resolutions</h2> <p
+>This section discusses a number of key decision points as well as
+a rationale for each decision. Although this specification now defines
+XML canonicalization in terms of the <a href="#XPath">XPath</a> data
+model rather than <a href="#Infoset">XML Infoset</a>, the canonical
+form described in this document is quite similar in most respects
+to the canonical form described in the January 2000 Canonical XML
+draft <a href="#C14N-20000119">[C14N-20000119]</a>. However, some
+differences exist, and a number of the subsections discuss the changes.</p
+> <h3><a id="NoXMLDecl" name="NoXMLDecl"></a>4.1 No XML Declaration</h3
+> <p>The XML declaration, including version number and character encoding
+is omitted from the canonical form. The encoding is not needed since
+the canonical form is encoded in UTF-8. The version is not needed
+since the absence of a version number unambiguously indicates XML
+1.0.</p> <p>Future versions of XML will be required to include an
+XML declaration to indicate the version number. However, canonicalization
+method described in this specification may not be applicable to future
+versions of XML without some modifications. When canonicalization
+of a new version of XML is required, this specification could be updated
+to include the XML declaration as presumably the absence of the XML
+declaration from the XPath data model can be remedied by that time
+(e.g. by reissuing a new XPath based on the <a href="#Infoset">Infoset</a
+> data model).</p> <h3><a id="NoCharModelNorm" name="NoCharModelNorm"
+></a>4.2 No Character Model Normalization</h3> <p>The Unicode standard <a
+href="#Unicode">[Unicode]</a> allows multiple different representations
+of certain "precomposed characters" (a simple example is "&ccedil;").
+Thus two XML documents with content that is equivalent for the purposes
+of most applications may contain differing character sequences. The
+W3C is preparing a normalized representation <a href="#CharModel"
+>[CharModel]</a>. The <a href="#C14N-20000119">C14N-20000119</a> Canonical
+XML draft used this normalized form. However, many XML 1.0 processors
+do not perform this normalization. Furthermore, applications that
+must solve this problem typically enforce character model normalization
+at all times starting when character content is created in order to
+avoid processing failures that could otherwise result (e.g. see example
+from <a href="#CowanExample">Cowan</a>). Therefore, character model
+normalization has been moved out of scope for XML canonicalization.
+However, the XML processor used to prepare the XPath data model input
+is required (by the <a href="#DataModel">Data Model</a>) to use Normalization
+Form C [<a href="#ref-NFC">NFC</a>, <a href="#NFC-Corrigendum">NFC-Corrigendum</a
+>] when converting an XML document to the UCS character domain from
+any encoding that is not UCS-based (currently, UCS-based encodings
+include UTF-8, UTF-16, UTF-16BE, and UTF-16LE, UCS-2, and UCS-4).</p
+> <h3><a id="WhitespaceRoot" name="WhitespaceRoot"></a>4.3 Handling
+of Whitespace Outside Document Element</h3> <p>The <a
+href="#C14N-20000119">C14N-20000119</a> Canonical XML draft placed
+a #xA after each PI outside of the document element as well as a #xA
+after the end tag of the document element. The method in this specification
+performs the same function except for omitting the final #xA after
+the last PI (or comment or end tag of the document element). This
+technique ensures that PI (and comment) children of the root are separated
+from markup by a line feed even if root node or the document element
+are omitted from the output node-set.</p> <h3><a id="NoNSPrefixRewriting"
+name="NoNSPrefixRewriting"></a>4.4 No Namespace Prefix Rewriting</h3
+> <p>The <a href="#C14N-20000119">C14N-20000119</a> Canonical XML
+draft described a method for rewriting namespace prefixes such that
+two documents having logically equivalent namespace declarations would
+also have identical namespace prefixes. The goal was to eliminate
+dependence on the particular namespace prefixes in a document when
+testing for logical equivalence. However, there now exist a number
+of contexts in which namespace prefixes can impart information value
+in an XML document. For example, an XPath expression in an attribute
+value or element content can reference a namespace prefix. Thus, rewriting
+the namespace prefixes would damage such a document by changing its
+meaning (and it cannot be logically equivalent if its meaning has
+changed).</p> <p>More formally, let D1 be a document containing an
+XPath in an attribute value or element content that refers to namespace
+prefixes used in D1. Further assume that the namespace prefixes in
+D1 will all be rewritten by the canonicalization method. Let D2 =
+D1, then modify the namespace prefixes in D2 and modify the XPath
+expression's references to namespace prefixes such that D2 and D1
+remain logically equivalent. Since namespace rewriting does not include
+occurrences of namespace references in attribute values and element
+content, the canonical form of D1 does not equal the canonical form
+of D2 because the XPath will be different. Thus, although namespace
+rewriting normalizes the namespace declarations, the goal eliminating
+dependence on the particular namespace prefixes in the document is
+not achieved.</p> <p>Moreover, it is possible to prove that namespace
+rewriting is harmful, rather than simply ineffective. Let D1 be a
+document containing an XPath in an attribute value or element content
+that refers to namespace prefixes used in D1. Further assume that
+the namespace prefixes in D1 will all be rewritten by the canonicalization
+method. Now let D2 be the canonical form of D1. Clearly, the canonical
+forms of D1 and D2 are equivalent (since D2 is the canonical form
+of the canonical form of D1), yet D1 and D2 are not logically equivalent
+because the aforementioned XPath works in D1 and doesn't work in D2.</p
+> <p>Note that an argument similar to this can be leveled against
+the XML canonicalization method based on any of the cases in the <a
+href="#Limitations">Limitations</a>, the problems cannot easily be
+fixed in those cases, whereas here we have an opportunity to avoid
+purposefully introducing such a limitation.</p> <p>Applications that
+must test for logical equivalence must perform more sophisticated
+tests than mere octet stream comparison. However, this is quite likely
+to be necessary in any case in order to test for logical equivalencies
+based on application rules as well as rules from other XML-related
+recommendations, working drafts, and future works.</p> <h3><a
+id="NSAttrOrder" name="NSAttrOrder"></a>4.5 Order of Namespace Declarations
+and Attributes</h3> <p>The <a href="#C14N-20000119">C14N-20000119</a
+> Canonical XML draft alternated between namespace declarations and
+attribute declarations. This is part of the namespace prefix rewriting
+scheme, which this specification eliminates. This specification follows
+the XPath data model of putting all namespace nodes before all attribute
+nodes.</p> <h3><a id="SuperfluousNSDecl" name="SuperfluousNSDecl"
+></a>4.6 Superfluous Namespace Declarations</h3> <p>Unnecessary namespace
+declarations are not made in the canonical form. Whether for an empty
+default namespace, a non-empty default namespace, or a namespace prefix
+binding, the XML canonicalization method omits a declaration if it
+determines that the immediate parent element <i>in the canonical form</i
+> has an equivalent declaration in scope. The root document element
+is handled specially since it has no parent element. All namespace
+declarations in it are retained, except the declaration of an empty
+default namespace is automatically omitted.</p> <p>Relative to the
+method of simply rendering the entire namespace context of each element,
+implementations are not hindered by more than a constant factor in
+processing time and memory use. The advantages include:</p> <ul>
+<li>Eliminates overrun of <code>xmlns=""</code> from canonical forms
+of applications that may not even use namespaces, or support them
+only minimally.</li>
+<li>Eliminates namespace declarations from elements where they may
+not belong according to the application's content model, thereby simplifying
+the task of reattaching a document type declaration to a canonical
+form.</li>
+</ul> <p>Note that in document subsets, an element with omissions
+from its ancestral element chain will be rendered to the canonical
+form with namespace declarations that may have been made in its omitted
+ancestors, thus preserving the meaning of the element.</p> <h3><a
+id="PropagateDefaultNSDecl" name="PropagateDefaultNSDecl"></a>4.7
+Propagation of Default Namespace Declaration in Document Subsets</h3
+> The XPath data model represents an empty default namespace with
+the absence of a node, not with the presence of a default namespace
+node having an empty value. Thus, with respect to the fact that element <code
+>e3</code> in the following examples is not namespace qualified, we
+cannot tell the difference between <code>&lt;e1 xmlns="a:b">&lt;e2
+xmlns="">&lt;e3/>&lt;/e2>&lt;/e1></code> versus <code>&lt;e1 xmlns="a:b">&lt;e2>&lt;e3
+xmlns=""/>&lt;/e2>&lt;/e1></code>. All we know is that <code>e3</code
+> was not namespace qualified on input, so we preserve this information
+on output if <code>e2</code> is omitted so that <code>e3</code> does
+not take on the default namespace qualification of <code>e1</code
+>. <h3><a id="SortByNSURI" name="SortByNSURI"></a>4.8 Sorting Attributes
+by Namespace URI</h3> Given the requirement to preserve the namespace
+prefixes declared in a document, sorting attributes with the prefix,
+rather than the namespace URI, as the primary key is viable and easier
+to implement. However, the namespace URI was selected as the primary
+key because this is closer to the intent of the <a href="#namespaces"
+>Namespaces in XML 1.0</a> specification, which is to identify namespaces
+by URI and local name, not by a prefix and local name. The effect
+of the sort is to group together all attributes that are in the same
+namespace.  <!-- =============================================================================== --> <h2
+><a id="bibliography" name="bibliography"></a>5 References</h2> <dl>
+<dt><a id="C14N10" name="C14N10">C14N10</a></dt>
+<dd><i>Canonical XML Version 1.0</i>, W3C Recommendation. ed. J. Boyer. 15 March 2001.<a href="https://www.w3.org/TR/xml-c14n10/">http://www.w3.org/TR/xml-c14n10/</a
+>.</dd>
+<dt><a id="C14N-20000119" name="C14N-20000119">C14N-20000119</a></dt>
+<dd><i>Canonical XML Version 1.0</i>, W3C Working Draft. T. Bray,
+J. Clark, J. Tauber, and J. Cowan. January 19, 2000. <a href="https://www.w3.org/TR/2000/WD-xml-c14n-20000119.html">http://www.w3.org/TR/2000/WD-xml-c14n-20000119.html</a
+>.</dd>
+<dt><a id="C14N-Issues" name="C14N-Issues">C14N-Issues</a></dt>
+<dd><i>Known Issues with Canonical XML 1.0</i>, W3C Working Group
+Note. J. Kahan, K. Lanz. December 2006. <a href="https://www.w3.org/TR/C14N-issues/">http://www.w3.org/TR/C14N-issues/</a
+>.</dd>
+<dt><a id="CharModel" name="CharModel">CharModel</a></dt>
+<dd><i>Character Model for the World Wide Web</i>, W3C Working Draft.
+eds. Martin J. D&uuml;rst, Fran&ccedil;ois Yergeau, Misha Wolf, Asmus
+Freytag and Tex Texin. <a href="https://www.w3.org/TR/charmod/">http://www.w3.org/TR/charmod/</a
+>.</dd>
+<dt><a id="CowanExample" name="CowanExample">Cowan</a></dt>
+<dd><i>Example of Harmful Effect of Character Model Normalization</i
+>, Letter in XML Signature Working Group Mail Archive. John Cowan,
+July 7, 2000. <a
+href="http://lists.w3.org/Archives/Public/w3c-ietf-xmldsig/2000JulSep/0038.html"
+> http://lists.w3.org/Archives/Public/w3c-ietf-xmldsig/2000JulSep/0038.html</a
+>.</dd>
+<dt><a id="DSig-Usage" name="DSig-Usage">DSig-Usage</a></dt>
+<dd><i>Using XML Digital Signatures in the 2006 XML Environment</i
+>, W3C Working Group Note. Thomas Roessler. December 2006. <a href="https://www.w3.org/TR/DSig-usage/">http://www.w3.org/TR/DSig-usage/</a
+>.</dd>
+<dt><a id="Infoset" name="Infoset">Infoset</a></dt>
+<dd><i>XML Information Set</i>, W3C Working Draft. eds. John Cowan
+and Richard Tobin. <a href="https://www.w3.org/TR/xml-infoset/">http://www.w3.org/TR/xml-infoset/</a
+>.</dd>
+<dt><a id="ISO-8859-1" name="ISO-8859-1">ISO-8859-1</a></dt>
+<dd><i>ISO-8859-1 Latin 1 Character Set</i>. <a
+href="http://www.utoronto.ca/webdocs/HTMLdocs/NewHTML/iso_table.html"
+>http://www.utoronto.ca/webdocs/HTMLdocs/NewHTML/iso_table.html</a
+> or <a href="http://www.iso.org/iso/iso_catalogue.htm">http://www.iso.org/iso/iso_catalogue.htm</a>.</dd>
+<dt><a id="Keywords" name="Keywords">Keywords</a></dt>
+<dd><i>Key words for use in RFCs to Indicate Requirement Levels</i
+>, IETF RFC 2119. S. Bradner. March 1997. <a
+href="http://www.ietf.org/rfc/rfc2119.txt">http://www.ietf.org/rfc/rfc2119.txt</a
+>.</dd>
+<dt><a id="namespaces" name="namespaces">Namespaces</a></dt>
+<dd><i>Namespaces in XML 1.0 (Second Edition)</i>, W3C Recommendation. eds. Tim Bray, Dave
+Hollander, Andrew Layman, and Richard Tobin. <a href="https://www.w3.org/TR/REC-xml-names/">http://www.w3.org/TR/REC-xml-names/</a
+>.</dd>
+<dt><a id="ref-NFC" name="ref-NFC">NFC</a></dt>
+<dd><i>TR15, Unicode Normalization Forms.</i> M. Davis, M. D&uuml;rst.
+Revision 18: November 1999. <a
+href="http://www.unicode.org/unicode/reports/tr15/tr15-18.html">http://www.unicode.org/unicode/reports/tr15/tr15-18.html</a
+>.</dd>
+<dt><a id="NFC-Corrigendum" name="NFC-Corrigendum">NFC-Corrigendum</a
+></dt>
+<dd><i>Normalization Corrigendum</i>. The Unicode Consortium. <a
+href="http://www.unicode.org/unicode/uni2errata/Normalization_Corrigendum.html"
+> http://www.unicode.org/unicode/uni2errata/Normalization_Corrigendum.html</a
+>.</dd>
+<dt><a id="Unicode" name="Unicode">Unicode</a></dt>
+<dd><i>The Unicode Standard, version 3.0.</i> The Unicode Consortium.
+ISBN 0-201-61633-5. <a
+href="http://www.unicode.org/unicode/standard/versions/Unicode3.0.html"
+>http://www.unicode.org/unicode/standard/versions/Unicode3.0.html</a
+>.</dd>
+<dt><a id="UTF-16" name="UTF-16">UTF-16</a></dt>
+<dd><i>UTF-16, an encoding of ISO 10646</i>, IETF RFC 2781. P. Hoffman
+, F. Yergeau. February 2000. <a
+href="http://www.ietf.org/rfc/rfc2781.txt">http://www.ietf.org/rfc/rfc2781.txt</a
+>.</dd>
+<dt><a id="UTF-8" name="UTF-8">UTF-8</a></dt>
+<dd><i>UTF-8, a transformation format of ISO 10646</i>, IETF RFC 2279.
+F. Yergeau. January 1998. <a href="http://www.ietf.org/rfc/rfc2279.txt"
+>http://www.ietf.org/rfc/rfc2279.txt</a>.</dd>
+<dt><a id="URI" name="URI">URI</a></dt>
+<dd><i>Uniform Resource Identifiers (URI): Generic Syntax</i>, IETF
+RFC 3986. T. Berners-Lee, R. Fielding, L. Masinter. January 2005 <a
+href="http://www.ietf.org/rfc/rfc3986.txt">http://www.ietf.org/rfc/rfc3986.txt</a
+>.</dd>
+<dt><a id="XBase" name="XBase">XBase</a></dt>
+<dd><i>XML Base</i> ed. Jonathan Marsh. 27 June 2001. <a href="https://www.w3.org/TR/xmlbase/">http://www.w3.org/TR/xmlbase/</a
+>.</dd>
+<dt><a id="XML" name="XML">XML</a></dt>
+<dd><i>Extensible Markup Language (XML) 1.0 (Fourth Edition)</i>,
+W3C Recommendation. eds. Tim Bray, Jean Paoli, C. M. Sperberg-McQueen,
+Fran&ccedil;ois Yergeau and Eve Maler. 16 August 2006. <a href="https://www.w3.org/TR/REC-xml/">http://www.w3.org/TR/REC-xml/</a
+>.</dd>
+<dt><a id="XML-DSig" name="XML-DSig">XML DSig</a></dt>
+<dd><i>XML-Signature Syntax and Processing</i>, IETF Draft/W3C Candidate
+Recommendation. D. Eastlake, J. Reagle, D. Solo, M. Bartel, J. Boyer,
+B. Fox, and E. Simon. 31 October 2000. <a href="https://www.w3.org/TR/xmldsig-core/">http://www.w3.org/TR/xmldsig-core/</a
+>.</dd>
+<dt><a id="XML-ID" name="XML-ID">XML ID</a></dt>
+<dd><i>xml:id Version 1.0</i>, W3C Recommendation. eds. Norman Walsh,
+Daniel Veillard and Jonathan Marsh. 9 September 2005. <a href="https://www.w3.org/TR/xml-id/">http://www.w3.org/TR/xml-id/</a
+>.</dd>
+<dt><a id="PlenaryDecision" name="PlenaryDecision">XML Plenary Decision</a
+></dt>
+<dd><i>W3C XML Plenary Decision on relative URI References In namespace
+declarations</i>, W3C Document. 11 September 2000. <a
+href="http://lists.w3.org/Archives/Public/xml-uri/2000Sep/0083.html"
+>http://lists.w3.org/Archives/Public/xml-uri/2000Sep/0083.html</a
+>.</dd>
+<dt><a id="XPath" name="XPath">XPath</a></dt>
+<dd><i>XML Path Language (XPath) Version 1.0</i>, W3C Recommendation.
+eds. James Clark and Steven DeRose. 16 November 1999. <a href="https://www.w3.org/TR/1999/REC-xpath-19991116">http://www.w3.org/TR/1999/REC-xpath-19991116</a
+>.</dd>
+</dl> <!-- =============================================================================== --> <h2
+><a id="appendix" name="appendix"></a>A Appendix</h2>  <p>The following
+informative table outlines example results of the modified Remove
+Dot Segments algorithm described in Section 2.4.</p>  <table
+bgcolor="#80FFFF" border="1" cellpadding="5" width="100%">
+<tbody>
+<tr align="left">
+<td><strong>Input</strong></td>
+<td><strong><a id="RemoveDotSegmentsExample"
+name="RemoveDotSegmentsExample">Output</a></strong></td>
+</tr>
+<tr>
+<td>no/.././/pseudo-netpath/seg/file.ext</td>
+<td>pseudo-netpath/seg/file.ext</td>
+</tr>
+<tr>
+<td>no/..//.///pseudo-netpath/seg/file.ext</td>
+<td>pseudo-netpath/seg/file.ext</td>
+</tr>
+<tr>
+<td>yes/no//..//.///pseudo-netpath/seg/file.ext</td>
+<td>yes/pseudo-netpath/seg/file.ext</td>
+</tr>
+<tr>
+<td>no/../yes</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>no/../yes/</td>
+<td>yes/</td>
+</tr>
+<tr>
+<td>no/../yes/no/..</td>
+<td>yes/</td>
+</tr>
+<tr>
+<td>../../no/../..</td>
+<td>../../../</td>
+</tr>
+<tr>
+<td>no/../..</td>
+<td>../</td>
+</tr>
+<tr>
+<td>no/..</td>
+<td>&nbsp;</td>
+</tr>
+<tr>
+<td>no/../</td>
+<td>&nbsp;</td>
+</tr>
+<tr>
+<td>/a/b/c/./../../g</td>
+<td>/a/g</td>
+</tr>
+<tr>
+<td>mid/content=5/../6</td>
+<td>mid/6</td>
+</tr>
+<tr>
+<td>../../..</td>
+<td>../../../</td>
+</tr>
+<tr>
+<td>no/../../</td>
+<td>../</td>
+</tr>
+<tr>
+<td>..yes/..no/..no/..no/../../../..yes</td>
+<td>..yes/..yes</td>
+</tr>
+<tr>
+<td>..yes/..no/..no/..no/../../../..yes/</td>
+<td>..yes/..yes/</td>
+</tr>
+<tr>
+<td>../..</td>
+<td>../../</td>
+</tr>
+<tr>
+<td>../../../</td>
+<td>../../../</td>
+</tr>
+<tr>
+<td>.</td>
+<td>&nbsp;</td>
+</tr>
+<tr>
+<td>./</td>
+<td>&nbsp;</td>
+</tr>
+<tr>
+<td>./.</td>
+<td>&nbsp;</td>
+</tr>
+<tr>
+<td>//no/..</td>
+<td>/</td>
+</tr>
+<tr>
+<td>../../no/..</td>
+<td>../../</td>
+</tr>
+<tr>
+<td>../../no/../</td>
+<td>../../</td>
+</tr>
+<tr>
+<td>yes/no/../</td>
+<td>yes/</td>
+</tr>
+<tr>
+<td>yes/no/no/../..</td>
+<td>yes/</td>
+</tr>
+<tr>
+<td>yes/no/no/no/../../..</td>
+<td>yes/</td>
+</tr>
+<tr>
+<td>yes/no/../yes/no/no/../..</td>
+<td>yes/yes/</td>
+</tr>
+<tr>
+<td>yes/no/no/no/../../../yes</td>
+<td>yes/yes</td>
+</tr>
+<tr>
+<td>yes/no/no/no/../../../yes/</td>
+<td>yes/yes/</td>
+</tr>
+<tr>
+<td>/no/../</td>
+<td>/</td>
+</tr>
+<tr>
+<td>/yes/no/../</td>
+<td>/yes/</td>
+</tr>
+<tr>
+<td>/yes/no/no/../..</td>
+<td>/yes/</td>
+</tr>
+<tr>
+<td>/yes/no/no/no/../../..</td>
+<td>/yes/</td>
+</tr>
+<tr>
+<td>../../..no/..</td>
+<td>../../</td>
+</tr>
+<tr>
+<td>../../..no/../</td>
+<td>../../</td>
+</tr>
+<tr>
+<td>..yes/..no/../</td>
+<td>..yes/</td>
+</tr>
+<tr>
+<td>..yes/..no/..no/../..</td>
+<td>..yes/</td>
+</tr>
+<tr>
+<td>..yes/...no/..no/..no/../../..</td>
+<td>..yes/</td>
+</tr>
+<tr>
+<td>..yes/..no/../..yes/..no/..no/../..</td>
+<td>..yes/..yes/</td>
+</tr>
+<tr>
+<td>/..no/../</td>
+<td>/</td>
+</tr>
+<tr>
+<td>/..yes/..no/../</td>
+<td>/..yes/</td>
+</tr>
+<tr>
+<td>/..yes/..no/..no/../..</td>
+<td>/..yes/</td>
+</tr>
+<tr>
+<td>/..yes/..no/..no/..no/../../..</td>
+<td>/..yes/</td>
+</tr>
+<tr>
+<td>/</td>
+<td>/</td>
+</tr>
+<tr>
+<td>/.</td>
+<td>/</td>
+</tr>
+<tr>
+<td>/./</td>
+<td>/</td>
+</tr>
+<tr>
+<td>/./.</td>
+<td>/</td>
+</tr>
+<tr>
+<td>/././</td>
+<td>/</td>
+</tr>
+<tr>
+<td>/..</td>
+<td>/</td>
+</tr>
+<tr>
+<td>/../..</td>
+<td>/</td>
+</tr>
+<tr>
+<td>/../../..</td>
+<td>/</td>
+</tr>
+<tr>
+<td>/../../..</td>
+<td>/</td>
+</tr>
+<tr>
+<td>//..</td>
+<td>/</td>
+</tr>
+<tr>
+<td>//..//..</td>
+<td>/</td>
+</tr>
+<tr>
+<td>//..//..//..</td>
+<td>/</td>
+</tr>
+<tr>
+<td>/./..</td>
+<td>/</td>
+</tr>
+<tr>
+<td>/./.././..</td>
+<td>/</td>
+</tr>
+<tr>
+<td>/./.././.././..</td>
+<td>/</td>
+</tr>
+<tr>
+<td>.</td>
+<td>&nbsp;</td>
+</tr>
+<tr>
+<td>./</td>
+<td>&nbsp;</td>
+</tr>
+<tr>
+<td>./.</td>
+<td>&nbsp;</td>
+</tr>
+<tr>
+<td>..</td>
+<td>../</td>
+</tr>
+<tr>
+<td>../</td>
+<td>../</td>
+</tr>
+</tbody>
+</table>  <script type="application/javascript" src="https://www.w3.org/scripts/TR/fixup.js"></script></body>
+</html>

@@ -1,0 +1,730 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <title>XML-Signature XPath Filter 2.0</title>
+  <style type="text/css">
+<!--
+/*<![CDATA[*/
+    em {font-weight: bold; font-style: normal;}
+    u,ins,.ins  { background: white; color: red;}
+    del,strike,.strike   { background: white; color: silver; text-decoration: line-through;}
+    code     {font-weight: normal; }
+    .link-def   { background: #FFFFFF; color: teal;  font-style: italic;}
+    .comment    { background: #FFFFF5; color: black; padding: .7em; border:
+                  navy thin solid;}
+    .discuss    { color: blue; background: yellow; }
+    .xml-example,.xml-dtd { margin-left: -1em; padding: .5em; white-space:
+                            pre; border: none;}
+    .xml-dtd    { background: #efeff8; color: black;}
+/*]]>*/
+-->
+
+
+
+
+
+  </style>
+  <link href="https://www.w3.org/StyleSheets/TR/W3C-REC" type="text/css" rel="stylesheet" />
+</head>
+
+<body xml:lang="en" lang="en">
+
+<div class="head">
+<p><a href="https://www.w3.org/"><img src="https://www.w3.org/Icons/w3c_home" alt="W3C" border="0" height="48" width="72" /></a></p>
+
+<h1 class="notoc">XML-Signature XPath Filter 2.0</h1>
+
+<h2 class="notoc">W3C Recommendation 08 November 2002</h2>
+<dl>
+  <dt>This version:</dt>
+    <dd><a href="https://www.w3.org/TR/2002/REC-xmldsig-filter2-20021108/">http://www.w3.org/TR/2002/REC-xmldsig-filter2-20021108/</a></dd>
+  <dt>Latest version:</dt>
+    <dd><a href="https://www.w3.org/TR/xmldsig-filter2/">http://www.w3.org/TR/xmldsig-filter2/</a></dd>
+  <dt>Previous version:</dt>
+    <dd><a href="https://www.w3.org/TR/2002/PR-xmldsig-filter2-20020827/">http://www.w3.org/TR/2002/PR-xmldsig-filter2-20020827/</a></dd>
+  <dt>Authors/Editors:</dt>
+    <dd>John Boyer, PureEdge Solutions Inc., &lt;<a
+      href="mailto:jboyer@PureEdge.com">jboyer@PureEdge.com</a>&gt;</dd>
+    <dd>Merlin Hughes, Baltimore Technologies Ltd., &lt;<a
+      href="mailto:merlin@baltimore.ie">merlin@baltimore.ie</a>&gt;</dd>
+    <dd>Joseph Reagle, W3C, &lt;<a
+      href="mailto:reagle@w3.org">reagle@w3.org</a>&gt;</dd>
+</dl>
+
+<p>Please see the <a href="https://www.w3.org/2002/11/xpath-filter2-errata.html"><strong>errata</strong></a>
+for this document, which may include some normative corrections. See also <a href="https://www.w3.org/Signature/2002/02/xmldsig-translations"><strong>translations</strong></a>.</p>
+
+<p class="copyright"><a href="https://www.w3.org/Consortium/Legal/ipr-notice-20000612#Copyright">Copyright</a>
+© 2002 <a href="https://www.w3.org/"><abbr
+title="World Wide Web Consortium">W3C</abbr></a><sup>®</sup> (<a
+href="http://www.lcs.mit.edu/"><abbr
+title="Massachusetts Institute of Technology">MIT</abbr></a>, <a
+href="http://www.inria.fr/"><abbr xml:lang="fr" lang="fr"
+title="Institut National de Recherche en Informatique et Automatique">INRIA</abbr></a>,
+<a href="http://www.keio.ac.jp/">Keio</a>), All Rights Reserved. W3C <a href="https://www.w3.org/Consortium/Legal/ipr-notice-20000612#Legal_Disclaimer">liability</a>,
+<a href="https://www.w3.org/Consortium/Legal/ipr-notice-20000612#W3C_Trademarks">trademark</a>,
+<a href="https://www.w3.org/Consortium/Legal/copyright-documents-19990405">document
+use</a> and <a href="https://www.w3.org/Consortium/Legal/copyright-software-19980720">software
+licensing</a> rules apply.</p>
+<hr title="Separator from Header" />
+</div>
+
+<h2 class="notoc">Abstract</h2>
+
+<p>XML Signature [<a href="#ref-XML-DSig">XML-DSig</a>] recommends a standard
+means for specifying information content to be digitally signed and for
+representing the resulting digital signatures in XML. Some applications
+require the ability to specify a subset of a given XML document as the
+information content to be signed. The XML Signature specification meets this
+requirement with the XPath transform. However, this transform can be
+difficult to implement efficiently with existing technologies. This
+specification defines a new XML Signature transform to facilitate the
+development of efficient document subsetting implementations that
+interoperate under similar performance profiles.</p>
+
+<h2><a id="status" name="status">Status of this document</a><br />
+</h2>
+
+<p>This document is the W3C XML Signature XPath-Filter 2.0 <a href="https://www.w3.org/Consortium/Process-20010719/process.html#RecsW3C">Recommendation</a>.
+This document has been reviewed by W3C Members and other interested parties
+and has been endorsed by the Director as a W3C Recommendation. It is a stable
+document and may be used as reference material or cited as a normative
+reference from another document. W3C's role in making the Recommendation is
+to draw attention to the specification and to promote its widespread
+deployment. This enhances the functionality and interoperability of the
+Web.</p>
+
+<p>This specification was produced by the IETF/W3C <a href="https://www.w3.org/Signature/">XML Signature Working Group</a> (<a href="https://www.w3.org/Signature/Activity.html">W3C Activity Statement</a>)
+which believes the specification is sufficient for the creation of
+independent interoperable implementations as demonstrated in the <a href="https://www.w3.org/Signature/2002/05/xmldsig-filter2-interop.html">Interoperability
+Report.</a></p>
+
+<p>Patent disclosures relevant to this specification may be found on the
+Working Group's <a rel="disclosure" href="https://www.w3.org/Signature/Disclosures.html">patent disclosure
+page</a>, in conformance with W3C policy, and the <a
+href="http://www.ietf.org/ipr.html">IETF Page of Intellectual Property Rights
+Notices</a>, in conformance with IETF policy. At the time of publication,
+there are no declarations specific to this document.</p>
+
+<p>Please report errors in this document to <a
+href="mailto:w3c-ietf-xmldsig@w3.org">w3c-ietf-xmldsig@w3.org</a> (<a
+href="http://lists.w3.org/Archives/Public/xml-encryption/">archive</a>).</p>
+
+<p>The list of known errors in this specification is available at <a href="https://www.w3.org/2002/11/xpath-filter2-errata">http://www.w3.org/2002/11/xpath-filter2-errata</a>.</p>
+
+<p>The English version of this specification is the only normative version.
+Information about translations of this document (if any) is available <a href="https://www.w3.org/Signature/2002/02/xmldsig-translations">http://www.w3.org/Signature/2002/02/xmldsig-translations</a></p>
+
+<p>A list of current W3C Technical Reports can be found at <a href="https://www.w3.org/TR/">http://www.w3.org/TR/</a>.</p>
+
+<h2><a id="contents" name="contents">Table of Contents</a></h2>
+<ol>
+  <li><a href="#sec-Intro">Introduction</a> 
+    <ol>
+      <li><a href="#sec-Acknowledgements">Acknowledgements</a></li>
+    </ol>
+  </li>
+  <li><a href="#sec-Terminology">Terminology</a></li>
+  <li><a href="#sec-Specification">Specification of Signature Filter
+    Transform</a> 
+    <ol>
+      <li><a href="#sec-Algorithm-Identifier">Algorithm Identifier</a></li>
+      <li><a href="#sec-Syntax">Syntax of Signature Filter Transform</a></li>
+      <li><a href="#sec-EvalContext">Input and Evaluation Context of
+        Signature Filter Transform</a></li>
+      <li><a href="#sec-ProcModel">Processing Model of Signature Filter
+        Transform</a></li>
+    </ol>
+  </li>
+  <li><a href="#sec-Examples">Examples of Signature Filter Transform</a></li>
+  <li><a href="#sec-References">References</a></li>
+</ol>
+<hr />
+<!-- =============================================================================== -->
+
+<h2><a id="sec-Intro" name="sec-Intro"></a>1. Introduction</h2>
+
+<p>The XML Recommendation [<a href="#ref-XML">XML</a>] specifies the syntax
+of a class of objects called XML documents. The Namespaces in XML
+Recommendation [<a href="#ref-XML-NS">XML-NS</a>] specifies additional syntax
+and semantics for XML documents. The XML Signature Recommendation [<a
+href="#ref-XML-DSig">XML-DSig</a>] defines standard means for specifying
+information content to be digitally signed, including the ability to select a
+portion of an XML document to be signed using an XPath transform.</p>
+
+<p>This specification describes a new signature filter transform that, like
+the <a href="https://www.w3.org/TR/xmldsig-core/#sec-XPath">XPath
+transform</a> [<a href="#ref-XML-DSig">XML-DSig</a>, section 6.6.3], provides
+a method for computing a portion of a document to be signed. In the interest
+of simplifying the creation of efficient implementations, the architecture of
+this transform is not based on evaluating an [<a href="#ref-XPath">XPath]</a>
+expression for every node of the XML parse tree (as defined by the [<a
+href="#ref-XPath">XPath]</a> data model). Instead, a sequence of XPath
+expressions is used to select the roots of document subtrees &mdash; location
+sets, in the language of [<a href="#ref-XPointer">XPointer</a>] &mdash; which
+are combined using set intersection, subtraction and union, and then used to
+filter the input node-set. The principal differences from the XPath transform
+are:</p>
+<ul>
+  <li>A sequence of XPath operations can be executed in a single transform,
+    allowing complex filters to be more easily expressed and optimized.</li>
+  <li>The XPath expressions are evaluated against the input document
+    resulting in a set of nodes, instead of being used as a boolean test
+    against each node of the input node-set.</li>
+  <li>To increase efficiency, the expansion of a given node to include all
+    nodes having the given node as an ancestor is now implicit so it can be
+    performed by faster means than the evaluation of an XPath expression for
+    each document node.</li>
+  <li>The resulting node-sets can be combined using the three fundamental set
+    operations (intersection, subtraction, and union), and then applied as a
+    filter against the input node-set, allowing operations such as signing an
+    entire document except for a specified subset, to be expressed more
+    clearly and efficiently.</li>
+</ul>
+
+<p>As with the original XPath transform, the primary purpose of this
+transform is to ensure that only specifically defined changes to the input
+XML document are permitted after the signature is affixed. This can be done
+by excluding precisely those nodes that are allowed to change once the
+signature is affixed, and including all other input nodes in the output. It
+is the responsibility of the signature filter transform author to ensure that
+nodes are not excluded which could affect the interpretation of the transform
+output in the application context.</p>
+
+<p>Consider the motivating scenario where an application wishes to affix two
+<a class="link-def" href="https://www.w3.org/TR/xmldsig-core/#def-SignatureEnveloped">enveloped
+signatures</a> to the document; any other change to the document must cause
+the signatures to be invalid. When the application creates the first
+signature that signature is automatically omitted from its <em>own</em>
+digest calculations. However, it will also be necessary to exclude the
+subsequent (second) signature element from the digest calculations of the
+first signature. This specification can be used to efficiently satisfy this
+requirement using the set subtraction operation.</p>
+
+<p>This transform also supports the ability to specify a set of nodes that
+will be included in a signature, with all non-specified nodes being excluded.
+This formulation is useful for isolating a portion of a document, such as a
+chapter of a document, or a payload in a protocol message, and can be
+expressed using the set intersection operation.</p>
+
+<p>Complete familiarity with the first XML Signature <a href="https://www.w3.org/TR/xmldsig-core/#sec-XPath">XPath Transform</a> [<a
+href="#ref-XML-DSig">XML-DSig</a>, section 6.6.3] is required.</p>
+
+<h3><!-- =============================================================================== -->
+<a id="sec-Acknowledgements" name="sec-Acknowledgements"></a>1.1.
+Acknowledgements (Informative)</h3>
+
+<p>The following people provided valuable feedback that improved the quality
+of this specification:</p>
+<ul>
+  <li>Christian Geuer-Pollmann, Universität Siegen</li>
+  <li>Donald Eastlake, Motorola</li>
+  <li>Gregor Karlinger, IAIK TU Graz</li>
+  <li>Aleksey Sanin</li>
+</ul>
+<!-- =============================================================================== -->
+
+<h2><a id="sec-Terminology" name="sec-Terminology">2. Terminology</a></h2>
+
+<p>The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT",
+"SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document
+are to be interpreted as described in RFC 2119 <a
+href="#ref-Keywords">[Keywords]</a>.</p>
+
+<p>The XPath 1.0 Recommendation [<a href="#ref-XPath">XPath</a>] defines the
+term <a class="link-def" href="https://www.w3.org/TR/1999/REC-xpath-19991116#node-sets">node-set</a> as
+"(an unordered collection of nodes without duplicates)" and specifies a data
+model for representing an input XML document as a set of nodes of various
+types (element, attribute, namespace, text, comment, processing instruction,
+and root).</p>
+
+<p>An <a class="link-def" name="def-input-document"
+id="def-input-document">input document</a> is the document that contains all
+the nodes available to processing by this transform. A <a class="link-def"
+name="def-document-subset" id="def-document-subset">document subset</a> is a
+portion of an XML document indicated by an XPath node-set, which may not
+include all of the nodes in the document. For example, the <a
+class="link-def" name="def-input-node-set" id="def-input-node-set">input
+node-set</a> is a collection of XPath nodes from the <a class="link-def"
+href="#def-input-document">input document</a> that is passed as a parameter
+to this transform. A <a class="link-def" name="def-subtree"
+id="def-subtree">subtree</a> rooted by a given node is a document subset
+containing the given node and every node having the given node as an
+ancestor. <a id="def-subtree-expansion" class="link-def"
+name="def-subtree-expansion">Subtree expansion</a> is the process of
+expanding a node-set to include all subtrees rooted at any node in the
+node-set. For example, the subtree expansion of a node-set consisting of just
+a single element node would be a node-set containing that element, its
+attribute nodes, namespace nodes, and all its descendants including their
+attribute nodes and namespaces nodes.</p>
+
+<p>The XML Signature Recommendation <a href="#ref-XML-DSig">[XML-DSig]</a>
+defines a <a class="link-def" name="def-reference"
+id="def-reference">reference</a> as a sequence of steps performed to obtain
+an octet stream to be digitally signed. A <a class="link-def"
+name="def-transform" id="def-transform">transform</a> is an identified
+algorithm to be used as a step in the reference processing model. A transform
+takes an octet stream or XPath node-set as input, and it produces an octet
+stream or XPath node-set as output (the reference processing model
+automatically converts the final output to an octet stream if it is an XPath
+node-set).</p>
+<!-- =============================================================================== -->
+
+<h2><a id="sec-Specification" name="sec-Specification"></a>3. Specification
+of Signature Filter Transform</h2>
+
+<p>The transform operates by computing a node-set that is used to filter the
+input node-set: The output node-set consists of only those nodes in both the
+input node-set and the filter node-set. In other words, the output node-set
+is the intersection of the input node-set and the computed filter
+node-set.<br />
+</p>
+
+<p>The filter node-set is computed by evaluating a sequence of XPath
+expressions and combining their results. A node-set is initially computed
+containing the entire input document. In sequence, each XPath expression is
+then evaluated, <a href="#def-subtree-expansion">subtree-expanded</a>, and
+then used to transform the filter node-set according to a specified set
+operation; intersection, subtraction, or union. After all XPaths have been
+applied, the resulting node-set is used as the filter node-set.</p>
+
+<h3><a id="sec-Algorithm-Identifier" name="sec-Algorithm-Identifier">3.1
+Algorithm Identifier</a></h3>
+
+<p>The XML Signature Recommendation <a href="#ref-XML-DSig">[XML-DSig]</a>
+uses a [<a href="#ref-URI">URI</a>] to identify each algorithm to be
+performed when creating or validating a signature. The signature filter
+transform is identified as follows:</p>
+<dl>
+  <dt>Algorithm Identifier</dt>
+    <dd><a href="https://www.w3.org/2002/06/xmldsig-filter2">http://www.w3.org/2002/06/xmldsig-filter2</a></dd>
+</dl>
+
+<h3><a id="sec-Syntax" name="sec-Syntax">3.2 Syntax of Signature Filter
+Transform</a></h3>
+
+<p>The signature filter transform shall be represented by a sequence of one
+or more elements named <code>XPath</code>. The content of <code>XPath</code>
+is character data containing an XPath expression. The <code>XPath</code> has
+an attribute named <code>Filter</code> whose possible values are
+<code>intersect</code>, <code>subtract</code>, and <code>union</code>. The
+<code>Filter</code> attribute indicates the set operation that is performed
+with the resulting node-set when computing the filter node-set. The following
+is an example of markup for a signature filter that signs the entire input
+node-set except for elements with identifier <em>foo</em> and <em>bar</em>
+(and all nodes with one of those elements as an ancestor):</p>
+<pre class="xml-example">   &lt;XPath Filter="subtract"
+    xmlns="http://www.w3.org/2002/06/xmldsig-filter2"&gt;
+      id("foo bar")
+   &lt;/XPath&gt;</pre>
+<pre class="xml-dtd">   <a href="xmldsig-filter2.xsd">Schema Definition</a>:  
+
+   &lt;?xml version="1.0" encoding="utf-8"?&gt;
+   &lt;!DOCTYPE schema
+    PUBLIC "-//W3C//DTD XMLSchema 200102//EN" "http://www.w3.org/2001/XMLSchema.dtd"
+   [
+     &lt;!ATTLIST schema
+       xmlns:xf CDATA #FIXED 'http://www.w3.org/2002/06/xmldsig-filter2'&gt;
+     &lt;!ENTITY xf 'http://www.w3.org/2002/06/xmldsig-filter2'&gt;
+     &lt;!ENTITY % p ''&gt;
+     &lt;!ENTITY % s ''&gt;
+    ]&gt;
+
+   &lt;schema xmlns="http://www.w3.org/2001/XMLSchema"
+           xmlns:xf="http://www.w3.org/2002/06/xmldsig-filter2"
+           targetNamespace="http://www.w3.org/2002/06/xmldsig-filter2"
+           version="0.1" elementFormDefault="qualified"&gt;
+
+   &lt;element name="XPath"
+            type="xf:XPathType"/&gt;
+
+   &lt;complexType name="XPathType"&gt;
+    &lt;simpleContent&gt;
+      &lt;extension base="string"&gt;
+        &lt;attribute name="Filter"&gt;
+           &lt;simpleType&gt;
+             &lt;restriction base="string"&gt;
+               &lt;enumeration value="intersect"/&gt;
+               &lt;enumeration value="subtract"/&gt;
+               &lt;enumeration value="union"/&gt;
+             &lt;/restriction&gt;
+           &lt;/simpleType&gt;
+        &lt;/attribute&gt;
+      &lt;/extension&gt;
+    &lt;/simpleContent&gt;
+   &lt;/complexType&gt;
+
+   &lt;/schema&gt;</pre>
+<pre class="xml-dtd">   DTD:
+   &lt;!ELEMENT XPath    (#PCDATA) &gt;
+   &lt;!ATTLIST XPath
+      Filter         (intersect|subtract|union) #REQUIRED &gt;</pre>
+
+<h3><a id="sec-EvalContext" name="sec-EvalContext">3.3 Input and Evaluation
+Context of Signature Filter Transform</a></h3>
+
+<p>The input required by this transform is an XPath node-set over the input
+document. If the input document is an octet stream, then the application MUST
+convert the octet stream to an XPath node-set that contains all of the
+document nodes (including comment nodes). The evaluation context for the
+XPath expressions in the filter transform will be:</p>
+<ul>
+  <li>A <strong>context node</strong> equal to the root node of the document
+    whose node-set was provided as input to this transform. The root node is
+    the parent of the document element and any comment and processing
+    instruction nodes outside of the document element.</li>
+  <li>A <strong>context position</strong>, initialized to 1.</li>
+  <li>A <strong>context size</strong>, initialized to 1.</li>
+  <li>A <strong>library of functions</strong> equal to the function set
+    defined in [<a href="#ref-XPath">XPath</a>] plus a function named
+    <strong><a href="#function-here">here</a>()</strong>.</li>
+  <li>A set of variable bindings. No means for initializing these is defined.
+    Thus, the set of variable bindings used when evaluating the XPath
+    expression is empty, and use of a variable reference in the XPath
+    expression results in an error.</li>
+  <li>The set of namespace declarations in scope for the <code>XPath</code>
+    element.</li>
+</ul>
+
+<p><strong>The function <code>here()</code> is defined as
+follows:</strong></p>
+
+<p><a name="function-here" id="function-here"><strong>Function:</strong>
+<em>node-set</em> <strong>here</strong>()</a></p>
+
+<p>The <strong><a href="#function-here">here</a>()</strong> function returns
+a node-set containing the attribute or processing instruction node or the
+parent element of the text node that directly bears the XPath expression. In
+this transform, this will be the <code>XPath</code> element. This expression
+results in an error if the containing XPath expression does not appear in the
+same XML document against which the XPath expression is being evaluated.</p>
+
+<h3><a id="sec-ProcModel" name="sec-ProcModel">3.4 Processing Model of
+Signature Filter Transform</a></h3>
+
+<p>Using the aforementioned <a href="#sec-EvalContext">evaluation
+context</a>, the signature filter transform evaluates the XPath expressions
+appearing in the character content of the <code>XPath</code> elements and
+uses these to compute a filter node-set <em>F</em>, which is then used to
+filter the input node-set <em>I</em> resulting in an output node-set
+<em>O</em>:</p>
+
+<div class="">
+<ul>
+  <li>Initialize the filter node-set <em>F</em> to consist of all nodes in
+    the input document.</li>
+  <li>Iterate through each XPath expression, <em>X</em>, in sequence, and
+    update the filter node-set <em>F</em> as follows:</li>
+  <li style="list-style: none"><ul>
+      <li>Evaluate the XPath expression <em>X</em>. The result is a node-set
+        <em>S</em>.</li>
+      <li>Compute the set <em>S'</em> consisting of all nodes in the input
+        document that are either present in <em>S</em> or that have an
+        ancestor in <em>S</em>. This is equal to the union of all the
+        document subtrees rooted by a node in <em>S</em>.</li>
+      <li>If the <code>Filter</code> attribute value is <em>intersect</em>,
+        then compute the intersection of the selected subtrees, <em>S'</em>,
+        with the filter node-set <em>F</em>. The result will include only
+        those nodes that are in both the filter node-set and the selected
+        subtrees: <em>F' = F INTERSECT S'</em>.</li>
+      <li>If the <code>Filter</code> attribute value is <em>subtract</em>,
+        then compute the subtraction of the selected subtrees, <em>S'</em>,
+        from the filter node-set <em>F</em>. The result will include only
+        those nodes that are in the filter node-set, but not the selected
+        subtrees: <em>F' = F - S'</em>.</li>
+      <li>Otherwise, if the <code>Filter</code> attribute value is
+        <em>union</em>, then compute the union the selected subtrees,
+        <em>S'</em>, with the filter node-set <em>F</em>. The result will
+        include all those nodes that are in either the filter node-set, the
+        selected subtrees, or both: <em>F' = F UNION S'</em>.</li>
+      <li>Update the filter node-set <em>F</em> to be the new node-set
+        <em>F'</em>.</li>
+    </ul>
+  </li>
+  <li>Finally, after applying all the XPath expressions, compute the output
+    node-set <em>O</em> to be the intersection of the computed filter
+    node-set, <em>F</em>, with the input node-set, <em>I</em>. The result
+    will include all nodes from the input node-set that are also in the
+    filter node-set: <em>O = I INTERSECT F</em>.</li>
+  <li>An empty input node-set will always result in an empty output
+  node-set.</li>
+</ul>
+
+<p>In this processing model, the conversion from a subtree interpretation of
+the XPath expressions to a node-set containing all nodes that must be used
+during the set operation, along with actual performance of the set operation,
+is described explicitly. Implementors SHOULD observe that it is possible to
+compute the effective result of this operation in a single pass through the
+input document without performing subtree expansion or any set operations:</p>
+<ul>
+  <li>For each XPath expression <em>X</em>, in sequence, evaluate the
+    expression and store the resulting node-set, <em>S</em>, along with the
+    associated set operation.</li>
+  <li>Prepend a node-set consisting of just the document node, along with the
+    operation <em>union</em>.</li>
+  <li>Create a new, empty filter node-set.</li>
+  <li class="">Process each node in the input node-set document, adding each
+    node to the output node-set <strong>F</strong> if a flag
+    <strong>Z</strong> is true. The flag is computed as follows: 
+    <ul>
+      <li><strong>Z</strong> is true if and only if the node is present in
+        any subtree-expanded <strong>union</strong> node-set and all
+        subsequent subtree-expanded <strong>intersect</strong> node-sets but
+        no subsequent subtree-expanded <strong>subtract</strong> node-sets,
+        or false otherwise. If there are no subsequent
+        <strong>intersect</strong> or <strong>subtract</strong> node-sets,
+        then that part of the test is automatically passed.</li>
+      <li>Presence in a subtree-expanded node-set can be efficiently
+        determined without actually expanding the node-set, by simply
+        maintaining a stack or count that identifies whether any nodes from
+        that node-set are an ancestor of the node being processed.</li>
+    </ul>
+  </li>
+</ul>
+
+<p>Implementers MAY further observe that, if this transform is followed by a
+canonicalization operation (e.g., [<a href="#ref-XML-C14N">XML-C14N</a>]),
+the described filter computation can be efficiently commingled with the
+document-order canonicalization processing.</p>
+</div>
+
+<h3><a id="sec-Examples" name="sec-Examples">4. Examples of Signature Filter
+Transform</a></h3>
+
+<p>The example below illustrates one way to create an enveloped signature
+with the signature filter transform. The function
+<em><strong>here</strong>()</em> identifies the <code>XPath</code> element,
+and the subsequent location path obtains the nearest ancestor
+<code>Signature</code> element. Due to the <em>subtract</em> value of the
+<code>Filter</code> attribute, the output of the signature filter transform
+is a node-set containing every node from the input node-set except the nodes
+in the subtree rooted by the <code>Signature</code> element containing the
+example signature filter transform below.</p>
+<pre class="xml-example">   &lt;XPath Filter="subtract"
+    xmlns="http://www.w3.org/2002/06/xmldsig-filter2"
+    xmlns:dsig="http://www.w3.org/2000/09/xmldsig#"&gt;
+      here()/ancestor::dsig:Signature[1]
+   &lt;/XPath&gt;</pre>
+
+<div class="">
+<p>A suitable signature reference URI to use with this subtract filter would
+be <code>URI=""</code> (the entire signature document, without comments),
+<code>URI="#xpointer(/)"</code> (the entire signature document, with
+comments) or any same-document reference that includes the signature
+itself.</p>
+
+<p>An example of an intersect filter is a signature that co-signs another
+signature. In this example, a <code>Signature</code> element identified by
+<em>PrimaryBorrowSig</em> must be signed. The XPath expression obtains the
+element node, and the transform expands the output node-set to contain all
+nodes from the input node-set that are also in the subtree rooted by the
+element node.</p>
+<pre class="xml-example">   &lt;XPath Filter="intersect"
+    xmlns="http://www.w3.org/2002/06/xmldsig-filter2"&gt;
+      id("PrimaryBorrowerSig")
+   &lt;/XPath&gt;</pre>
+
+<p>This type of intersect filter is useful for efficiently signing subsets of
+a document, whether this is the same document as the signature or an external
+document. For example, if the signature reference URI is
+<code>URI="document.xml"</code>, then this document will be automatically
+parsed and just the identified element and its descendants will be signed.</p>
+
+<p>Union filters, by themselves are of no particular use: The initial filter
+node-set consists of the entire input document; any union with this will have
+no effect, so the output of the transform will be identical to the input. The
+union operation is intended to follow a subtract operation, to allow a
+subtree to be removed, with the exception of a lower subtree which is still
+included in the output.</p>
+
+<p>Consider the following document which contains a same-document enveloped
+signature reference with an XPath filter containing three XPath
+operations:</p>
+<pre class="xml-example">   &lt;Document&gt;
+     &lt;ToBeSigned&gt;
+       &lt;!-- comment --&gt;
+       &lt;Data /&gt;
+       &lt;NotToBeSigned&gt;
+         &lt;ReallyToBeSigned&gt;
+           &lt;!-- comment --&gt;
+           &lt;Data /&gt;
+         &lt;/ReallyToBeSigned&gt;
+       &lt;/NotToBeSigned&gt;
+     &lt;/ToBeSigned&gt;
+     &lt;ToBeSigned&gt;
+       &lt;Data /&gt;
+       &lt;NotToBeSigned&gt;
+         &lt;Data /&gt;
+       &lt;/NotToBeSigned&gt;
+     &lt;/ToBeSigned&gt;
+     &lt;dsig:Signature
+      xmlns:dsig="http://www.w3.org/2000/09/xmldsig#"
+      xmlns:dsig-xpath="http://www.w3.org/2002/06/xmldsig-filter2"&gt;
+       &lt;dsig:SignedInfo&gt;
+         ...
+         &lt;dsig:Reference URI=""&gt;
+           &lt;dsig:Transforms&gt;
+             &lt;dsig:Transform 
+              Algorithm="http://www.w3.org/2002/06/xmldsig-filter2"&gt;
+               &lt;dsig-xpath:XPath Filter="intersect"&gt; //ToBeSigned &lt;/dsig-xpath:XPath&gt;
+               &lt;dsig-xpath:XPath Filter="subtract"&gt; //NotToBeSigned &lt;/dsig-xpath:XPath&gt;
+               &lt;dsig-xpath:XPath Filter="union"&gt; //ReallyToBeSigned &lt;/dsig-xpath:XPath&gt;
+             &lt;/dsig:Transform&gt;
+           &lt;/dsig:Transforms&gt;
+           ...
+         &lt;/dsig:Reference&gt;
+       &lt;/dsig:SignedInfo&gt;
+       ...
+     &lt;/dsig:Signature&gt;
+   &lt;/Document&gt;</pre>
+
+<p>The intersect operation computes the intersection of the XPath-selected
+subtrees with the filter node-set. In this case, the filter node-set
+initially contains the entire input document, and the XPath expression
+evaluates to the two <code>ToBeSigned</code> elements; these are expanded to
+include all their descendents and intersected with the filter node-set,
+resulting in the following:</p>
+<pre class="xml-example">     &lt;ToBeSigned&gt;
+       &lt;!-- comment --&gt;
+       &lt;Data /&gt;
+       &lt;NotToBeSigned&gt;
+         &lt;ReallyToBeSigned&gt;
+           &lt;!-- comment --&gt;
+           &lt;Data /&gt;
+         &lt;/ReallyToBeSigned&gt;
+       &lt;/NotToBeSigned&gt;
+     &lt;/ToBeSigned&gt;&lt;ToBeSigned&gt;
+       &lt;Data /&gt;
+       &lt;NotToBeSigned&gt;
+         &lt;Data /&gt;
+       &lt;/NotToBeSigned&gt;
+     &lt;/ToBeSigned&gt;</pre>
+
+<p>The subtract filter computes the subtraction of the XPath-selected
+subtrees from the filter node-set. In this case, the XPath expression
+evaluates to the two <code>NotToBeSigned</code> elements; these are expanded
+to include all their descendents and subtracted from the filter node-set:</p>
+<pre class="xml-example">   &lt;ToBeSigned&gt;
+       &lt;!-- comment --&gt;
+       &lt;Data /&gt;
+       
+     &lt;/ToBeSigned&gt;&lt;ToBeSigned&gt;
+       &lt;Data /&gt;
+      
+   &lt;/ToBeSigned&gt;</pre>
+
+<p>Next, the union filter computes the union of the XPath-selected subtrees
+with the filter node-set. In this case, the XPath expression evaluates to the
+<code>ReallyToBeSigned</code> element; this is expanded to include all its
+descendents and added to the filter node-set:</p>
+<pre class="xml-example">   &lt;ToBeSigned&gt;
+       &lt;!-- comment --&gt;
+       &lt;Data /&gt;
+       &lt;ReallyToBeSigned&gt;
+           &lt;!-- comment --&gt;
+           &lt;Data /&gt;
+         &lt;/ReallyToBeSigned&gt;
+     &lt;/ToBeSigned&gt;&lt;ToBeSigned&gt;
+       &lt;Data /&gt;
+      
+   &lt;/ToBeSigned&gt;</pre>
+
+<p>Finally, this resulting filter node-set is used to transform the input
+node-set. In this example, the input node-set is the entire document, with
+comments removed. The transformed node-set will thus be all those nodes from
+the input document, less comments, that are also in the filter node-set:</p>
+<pre class="xml-example">   &lt;ToBeSigned&gt;
+       
+       &lt;Data /&gt;
+       &lt;ReallyToBeSigned&gt;
+           
+           &lt;Data /&gt;
+         &lt;/ReallyToBeSigned&gt;
+     &lt;/ToBeSigned&gt;&lt;ToBeSigned&gt;
+       &lt;Data /&gt;
+      
+   &lt;/ToBeSigned&gt;</pre>
+
+<p>Note that the result contains no nodes that were not in the input
+node-set. Although the filter node-set included comments, these were not
+present in the input node-set so they are not present in the output
+node-set.</p>
+
+<p>This signature filter does not provide any increased capability over the
+original XPath transform. For example, this reference could be replicated
+using the XPath transform as follows.</p>
+<pre class="xml-example">   &lt;dsig:Reference URI=""&gt;
+     &lt;dsig:Transforms&gt;
+       &lt;dsig:Transform 
+        Algorithm="http://www.w3.org/TR/1999/REC-xpath-19991116"&gt;
+         &lt;dsig:XPath&gt;
+           (ancestor-or-self::ToBeSigned and
+            not (ancestor-or-self::NotToBeSigned))
+           or ancestor-or-self::ReallyToBeSigned
+         &lt;/dsig:XPath&gt;
+       &lt;/dsig:Transform&gt;
+     &lt;/dsig:Transforms&gt;
+     ...
+   &lt;/dsig:Reference&gt;</pre>
+
+<p>The advantage of the signature filter transform over the XPath transform
+is that the latter requires evaluation of a potentially-complex expression
+against every node in the input set, which has has proved costly in practice
+for many useful operations. This specification's filter requires evaluation
+of simple XPath expressions and then the execution of some basic set
+operations or their equivalent, which can be implemented significantly more
+efficiently.</p>
+</div>
+
+<h2>5. <a id="sec-References" name="sec-References">References</a></h2>
+<dl>
+  <dt><a id="ref-Keywords" name="ref-Keywords">Keywords</a></dt>
+    <dd><a href="http://www.ietf.org/rfc/rfc2119.txt">RFC 2119: Key words for
+      use in RFCs to Indicate Requirement Levels.</a> S. Bradner. Best
+      Current Practice, March 1997.</dd>
+    <dd><a
+      href="http://www.ietf.org/rfc/rfc2119.txt">http://www.ietf.org/rfc/rfc2119.txt</a></dd>
+  <dt><a id="ref-URI" name="ref-URI">URI</a></dt>
+    <dd><a href="http://www.ietf.org/rfc/rfc2396.txt">RFC 2396: Uniform
+      Resource Identifiers (URI): Generic Syntax.</a> T. Berners-Lee, R.
+      Fielding, and L. Masinter. Standards Track, August 1998.</dd>
+    <dd><a
+      href="http://www.ietf.org/rfc/rfc2396.txt">http://www.ietf.org/rfc/rfc2396.txt</a></dd>
+  <dt><a id="ref-XML" name="ref-XML">XML</a></dt>
+    <dd><a href="https://www.w3.org/TR/2000/REC-xml-20001006">Extensible
+      Markup Language (XML) 1.0 (Second Edition).</a> T. Bray, E. Maler, J.
+      Paoli, and C. M. Sperberg-McQueen. W3C Recommendation, October
+    2000.</dd>
+    <dd><a href="https://www.w3.org/TR/2000/REC-xml-20001006">http://www.w3.org/TR/2000/REC-xml-20001006</a>
+      .</dd>
+  <dt><a id="ref-XML-C14N" name="ref-XML-C14N">XML-C14N</a></dt>
+    <dd><a href="https://www.w3.org/TR/2001/REC-xml-c14n-20010315">Canonical
+      XML.</a> J. Boyer. W3C Recommendation, March 2001.</dd>
+    <dd><a href="https://www.w3.org/TR/2001/REC-xml-c14n-20010315">http://www.w3.org/TR/2001/REC-xml-c14n-20010315</a></dd>
+    <dd><a
+      href="http://www.ietf.org/rfc/rfc3076.txt">http://www.ietf.org/rfc/rfc3076.txt</a></dd>
+  <dt><a id="ref-XML-DSig" name="ref-XML-DSig">XML DSig</a></dt>
+    <dd><a href="https://www.w3.org/TR/2001/PR-xmldsig-core-20010820/">XML-Signature
+      Syntax and Processing</a>. D. Eastlake, J. Reagle, and D. Solo. W3C
+      Recommendation, February 2002.</dd>
+    <dd><a href="https://www.w3.org/TR/2002/REC-xmldsig-core-20020212/">http://www.w3.org/TR/2002/REC-xmldsig-core-20020212/</a></dd>
+  <dt><a id="ref-XML-NS" name="ref-XML-NS">XML-NS</a></dt>
+    <dd><a href="https://www.w3.org/TR/1999/REC-xml-names-19990114/">Namespaces in
+      XML</a>. T. Bray, D. Hollander, and A. Layman. W3C Recommendation,
+      January 1999.</dd>
+    <dd><a href="https://www.w3.org/TR/1999/REC-xml-names-19990114/">http://www.w3.org/TR/1999/REC-xml-names-19990114/</a></dd>
+  <dt><a id="ref-XPath" name="ref-XPath">XPath</a></dt>
+    <dd><a href="https://www.w3.org/TR/1999/REC-xpath-19991116">XML Path
+      Language (XPath) Version 1.0</a>. J. Clark, and S. DeRose. W3C
+      Recommendation, November 1999.</dd>
+    <dd><a href="https://www.w3.org/TR/1999/REC-xpath-19991116">http://www.w3.org/TR/1999/REC-xpath-19991116</a></dd>
+  <dt><a id="ref-XPointer" name="ref-XPointer">XPointer</a></dt>
+    <dd><a href="https://www.w3.org/TR/2001/CR-xptr-20010911/">XML Pointer
+      Language (XPointer)</a>. S. DeRose, R. Daniel, and E. Maler. W3C
+      Candidate Recommendation, January 2001.</dd>
+    <dd><a href="https://www.w3.org/TR/2001/CR-xptr-20010911/">http://www.w3.org/TR/2001/CR-xptr-20010911/</a></dd>
+</dl>
+<script type="application/javascript" src="https://www.w3.org/scripts/TR/fixup.js"></script></body>
+</html>
