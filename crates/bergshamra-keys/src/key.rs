@@ -34,6 +34,19 @@ pub enum KeyData {
         private: Option<dsa::SigningKey>,
         public: dsa::VerifyingKey,
     },
+    /// Finite-field Diffie-Hellman (X9.42 DH) key.
+    Dh {
+        /// Prime modulus p (big-endian bytes).
+        p: Vec<u8>,
+        /// Generator g (big-endian bytes).
+        g: Vec<u8>,
+        /// Subgroup order q (big-endian bytes, optional).
+        q: Option<Vec<u8>>,
+        /// Private key x (big-endian bytes, optional).
+        private_key: Option<Vec<u8>>,
+        /// Public key y = g^x mod p (big-endian bytes).
+        public_key: Vec<u8>,
+    },
     Hmac(Vec<u8>),
     Aes(Vec<u8>),
     Des3(Vec<u8>),
@@ -83,6 +96,14 @@ impl std::fmt::Debug for KeyData {
                     write!(f, "DSA public key")
                 }
             }
+            Self::Dh { private_key, p, .. } => {
+                let bits = p.len() * 8;
+                if private_key.is_some() {
+                    write!(f, "DH-{bits} private+public key")
+                } else {
+                    write!(f, "DH-{bits} public key")
+                }
+            }
             Self::Hmac(k) => write!(f, "HMAC key ({} bytes)", k.len()),
             Self::Aes(k) => write!(f, "AES key ({} bytes)", k.len()),
             Self::Des3(_) => write!(f, "3DES key"),
@@ -106,6 +127,7 @@ impl KeyData {
             Self::EcP384 { .. } => "EC-P384",
             Self::EcP521 { .. } => "EC-P521",
             Self::Dsa { .. } => "DSA",
+            Self::Dh { .. } => "DH",
             Self::Hmac(_) => "HMAC",
             Self::Aes(_) => "AES",
             Self::Des3(_) => "3DES",
@@ -199,6 +221,23 @@ impl KeyData {
                         "<{dsig_prefix}:DSAKeyValue><{dsig_prefix}:P>{p_b64}</{dsig_prefix}:P><{dsig_prefix}:Q>{q_b64}</{dsig_prefix}:Q><{dsig_prefix}:G>{g_b64}</{dsig_prefix}:G><{dsig_prefix}:Y>{y_b64}</{dsig_prefix}:Y></{dsig_prefix}:DSAKeyValue>"
                     ))
                 }
+            }
+            Self::Dh { p, g, q, public_key, .. } => {
+                let enc_ns = "http://www.w3.org/2001/04/xmlenc#";
+                let p_b64 = engine.encode(p);
+                let g_b64 = engine.encode(g);
+                let pub_b64 = engine.encode(public_key);
+                let mut xml = format!(
+                    "<xenc:DHKeyValue xmlns:xenc=\"{enc_ns}\"><xenc:P>{p_b64}</xenc:P>"
+                );
+                if let Some(q_bytes) = q {
+                    let q_b64 = engine.encode(q_bytes);
+                    xml.push_str(&format!("<xenc:Q>{q_b64}</xenc:Q>"));
+                }
+                xml.push_str(&format!(
+                    "<xenc:Generator>{g_b64}</xenc:Generator><xenc:Public>{pub_b64}</xenc:Public></xenc:DHKeyValue>"
+                ));
+                Some(xml)
             }
             _ => None,
         }
@@ -300,6 +339,16 @@ impl Key {
     pub fn rsa_private_key(&self) -> Option<&rsa::RsaPrivateKey> {
         match &self.data {
             KeyData::Rsa { private: Some(pk), .. } => Some(pk),
+            _ => None,
+        }
+    }
+
+    /// Get the DH key data if available.
+    pub fn dh_data(&self) -> Option<(&[u8], &[u8], Option<&[u8]>, Option<&[u8]>, &[u8])> {
+        match &self.data {
+            KeyData::Dh { p, g, q, private_key, public_key } => {
+                Some((p, g, q.as_deref(), private_key.as_deref(), public_key))
+            }
             _ => None,
         }
     }

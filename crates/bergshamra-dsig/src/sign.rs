@@ -50,13 +50,26 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
         .attribute(ns::attr::ALGORITHM)
         .ok_or_else(|| Error::MissingAttribute("Algorithm on SignatureMethod".into()))?;
 
-    // Process each Reference to compute digests
+    // Process each Reference to compute digests.
+    // We re-parse result_xml on each iteration so that same-document references
+    // (e.g. URI=#reference-1) see DigestValues filled in by earlier iterations.
     let mut result_xml = template_xml.to_owned();
-    let references = find_child_elements(signed_info, ns::DSIG, ns::node::REFERENCE);
+    let ref_count = find_child_elements(signed_info, ns::DSIG, ns::node::REFERENCE).len();
 
-    for reference in &references {
+    for ref_idx in 0..ref_count {
+        // Re-parse current state so same-document refs see filled DigestValues
+        let cur_doc = roxmltree::Document::parse_with_options(&result_xml, bergshamra_xml::parsing_options())
+            .map_err(|e: roxmltree::Error| Error::XmlParse(e.to_string()))?;
+        let cur_id_map = build_id_map(&cur_doc, &id_attrs);
+        let cur_sig = find_element(&cur_doc, ns::DSIG, ns::node::SIGNATURE)
+            .ok_or_else(|| Error::MissingElement("Signature".into()))?;
+        let cur_signed_info = find_child_element(cur_sig, ns::DSIG, ns::node::SIGNED_INFO)
+            .ok_or_else(|| Error::MissingElement("SignedInfo".into()))?;
+        let cur_refs = find_child_elements(cur_signed_info, ns::DSIG, ns::node::REFERENCE);
+        let reference = cur_refs[ref_idx];
+
         let uri = reference.attribute(ns::attr::URI).unwrap_or("");
-        let digest_method = find_child_element(*reference, ns::DSIG, ns::node::DIGEST_METHOD)
+        let digest_method = find_child_element(reference, ns::DSIG, ns::node::DIGEST_METHOD)
             .ok_or_else(|| Error::MissingElement("DigestMethod".into()))?;
         let digest_uri = digest_method
             .attribute(ns::attr::ALGORITHM)
@@ -65,28 +78,28 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
         // Resolve reference and apply transforms
         let mut data = if uri.is_empty() {
             // Per W3C spec: URI="" selects whole document without comments
-            let ns = NodeSet::all_without_comments(&doc);
+            let ns = NodeSet::all_without_comments(&cur_doc);
             bergshamra_transforms::TransformData::Xml {
-                xml_text: template_xml.to_owned(),
+                xml_text: result_xml.clone(),
                 node_set: Some(ns),
             }
         } else if let Some(fragment) = bergshamra_xml::xpath::parse_same_document_ref(uri) {
             if fragment == "xpointer(/)" {
                 bergshamra_transforms::TransformData::Xml {
-                    xml_text: template_xml.to_owned(),
+                    xml_text: result_xml.clone(),
                     node_set: None,
                 }
             } else {
                 let is_xpointer = bergshamra_xml::xpath::parse_xpointer_id(fragment).is_some();
                 let id = bergshamra_xml::xpath::parse_xpointer_id(fragment).unwrap_or(fragment);
-                let node = bergshamra_xml::xpath::resolve_id(&doc, &id_map, id)?;
+                let node = bergshamra_xml::xpath::resolve_id(&cur_doc, &cur_id_map, id)?;
                 let ns = if is_xpointer {
                     NodeSet::tree_with_comments(node)
                 } else {
                     NodeSet::tree_without_comments(node)
                 };
                 bergshamra_transforms::TransformData::Xml {
-                    xml_text: template_xml.to_owned(),
+                    xml_text: result_xml.clone(),
                     node_set: Some(ns),
                 }
             }
@@ -122,14 +135,14 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
             }
             resolved.ok_or_else(|| Error::InvalidUri(format!("unsupported URI: {uri}")))?
         };
-        let transforms_node = find_child_element(*reference, ns::DSIG, ns::node::TRANSFORMS);
+        let transforms_node = find_child_element(reference, ns::DSIG, ns::node::TRANSFORMS);
         if let Some(transforms) = transforms_node {
             for t_node in transforms.children() {
                 if !t_node.is_element() || t_node.tag_name().name() != ns::node::TRANSFORM {
                     continue;
                 }
                 let t_uri = t_node.attribute(ns::attr::ALGORITHM).unwrap_or("");
-                data = crate::verify::apply_transform(t_uri, data, &t_node, sig_node)?;
+                data = crate::verify::apply_transform(t_uri, data, &t_node, cur_sig)?;
             }
         }
 
@@ -143,7 +156,7 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
         // Replace the empty DigestValue in the result XML
         // This is a simple text replacement — works for templates
         // where DigestValue elements are initially empty.
-        let digest_value_text = find_child_element(*reference, ns::DSIG, ns::node::DIGEST_VALUE)
+        let digest_value_text = find_child_element(reference, ns::DSIG, ns::node::DIGEST_VALUE)
             .and_then(|n| n.text())
             .unwrap_or("");
 

@@ -79,3 +79,38 @@ pub fn ecdh_p521(
 
     Ok(shared_secret.raw_secret_bytes().to_vec())
 }
+
+/// Compute a finite-field Diffie-Hellman shared secret (X9.42 DH).
+///
+/// shared_secret = other_public ^ my_private mod p
+///
+/// All values are big-endian byte arrays. The result is zero-padded on the left
+/// to the byte-length of p (as required by the DH-ES specification).
+pub fn dh_compute(
+    other_public: &[u8],
+    my_private: &[u8],
+    p: &[u8],
+) -> Result<Vec<u8>, Error> {
+    use num_bigint_dig::BigUint;
+
+    let pub_uint = BigUint::from_bytes_be(other_public);
+    let priv_uint = BigUint::from_bytes_be(my_private);
+    let p_uint = BigUint::from_bytes_be(p);
+
+    if p_uint.bits() == 0 {
+        return Err(Error::Key("DH prime p is zero".into()));
+    }
+
+    let shared = pub_uint.modpow(&priv_uint, &p_uint);
+    let mut result = shared.to_bytes_be();
+
+    // Zero-pad to the byte-length of p
+    let p_len = p.len();
+    if result.len() < p_len {
+        let mut padded = vec![0u8; p_len - result.len()];
+        padded.extend_from_slice(&result);
+        result = padded;
+    }
+
+    Ok(result)
+}

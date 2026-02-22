@@ -317,9 +317,9 @@ fn resolve_encrypted_key_kek(
         .ok_or_else(|| Error::Key("no symmetric key for EncryptedKey cipher decryption".into()))
 }
 
-/// Resolve KEK via ECDH-ES key agreement (AgreementMethod in EncryptedKey KeyInfo).
+/// Resolve KEK via key agreement (ECDH-ES or DH-ES) in EncryptedKey KeyInfo.
 ///
-/// Returns `Ok(Some(kek))` if an AgreementMethod was found and ECDH succeeded,
+/// Returns `Ok(Some(kek))` if an AgreementMethod was found and key agreement succeeded,
 /// `Ok(None)` if no AgreementMethod is present, or `Err` on failure.
 fn resolve_agreement_method_kek(
     ctx: &EncContext,
@@ -338,41 +338,60 @@ fn resolve_agreement_method_kek(
     };
 
     let agreement_alg = agreement.attribute(ns::attr::ALGORITHM).unwrap_or("");
-    if agreement_alg != algorithm::ECDH_ES {
-        return Err(Error::UnsupportedAlgorithm(format!(
-            "key agreement: {agreement_alg}"
-        )));
-    }
 
-    // Extract originator's ephemeral public key from <OriginatorKeyInfo>
+    // Extract originator's public key from <OriginatorKeyInfo>
     let originator_ki = find_child_element(agreement, ns::ENC, ns::node::ORIGINATOR_KEY_INFO)
         .ok_or_else(|| Error::MissingElement("OriginatorKeyInfo".into()))?;
-    let originator_public_bytes = extract_ec_public_key_bytes(originator_ki)?;
 
-    // Extract recipient key name from <RecipientKeyInfo>
-    let recipient_key = resolve_recipient_ec_key(ctx, agreement)?;
+    // Compute shared secret based on agreement algorithm
+    let shared_secret = match agreement_alg {
+        algorithm::ECDH_ES => {
+            let originator_public_bytes = extract_ec_public_key_bytes(originator_ki)?;
+            let recipient_key = resolve_recipient_key(ctx, agreement)?;
 
-    // Compute ECDH shared secret
-    let shared_secret = match &recipient_key.data {
-        bergshamra_keys::key::KeyData::EcP256 { private: Some(sk), .. } => {
-            let secret = p256::SecretKey::from_bytes(&sk.to_bytes())
-                .map_err(|e| Error::Key(format!("P-256 secret key: {e}")))?;
-            bergshamra_crypto::keyagreement::ecdh_p256(&originator_public_bytes, &secret)?
+            match &recipient_key.data {
+                bergshamra_keys::key::KeyData::EcP256 { private: Some(sk), .. } => {
+                    let secret = p256::SecretKey::from_bytes(&sk.to_bytes())
+                        .map_err(|e| Error::Key(format!("P-256 secret key: {e}")))?;
+                    bergshamra_crypto::keyagreement::ecdh_p256(&originator_public_bytes, &secret)?
+                }
+                bergshamra_keys::key::KeyData::EcP384 { private: Some(sk), .. } => {
+                    let secret = p384::SecretKey::from_bytes(&sk.to_bytes())
+                        .map_err(|e| Error::Key(format!("P-384 secret key: {e}")))?;
+                    bergshamra_crypto::keyagreement::ecdh_p384(&originator_public_bytes, &secret)?
+                }
+                bergshamra_keys::key::KeyData::EcP521 { private: Some(sk), .. } => {
+                    use p521::elliptic_curve::generic_array::GenericArray;
+                    let bytes = sk.to_bytes();
+                    let secret = p521::SecretKey::from_bytes(GenericArray::from_slice(&bytes))
+                        .map_err(|e| Error::Key(format!("P-521 secret key: {e}")))?;
+                    bergshamra_crypto::keyagreement::ecdh_p521(&originator_public_bytes, &secret)?
+                }
+                _ => {
+                    return Err(Error::Key("recipient key is not an EC private key".into()));
+                }
+            }
         }
-        bergshamra_keys::key::KeyData::EcP384 { private: Some(sk), .. } => {
-            let secret = p384::SecretKey::from_bytes(&sk.to_bytes())
-                .map_err(|e| Error::Key(format!("P-384 secret key: {e}")))?;
-            bergshamra_crypto::keyagreement::ecdh_p384(&originator_public_bytes, &secret)?
-        }
-        bergshamra_keys::key::KeyData::EcP521 { private: Some(sk), .. } => {
-            use p521::elliptic_curve::generic_array::GenericArray;
-            let bytes = sk.to_bytes();
-            let secret = p521::SecretKey::from_bytes(GenericArray::from_slice(&bytes))
-                .map_err(|e| Error::Key(format!("P-521 secret key: {e}")))?;
-            bergshamra_crypto::keyagreement::ecdh_p521(&originator_public_bytes, &secret)?
+        algorithm::DH_ES => {
+            // Finite-field Diffie-Hellman key agreement
+            let originator_dh = extract_dh_public_key_from_xml(originator_ki)?;
+            let recipient_key = resolve_recipient_key(ctx, agreement)?;
+
+            match &recipient_key.data {
+                bergshamra_keys::key::KeyData::Dh { p, private_key: Some(x), .. } => {
+                    bergshamra_crypto::keyagreement::dh_compute(
+                        &originator_dh.public_key, x, p,
+                    )?
+                }
+                _ => {
+                    return Err(Error::Key("recipient key is not a DH private key".into()));
+                }
+            }
         }
         _ => {
-            return Err(Error::Key("recipient key is not an EC private key".into()));
+            return Err(Error::UnsupportedAlgorithm(format!(
+                "key agreement: {agreement_alg}"
+            )));
         }
     };
 
@@ -437,8 +456,8 @@ fn extract_ec_public_key_bytes(
         .map_err(|e| Error::Base64(format!("EC PublicKey: {e}")))
 }
 
-/// Resolve the recipient's EC private key from AgreementMethod.
-fn resolve_recipient_ec_key<'a>(
+/// Resolve the recipient's private key from AgreementMethod (EC or DH).
+fn resolve_recipient_key<'a>(
     ctx: &'a EncContext,
     agreement_node: roxmltree::Node<'_, '_>,
 ) -> Result<&'a bergshamra_keys::key::Key, Error> {
@@ -454,14 +473,60 @@ fn resolve_recipient_ec_key<'a>(
         }
     }
 
-    // Fallback: try first EC key with a private key in the manager
+    // Fallback: try first DH key, then EC key with a private key
+    if let Some(dh_key) = ctx.keys_manager.find_dh() {
+        if matches!(&dh_key.data, bergshamra_keys::key::KeyData::Dh { private_key: Some(_), .. }) {
+            return Ok(dh_key);
+        }
+    }
     ctx.keys_manager.find_ec_p256()
         .filter(|k| matches!(&k.data, bergshamra_keys::key::KeyData::EcP256 { private: Some(_), .. }))
         .or_else(|| ctx.keys_manager.find_ec_p384()
             .filter(|k| matches!(&k.data, bergshamra_keys::key::KeyData::EcP384 { private: Some(_), .. })))
         .or_else(|| ctx.keys_manager.find_ec_p521()
             .filter(|k| matches!(&k.data, bergshamra_keys::key::KeyData::EcP521 { private: Some(_), .. })))
-        .ok_or_else(|| Error::Key("no EC private key for ECDH-ES key agreement".into()))
+        .ok_or_else(|| Error::Key("no private key for key agreement".into()))
+}
+
+/// Parsed DH public key parameters from XML DHKeyValue.
+struct DhPublicKeyXml {
+    public_key: Vec<u8>,
+}
+
+/// Extract DH public key bytes from a KeyInfo element containing DHKeyValue.
+///
+/// Looks for `<KeyValue><DHKeyValue><Public>...</Public></DHKeyValue></KeyValue>`.
+/// The P, G, Q parameters are also in the DHKeyValue but we don't need them here
+/// (they come from the recipient's stored key).
+fn extract_dh_public_key_from_xml(
+    key_info_node: roxmltree::Node<'_, '_>,
+) -> Result<DhPublicKeyXml, Error> {
+    let key_value = find_child_element(key_info_node, ns::DSIG, ns::node::KEY_VALUE)
+        .ok_or_else(|| Error::MissingElement("KeyValue in OriginatorKeyInfo".into()))?;
+
+    let dh_kv = key_value
+        .children()
+        .find(|n| {
+            n.is_element()
+                && n.tag_name().name() == ns::node::DH_KEY_VALUE
+                && (n.tag_name().namespace().unwrap_or("") == ns::ENC
+                    || n.tag_name().namespace().unwrap_or("") == ns::DSIG)
+        })
+        .ok_or_else(|| Error::MissingElement("DHKeyValue".into()))?;
+
+    let public_b64 = dh_kv
+        .children()
+        .find(|n| n.is_element() && n.tag_name().name() == "Public")
+        .and_then(|n| n.text())
+        .ok_or_else(|| Error::MissingElement("Public in DHKeyValue".into()))?;
+
+    use base64::Engine;
+    let engine = base64::engine::general_purpose::STANDARD;
+    let public_key = engine
+        .decode(public_b64.trim().replace(['\n', '\r', ' '], ""))
+        .map_err(|e| Error::Base64(format!("DH Public: {e}")))?;
+
+    Ok(DhPublicKeyXml { public_key })
 }
 
 /// Resolve a DerivedKey element to get the encryption key via ConcatKDF or PBKDF2.
@@ -715,7 +780,19 @@ fn resolve_cipher_reference(
         .ok_or_else(|| Error::MissingAttribute("URI on CipherReference".into()))?;
 
     // Resolve same-document URI reference
-    let data = if let Some(id) = uri.strip_prefix('#') {
+    let data = if uri.is_empty() {
+        // URI="" means the whole document — transforms will select specific content
+        // Collect all text content from all nodes
+        let mut text = String::new();
+        for node in doc.root().descendants() {
+            if node.is_text() {
+                if let Some(t) = node.text() {
+                    text.push_str(t);
+                }
+            }
+        }
+        text.into_bytes()
+    } else if let Some(id) = uri.strip_prefix('#') {
         // Look up by ID
         let &node_id = id_map.get(id)
             .ok_or_else(|| Error::InvalidUri(format!("cannot resolve CipherReference #{id}")))?;
@@ -752,6 +829,11 @@ fn resolve_cipher_reference(
                     result = engine.decode(&clean)
                         .map_err(|e| Error::Base64(format!("CipherReference base64 transform: {e}")))?;
                 }
+                algorithm::XPATH => {
+                    // XPath transform for CipherReference: evaluate XPath on the
+                    // document and collect matching text content.
+                    result = apply_cipher_ref_xpath(doc, id_map, &child)?;
+                }
                 _ => {
                     return Err(Error::UnsupportedAlgorithm(
                         format!("CipherReference transform: {alg}")
@@ -762,6 +844,110 @@ fn resolve_cipher_reference(
     }
 
     Ok(result)
+}
+
+/// Apply an XPath transform for CipherReference.
+///
+/// Supports the pattern:
+///   `self::text()[parent::PREFIX:ELEM[@Id="VALUE"]]`
+/// which selects text nodes whose parent element matches the given
+/// namespace-qualified name and has Id=VALUE.
+fn apply_cipher_ref_xpath(
+    doc: &roxmltree::Document<'_>,
+    id_map: &HashMap<String, roxmltree::NodeId>,
+    transform_node: &roxmltree::Node<'_, '_>,
+) -> Result<Vec<u8>, Error> {
+    // Get the XPath expression text
+    let xpath_node = transform_node.children()
+        .find(|c| c.is_element() && c.tag_name().name() == "XPath")
+        .ok_or_else(|| Error::MissingElement("XPath in CipherReference transform".into()))?;
+    let xpath_text = xpath_node.text().unwrap_or("").trim();
+
+    // Parse: self::text()[parent::PREFIX:ELEM[@Id="VALUE"]]
+    // A simple regex-style parser for this specific pattern
+    if let Some(rest) = xpath_text.strip_prefix("self::text()[parent::") {
+        if let Some(rest) = rest.strip_suffix(']') {
+            // rest = PREFIX:ELEM[@Id="VALUE"]
+            // Split off the predicate
+            if let Some(bracket_pos) = rest.find('[') {
+                let name_part = &rest[..bracket_pos]; // PREFIX:ELEM
+                let pred_part = &rest[bracket_pos..];  // [@Id="VALUE"]
+
+                // Parse the element name (PREFIX:LOCAL)
+                let (prefix, local_name) = if let Some(colon_pos) = name_part.find(':') {
+                    (&name_part[..colon_pos], &name_part[colon_pos + 1..])
+                } else {
+                    ("", name_part)
+                };
+
+                // Resolve prefix to namespace URI using the XPath element's namespace declarations
+                let ns_uri = if prefix.is_empty() {
+                    ""
+                } else {
+                    xpath_node.lookup_namespace_uri(Some(prefix)).unwrap_or("")
+                };
+
+                // Parse predicate: [@Id="VALUE"] or [@Id='VALUE']
+                let id_value = parse_attr_predicate(pred_part, "Id");
+
+                // Find matching element and collect its text children
+                if let Some(id_val) = id_value {
+                    // Look up by ID first for efficiency
+                    if let Some(&node_id) = id_map.get(id_val) {
+                        if let Some(target) = doc.get_node(node_id) {
+                            let target_ns = target.tag_name().namespace().unwrap_or("");
+                            let target_local = target.tag_name().name();
+                            if target_ns == ns_uri && target_local == local_name {
+                                return Ok(collect_text_content(target).into_bytes());
+                            }
+                        }
+                    }
+                }
+
+                // Fall back to scanning all elements
+                for node in doc.root().descendants() {
+                    if !node.is_element() {
+                        continue;
+                    }
+                    let node_ns = node.tag_name().namespace().unwrap_or("");
+                    let node_local = node.tag_name().name();
+                    if node_ns == ns_uri && node_local == local_name {
+                        if let Some(id_val) = id_value {
+                            let node_id_attr = node.attribute("Id").unwrap_or("");
+                            if node_id_attr != id_val {
+                                continue;
+                            }
+                        }
+                        return Ok(collect_text_content(node).into_bytes());
+                    }
+                }
+
+                return Err(Error::Transform(
+                    format!("CipherReference XPath: no matching element for {xpath_text}")
+                ));
+            }
+        }
+    }
+
+    Err(Error::UnsupportedAlgorithm(
+        format!("CipherReference XPath expression not supported: {xpath_text}")
+    ))
+}
+
+/// Parse a simple attribute predicate like `[@Id="VALUE"]` or `[@Id='VALUE']`.
+/// Returns the attribute value if matched.
+fn parse_attr_predicate<'a>(pred: &'a str, attr_name: &str) -> Option<&'a str> {
+    // Expected format: [@Name="Value"] or [@Name='Value']
+    let inner = pred.strip_prefix("[@")?.strip_suffix(']')?;
+    let rest = inner.strip_prefix(attr_name)?.strip_prefix('=')?;
+    // Handle both single and double quotes
+    if let Some(val) = rest.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        return Some(val);
+    }
+    if let Some(val) = rest.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
+        return Some(val);
+    }
+    None
 }
 
 /// Collect all text content from a node and its descendants.

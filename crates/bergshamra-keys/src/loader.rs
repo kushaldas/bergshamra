@@ -179,6 +179,11 @@ fn load_private_key_pkcs8_der(der: &[u8]) -> Result<Key, Error> {
         }
     }
 
+    // Try DH (X9.42 DH, OID 1.2.840.10046.2.1)
+    if let Ok(key) = load_dh_private_pkcs8_der(der) {
+        return Ok(key);
+    }
+
     // Try post-quantum (ML-DSA, SLH-DSA)
     if let Some(key) = try_load_pq_private_key(der) {
         return Ok(key);
@@ -302,6 +307,10 @@ pub fn load_pem_auto(pem_data: &[u8], password: Option<&str>) -> Result<Key, Err
     if let Ok(key) = load_x509_cert_pem(pem_data) {
         return Ok(key);
     }
+    // Try generic PKCS#8 PEM (DH, DSA, etc. that aren't caught above)
+    if let Ok(key) = load_generic_pkcs8_pem(pem_data) {
+        return Ok(key);
+    }
     Err(Error::Key("unable to auto-detect key format from PEM data".into()))
 }
 
@@ -310,6 +319,17 @@ pub fn load_spki_pem(pem_data: &[u8]) -> Result<Key, Error> {
     let (_label, der_bytes) = pem_rfc7468::decode_vec(pem_data)
         .map_err(|e| Error::Key(format!("failed to decode SPKI PEM: {e}")))?;
     load_spki_der(&der_bytes)
+}
+
+/// Load a private key from a generic PKCS#8 PEM (fallback for DH, DSA, etc.).
+fn load_generic_pkcs8_pem(pem_data: &[u8]) -> Result<Key, Error> {
+    let (label, der_bytes) = pem_rfc7468::decode_vec(pem_data)
+        .map_err(|e| Error::Key(format!("failed to decode PEM: {e}")))?;
+    match label {
+        "PRIVATE KEY" => load_private_key_pkcs8_der(&der_bytes),
+        "PUBLIC KEY" => load_spki_der(&der_bytes),
+        _ => Err(Error::Key(format!("unsupported PEM label: {label}"))),
+    }
 }
 
 /// Load a public key from a PEM-encoded X.509 certificate.
@@ -475,6 +495,12 @@ pub fn load_x509_cert_der(data: &[u8]) -> Result<Key, Error> {
         return Ok(key);
     }
 
+    // Try DH (X9.42 DH)
+    if let Ok(mut key) = load_dh_public_spki_der(&spki_der) {
+        key.x509_chain = vec![data.to_vec()];
+        return Ok(key);
+    }
+
     Err(Error::Key("unsupported public key algorithm in X.509 certificate".into()))
 }
 
@@ -528,12 +554,181 @@ pub fn load_spki_der(spki_der: &[u8]) -> Result<Key, Error> {
         }
     }
 
+    // Try DH (X9.42 DH, OID 1.2.840.10046.2.1)
+    if let Ok(key) = load_dh_public_spki_der(spki_der) {
+        return Ok(key);
+    }
+
     // Try post-quantum (ML-DSA, SLH-DSA)
     if let Some(key) = try_load_pq_public_key(spki_der) {
         return Ok(key);
     }
 
     Err(Error::Key("unsupported public key algorithm in SPKI DER".into()))
+}
+
+// ── DH key loading helpers ───────────────────────────────────────────
+
+/// OID for X9.42 DH (dhpublicnumber): 1.2.840.10046.2.1
+const OID_DH_PUBLIC_NUMBER: &[u8] = &[0x06, 0x07, 0x2A, 0x86, 0x48, 0xCE, 0x3E, 0x02, 0x01];
+
+/// Load a DH private key from PKCS#8 DER bytes.
+///
+/// Structure: SEQUENCE {
+///   version INTEGER,
+///   algorithm SEQUENCE { oid OID, params SEQUENCE { p INTEGER, g INTEGER, q INTEGER } },
+///   privateKey OCTET STRING containing INTEGER
+/// }
+fn load_dh_private_pkcs8_der(der: &[u8]) -> Result<Key, Error> {
+    use num_bigint_dig::BigUint;
+
+    // Check that this is a DH key by looking for the OID
+    if !der.windows(OID_DH_PUBLIC_NUMBER.len()).any(|w| w == OID_DH_PUBLIC_NUMBER) {
+        return Err(Error::Key("not a DH key (OID mismatch)".into()));
+    }
+
+    // Parse the PKCS#8 structure manually using our ASN.1 helpers
+    // Parse outer SEQUENCE — content is the first return value
+    let (outer_content, _) = parse_asn1_tl(der, 0x30)?;
+
+    // Skip version INTEGER
+    let (_, rest) = skip_asn1_element(outer_content)?;
+
+    // Parse algorithm SEQUENCE
+    let (algo_content, rest) = parse_asn1_tl(rest, 0x30)?;
+
+    // Skip OID in algorithm
+    let (_, algo_rest) = skip_asn1_element(algo_content)?;
+
+    // Parse DH parameters SEQUENCE { p, g, q }
+    let (params_content, _) = parse_asn1_tl(algo_rest, 0x30)?;
+    let (p_bytes, params_rest) = parse_asn1_integer(params_content)?;
+    let (g_bytes, params_rest) = parse_asn1_integer(params_rest)?;
+    let q_bytes = if !params_rest.is_empty() {
+        let (q, _) = parse_asn1_integer(params_rest)?;
+        Some(q)
+    } else {
+        None
+    };
+
+    // Parse privateKey OCTET STRING containing INTEGER
+    let (pk_octet, _) = parse_asn1_tl(rest, 0x04)?;
+    let (x_bytes, _) = parse_asn1_integer(pk_octet)?;
+
+    // Compute public key: y = g^x mod p
+    let p_uint = BigUint::from_bytes_be(&p_bytes);
+    let g_uint = BigUint::from_bytes_be(&g_bytes);
+    let x_uint = BigUint::from_bytes_be(&x_bytes);
+    let y_uint = g_uint.modpow(&x_uint, &p_uint);
+    let public_key = y_uint.to_bytes_be();
+
+    Ok(Key::new(
+        KeyData::Dh {
+            p: p_bytes,
+            g: g_bytes,
+            q: q_bytes,
+            private_key: Some(x_bytes),
+            public_key,
+        },
+        KeyUsage::Any,
+    ))
+}
+
+/// Load a DH public key from SPKI DER bytes.
+///
+/// Structure: SEQUENCE {
+///   algorithm SEQUENCE { oid OID, params SEQUENCE { p INTEGER, g INTEGER, q INTEGER } },
+///   subjectPublicKey BIT STRING containing INTEGER
+/// }
+fn load_dh_public_spki_der(spki_der: &[u8]) -> Result<Key, Error> {
+    // Check for DH OID
+    if !spki_der.windows(OID_DH_PUBLIC_NUMBER.len()).any(|w| w == OID_DH_PUBLIC_NUMBER) {
+        return Err(Error::Key("not a DH key (OID mismatch)".into()));
+    }
+
+    // Parse outer SEQUENCE — content is the first return value
+    let (outer_content, _) = parse_asn1_tl(spki_der, 0x30)?;
+
+    // Parse algorithm SEQUENCE
+    let (algo_content, rest) = parse_asn1_tl(outer_content, 0x30)?;
+
+    // Skip OID
+    let (_, algo_rest) = skip_asn1_element(algo_content)?;
+
+    // Parse DH parameters
+    let (params_content, _) = parse_asn1_tl(algo_rest, 0x30)?;
+    let (p_bytes, params_rest) = parse_asn1_integer(params_content)?;
+    let (g_bytes, params_rest) = parse_asn1_integer(params_rest)?;
+    let q_bytes = if !params_rest.is_empty() {
+        let (q, _) = parse_asn1_integer(params_rest)?;
+        Some(q)
+    } else {
+        None
+    };
+
+    // Parse subjectPublicKey BIT STRING containing INTEGER
+    let (bitstring_content, _) = parse_asn1_tl(rest, 0x03)?;
+    // Skip the unused-bits byte (always 0 for DH)
+    if bitstring_content.is_empty() {
+        return Err(Error::Key("empty BIT STRING in DH public key".into()));
+    }
+    let inner = &bitstring_content[1..]; // skip unused bits byte
+    let (y_bytes, _) = parse_asn1_integer(inner)?;
+
+    Ok(Key::new(
+        KeyData::Dh {
+            p: p_bytes,
+            g: g_bytes,
+            q: q_bytes,
+            private_key: None,
+            public_key: y_bytes,
+        },
+        KeyUsage::Any,
+    ))
+}
+
+/// Parse an ASN.1 tag + length, returning (content, remaining_data).
+fn parse_asn1_tl(data: &[u8], expected_tag: u8) -> Result<(&[u8], &[u8]), Error> {
+    if data.is_empty() || data[0] != expected_tag {
+        return Err(Error::Key(format!(
+            "expected ASN.1 tag 0x{expected_tag:02X}, got 0x{:02X}",
+            data.first().unwrap_or(&0)
+        )));
+    }
+    let (len, content_start) = parse_asn1_length(&data[1..])
+        .ok_or_else(|| Error::Key("invalid ASN.1 length".into()))?;
+    if content_start.len() < len {
+        return Err(Error::Key("ASN.1 length exceeds data".into()));
+    }
+    Ok((&content_start[..len], &content_start[len..]))
+}
+
+/// Skip one ASN.1 element, returning (skipped_element_content, remaining_data).
+fn skip_asn1_element(data: &[u8]) -> Result<(&[u8], &[u8]), Error> {
+    if data.is_empty() {
+        return Err(Error::Key("empty ASN.1 data".into()));
+    }
+    let tag = data[0];
+    let (len, content_start) = parse_asn1_length(&data[1..])
+        .ok_or_else(|| Error::Key("invalid ASN.1 length".into()))?;
+    if content_start.len() < len {
+        return Err(Error::Key("ASN.1 element exceeds data".into()));
+    }
+    // Return the content of this element plus what remains after it
+    let _ = tag;
+    Ok((&content_start[..len], &content_start[len..]))
+}
+
+/// Parse an ASN.1 INTEGER, stripping leading zero byte, returning (value_bytes, remaining_data).
+fn parse_asn1_integer(data: &[u8]) -> Result<(Vec<u8>, &[u8]), Error> {
+    let (content, rest) = parse_asn1_tl(data, 0x02)?;
+    // Strip leading zero byte added for sign
+    let value = if content.len() > 1 && content[0] == 0 {
+        &content[1..]
+    } else {
+        content
+    };
+    Ok((value.to_vec(), rest))
 }
 
 // ── Post-quantum key loading helpers ─────────────────────────────────
@@ -818,5 +1013,45 @@ mod tests {
         let data = std::fs::read(p12_path).unwrap();
         let key = load_pkcs12(&data, "secret123").expect("load_pkcs12 should succeed");
         assert!(matches!(key.data, KeyData::PostQuantum { .. }));
+    }
+
+    #[test]
+    fn test_load_pkcs12_dh() {
+        let p12_path = std::path::Path::new("../../test-data/xmlenc11-interop-2012/DH-1024_SHA256WithDSA.p12");
+        if !p12_path.exists() {
+            eprintln!("skipping test: {p12_path:?} not found");
+            return;
+        }
+        let data = std::fs::read(p12_path).unwrap();
+        let key = load_pkcs12(&data, "passwd").expect("load_pkcs12 DH should succeed");
+        eprintln!("loaded key algo: {}", key.data.algorithm_name());
+        assert!(matches!(key.data, KeyData::Dh { .. }), "expected DH key, got {}", key.data.algorithm_name());
+    }
+
+    #[test]
+    fn test_load_dh_pem_private() {
+        let pem_path = std::path::Path::new("../../test-data/keys/dhx/dhx-rfc5114-3-first-key.pem");
+        if !pem_path.exists() {
+            eprintln!("skipping test: {pem_path:?} not found");
+            return;
+        }
+        let key = load_key_file_with_password(pem_path, None).expect("load DH PEM private");
+        eprintln!("loaded key algo: {}", key.data.algorithm_name());
+        assert!(matches!(key.data, KeyData::Dh { .. }), "expected DH key, got {}", key.data.algorithm_name());
+        if let KeyData::Dh { private_key, .. } = &key.data {
+            assert!(private_key.is_some(), "should have private key");
+        }
+    }
+
+    #[test]
+    fn test_load_dh_pem_public() {
+        let pem_path = std::path::Path::new("../../test-data/keys/dhx/dhx-rfc5114-3-second-pubkey.pem");
+        if !pem_path.exists() {
+            eprintln!("skipping test: {pem_path:?} not found");
+            return;
+        }
+        let key = load_key_file_with_password(pem_path, None).expect("load DH PEM public");
+        eprintln!("loaded key algo: {}", key.data.algorithm_name());
+        assert!(matches!(key.data, KeyData::Dh { .. }), "expected DH key, got {}", key.data.algorithm_name());
     }
 }

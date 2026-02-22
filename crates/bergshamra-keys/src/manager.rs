@@ -98,6 +98,11 @@ impl KeysManager {
         self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::PostQuantum { .. }))
     }
 
+    /// Find the first DH key.
+    pub fn find_dh(&self) -> Option<&Key> {
+        self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::Dh { .. }))
+    }
+
     /// Find an RSA key with a private key component.
     pub fn find_rsa_private(&self) -> Option<&Key> {
         self.keys.iter().find(|k| matches!(&k.data, crate::key::KeyData::Rsa { private: Some(_), .. }))

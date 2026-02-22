@@ -38,3 +38,4 @@ rand.workspace = true
 pkcs1.workspace = true
 pkcs8.workspace = true
 pbkdf2.workspace = true
+num-bigint-dig.workspace = true

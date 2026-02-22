@@ -325,7 +325,7 @@ fn resolve_encrypted_key_rsa<'a>(
         .ok_or_else(|| Error::Key("no RSA key for EncryptedKey".into()))
 }
 
-/// Resolve KEK via ECDH-ES key agreement for encryption.
+/// Resolve KEK via key agreement (ECDH-ES or DH-ES) for encryption.
 ///
 /// Returns `Ok(Some(kek))` if AgreementMethod is present in the EncryptedKey's KeyInfo,
 /// `Ok(None)` if no AgreementMethod found, or `Err` on failure.
@@ -345,47 +345,65 @@ fn resolve_agreement_method_encrypt(
     };
 
     let agreement_alg = agreement.attribute(ns::attr::ALGORITHM).unwrap_or("");
-    if agreement_alg != algorithm::ECDH_ES {
-        return Err(Error::UnsupportedAlgorithm(format!(
-            "key agreement: {agreement_alg}"
-        )));
-    }
 
     // For encryption, we use:
     //   originator's PRIVATE key + recipient's PUBLIC key → shared secret
     // Then derive KEK from the shared secret via ConcatKDF or PBKDF2.
 
     // Resolve originator private key (by name in OriginatorKeyInfo)
-    let originator_key = resolve_originator_ec_key(ctx, agreement)?;
+    let originator_key = resolve_originator_key(ctx, agreement)?;
 
     // Resolve recipient public key (by name in RecipientKeyInfo)
-    let recipient_key = resolve_recipient_ec_public_key(ctx, agreement)?;
+    let recipient_key = resolve_recipient_public_key(ctx, agreement)?;
 
-    // Get recipient's public key bytes (SEC1 uncompressed point)
-    let recipient_public_bytes = recipient_key.ec_public_key_bytes()
-        .ok_or_else(|| Error::Key("recipient key has no EC public key bytes".into()))?;
+    let shared_secret = match agreement_alg {
+        algorithm::ECDH_ES => {
+            // Get recipient's public key bytes (SEC1 uncompressed point)
+            let recipient_public_bytes = recipient_key.ec_public_key_bytes()
+                .ok_or_else(|| Error::Key("recipient key has no EC public key bytes".into()))?;
 
-    // Compute ECDH shared secret: originator_private × recipient_public
-    let shared_secret = match &originator_key.data {
-        bergshamra_keys::key::KeyData::EcP256 { private: Some(sk), .. } => {
-            let secret = p256::SecretKey::from_bytes(&sk.to_bytes())
-                .map_err(|e| Error::Key(format!("P-256 secret key: {e}")))?;
-            bergshamra_crypto::keyagreement::ecdh_p256(&recipient_public_bytes, &secret)?
+            // Compute ECDH shared secret: originator_private × recipient_public
+            match &originator_key.data {
+                bergshamra_keys::key::KeyData::EcP256 { private: Some(sk), .. } => {
+                    let secret = p256::SecretKey::from_bytes(&sk.to_bytes())
+                        .map_err(|e| Error::Key(format!("P-256 secret key: {e}")))?;
+                    bergshamra_crypto::keyagreement::ecdh_p256(&recipient_public_bytes, &secret)?
+                }
+                bergshamra_keys::key::KeyData::EcP384 { private: Some(sk), .. } => {
+                    let secret = p384::SecretKey::from_bytes(&sk.to_bytes())
+                        .map_err(|e| Error::Key(format!("P-384 secret key: {e}")))?;
+                    bergshamra_crypto::keyagreement::ecdh_p384(&recipient_public_bytes, &secret)?
+                }
+                bergshamra_keys::key::KeyData::EcP521 { private: Some(sk), .. } => {
+                    use p521::elliptic_curve::generic_array::GenericArray;
+                    let bytes = sk.to_bytes();
+                    let secret = p521::SecretKey::from_bytes(GenericArray::from_slice(&bytes))
+                        .map_err(|e| Error::Key(format!("P-521 secret key: {e}")))?;
+                    bergshamra_crypto::keyagreement::ecdh_p521(&recipient_public_bytes, &secret)?
+                }
+                _ => {
+                    return Err(Error::Key("originator key is not an EC private key".into()));
+                }
+            }
         }
-        bergshamra_keys::key::KeyData::EcP384 { private: Some(sk), .. } => {
-            let secret = p384::SecretKey::from_bytes(&sk.to_bytes())
-                .map_err(|e| Error::Key(format!("P-384 secret key: {e}")))?;
-            bergshamra_crypto::keyagreement::ecdh_p384(&recipient_public_bytes, &secret)?
-        }
-        bergshamra_keys::key::KeyData::EcP521 { private: Some(sk), .. } => {
-            use p521::elliptic_curve::generic_array::GenericArray;
-            let bytes = sk.to_bytes();
-            let secret = p521::SecretKey::from_bytes(GenericArray::from_slice(&bytes))
-                .map_err(|e| Error::Key(format!("P-521 secret key: {e}")))?;
-            bergshamra_crypto::keyagreement::ecdh_p521(&recipient_public_bytes, &secret)?
+        algorithm::DH_ES => {
+            // Finite-field DH: shared_secret = recipient_public ^ originator_private mod p
+            match (&originator_key.data, &recipient_key.data) {
+                (
+                    bergshamra_keys::key::KeyData::Dh { p, private_key: Some(x), .. },
+                    bergshamra_keys::key::KeyData::Dh { public_key: recipient_pub, .. },
+                ) => {
+                    bergshamra_crypto::keyagreement::dh_compute(recipient_pub, x, p)?
+                }
+                _ => {
+                    return Err(Error::Key("originator must be DH private key and recipient DH public key".into()));
+                }
+            }
         }
         _ => {
-            return Err(Error::Key("originator key is not an EC private key".into()));
+            return Err(Error::UnsupportedAlgorithm(format!(
+                "key agreement: {agreement_alg}"
+            )));
         }
     };
 
@@ -416,8 +434,8 @@ fn resolve_agreement_method_encrypt(
     Ok(Some(kek))
 }
 
-/// Resolve the originator's EC private key from AgreementMethod (for encryption).
-fn resolve_originator_ec_key<'a>(
+/// Resolve the originator's private key from AgreementMethod (EC or DH, for encryption).
+fn resolve_originator_key<'a>(
     ctx: &'a EncContext,
     agreement_node: roxmltree::Node<'_, '_>,
 ) -> Result<&'a bergshamra_keys::key::Key, Error> {
@@ -431,18 +449,23 @@ fn resolve_originator_ec_key<'a>(
             }
         }
     }
-    // Fallback: first EC key with a private key
+    // Fallback: first DH key with private, then EC key with a private key
+    if let Some(dh_key) = ctx.keys_manager.find_dh() {
+        if matches!(&dh_key.data, bergshamra_keys::key::KeyData::Dh { private_key: Some(_), .. }) {
+            return Ok(dh_key);
+        }
+    }
     ctx.keys_manager.find_ec_p256()
         .filter(|k| matches!(&k.data, bergshamra_keys::key::KeyData::EcP256 { private: Some(_), .. }))
         .or_else(|| ctx.keys_manager.find_ec_p384()
             .filter(|k| matches!(&k.data, bergshamra_keys::key::KeyData::EcP384 { private: Some(_), .. })))
         .or_else(|| ctx.keys_manager.find_ec_p521()
             .filter(|k| matches!(&k.data, bergshamra_keys::key::KeyData::EcP521 { private: Some(_), .. })))
-        .ok_or_else(|| Error::Key("no EC private key for ECDH-ES originator".into()))
+        .ok_or_else(|| Error::Key("no private key for key agreement originator".into()))
 }
 
-/// Resolve the recipient's EC public key from AgreementMethod (for encryption).
-fn resolve_recipient_ec_public_key<'a>(
+/// Resolve the recipient's public key from AgreementMethod (EC or DH, for encryption).
+fn resolve_recipient_public_key<'a>(
     ctx: &'a EncContext,
     agreement_node: roxmltree::Node<'_, '_>,
 ) -> Result<&'a bergshamra_keys::key::Key, Error> {
@@ -456,8 +479,7 @@ fn resolve_recipient_ec_public_key<'a>(
             }
         }
     }
-    // Fallback: try first EC key with a public key (but not the originator)
-    Err(Error::Key("no EC public key for ECDH-ES recipient".into()))
+    Err(Error::Key("no public key for key agreement recipient".into()))
 }
 
 /// Fill in the empty `<dsig:KeyValue/>` in OriginatorKeyInfo with the originator's EC public key.
@@ -484,8 +506,8 @@ fn fill_originator_key_value(
     };
 
     // Get the originator's key and generate KeyValue XML
-    let originator_key = resolve_originator_ec_key(ctx, agreement)?;
-    let ec_kv_xml = originator_key.data.to_key_value_xml("")
+    let originator_key = resolve_originator_key(ctx, agreement)?;
+    let kv_xml_content = originator_key.data.to_key_value_xml("")
         .ok_or_else(|| Error::Key("originator key has no KeyValue XML representation".into()))?;
 
     // Build the prefix for KeyValue tag from the template
@@ -494,9 +516,9 @@ fn fill_originator_key_value(
     let prefix = extract_prefix(kv_xml, "KeyValue");
 
     let replacement = if prefix.is_empty() {
-        format!("<KeyValue>{ec_kv_xml}</KeyValue>")
+        format!("<KeyValue>{kv_xml_content}</KeyValue>")
     } else {
-        format!("<{prefix}:KeyValue>{ec_kv_xml}</{prefix}:KeyValue>")
+        format!("<{prefix}:KeyValue>{kv_xml_content}</{prefix}:KeyValue>")
     };
 
     Ok(xml.replacen(kv_xml, &replacement, 1))

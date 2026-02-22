@@ -72,6 +72,7 @@ x509-cert = "0.2"
 yasna = { version = "0.5", features = ["std"] }
 pkcs5 = { version = "0.7", features = ["sha1-insecure"] }
 pbkdf2 = "0.12"
+num-bigint-dig = "0.8"
 
 # Utilities
 base64 = "0.22"
