@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PaymentInfo xmlns="http://example.org/paymentv2">
+  <Name>John Smith</Name>
+  <CreditCard Currency="USD" Limit="5,000"><EncryptedData xmlns="http://www.w3.org/2001/04/xmlenc#" Id="ED" Type="http://www.w3.org/2001/04/xmlenc#Content">
+  <EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#aes256-cbc"/>
+  <KeyInfo xmlns="http://www.w3.org/2000/09/xmldsig#">
+    <EncryptedKey xmlns="http://www.w3.org/2001/04/xmlenc#">
+      <EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#rsa-1_5"> </EncryptionMethod>
+      <KeyInfo xmlns="http://www.w3.org/2000/09/xmldsig#">
+        <X509Data>
+          <dsig11:X509Digest xmlns:dsig11="http://www.w3.org/2009/xmldsig11#" Algorithm="http://www.w3.org/2007/05/xmldsig-more#sha3-256">
+          0XfCzx+nA2UG3zWOlg04/OL3P+oUB0BKAMWMkrjN90A=
+          </dsig11:X509Digest>
+        </X509Data>
+      </KeyInfo>
+      <CipherData>
+        <CipherValue>o18klnyYqbzEj2PuxyE7GQ5np2MMoax8cZrH6/k0bO74RdZxEPMpjvZoHdMxgfI+
+Kbn91FKB6uSgevNtD+WXMCAQzdpkPG1EjKU1/uAMg2qg3j1nhLDC8DHVAF/77kp/
+2Xl/PJGAvl9e/vgpwx7aqvGP8O9UXZI7lKOoxAWbfwT+Ix/KI5lyPEWQmbC9EWgb
+6Ntw7iMZo08zxY1RK6/9EFTR0RfbvJQTHDHL6XWSTPnEhU+Uq5cAKtxCQwdzfUwB
+Y6xJObfvrOKYb4M3KG3OhZQqCu5PBbQfUArFyAf1WpSaJfgQI1CuUZqfmxLzQ/86
+SvkeWjoXrwyG/o+rc4j/ZEHWLAU1Hvov1BhuWUnl3BgIzjWL3tFQKJTrZPOo+NF5
+tlAxyNlCBmnxddvFamwaDAmXBSbj89ej97HmsPWzvB1OO3vMGO7fgxGiWd3tNm/g
+VOqlejawM50wojVcGQLJQpSS4no9RIo0cj59DfT3CdPb1FmAbirUoAs5I53m2MX7
+nEQf4khZctzjaW4ScF9pS8PzI4uaEoGo1ySijN1a9qqxqdGbl3gueh1kibp6/pDN
+Ey9uCH2Ti6egE6oJeQ1cemvZBifm4bWPzdd+5a8sinG0qti8nGfKD0hQ3b8D3lhF
+bKDQK0XDEygpJpRN7meYp7/6vTOAak1T3bEcRdqQXUc=</CipherValue>
+      </CipherData>
+    </EncryptedKey>
+  </KeyInfo>
+  <CipherData>
+    <CipherValue>POFCROvgexyFRmWPq7cOhtEugQbU5dvVPYl5MwKaDmRPb8gmi6G0plGoF+DfX1iS
+FaFSJpg+sa+U1HEFJOMIY0yS55ibigAY+w0uUZbFxB9Vll8Lc0/+/PDP90jbY3uu
+KoMLSPF6Rc1uV8Bn7Omm51uGYP1LhjALTAA6lzbpJ3AAHmhZuWxE5fRDcNcEPO7X</CipherValue>
+  </CipherData>
+</EncryptedData></CreditCard>
+</PaymentInfo>

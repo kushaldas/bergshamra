@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xenc:EncryptedData xmlns:xenc="http://www.w3.org/2001/04/xmlenc#" Type="http://www.w3.org/2001/04/xmlenc#Element">
+  <xenc:EncryptionMethod Algorithm="http://www.w3.org/2009/xmlenc11#aes128-gcm"/>
+  <dsig:KeyInfo xmlns:dsig="http://www.w3.org/2000/09/xmldsig#">
+    <xenc:EncryptedKey xmlns:xenc="http://www.w3.org/2001/04/xmlenc#">
+      <xenc:EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#kw-aes256"/>
+      <dsig:KeyInfo xmlns:dsig="http://www.w3.org/2000/09/xmldsig#">
+        <xenc:AgreementMethod Algorithm="http://www.w3.org/2009/xmlenc11#ECDH-ES">
+          <xenc11:KeyDerivationMethod xmlns:xenc11="http://www.w3.org/2009/xmlenc11#" Algorithm="http://www.w3.org/2009/xmlenc11#pbkdf2">
+            <xenc11:PBKDF2-params>
+              <xenc11:Salt>
+                <xenc11:Specified>Df3dRAhjGh8=</xenc11:Specified>
+              </xenc11:Salt>
+              <xenc11:IterationCount>2000</xenc11:IterationCount>
+              <xenc11:KeyLength>32</xenc11:KeyLength>
+              <xenc11:PRF Algorithm="http://www.w3.org/2001/04/xmldsig-more#hmac-sha512"/>
+            </xenc11:PBKDF2-params>
+          </xenc11:KeyDerivationMethod>
+          <xenc:OriginatorKeyInfo xmlns:dsig="http://www.w3.org/2000/09/xmldsig#">
+            <dsig:KeyName>originator-key-name</dsig:KeyName>
+            <dsig:KeyValue>
+<ECKeyValue xmlns="http://www.w3.org/2009/xmldsig11#">
+<NamedCurve URI="urn:oid:1.2.840.10045.3.1.7"/>
+<PublicKey>
+BP0u9NJD7Kr5y0l/FAoAFC/R47sbuK+H0q10x1QkHtLgOhuPUI+Q/6e6RYs3mEzW
+rTDbjqGyqMG9Da8rZXW9mLg=
+</PublicKey>
+</ECKeyValue>
+</dsig:KeyValue>
+          </xenc:OriginatorKeyInfo>
+          <xenc:RecipientKeyInfo xmlns:dsig="http://www.w3.org/2000/09/xmldsig#">
+            <dsig:KeyName>recipient-key-name</dsig:KeyName>
+          </xenc:RecipientKeyInfo>
+        </xenc:AgreementMethod>
+      </dsig:KeyInfo>
+      <xenc:CipherData>
+        <xenc:CipherValue>MAr7S0lPuObOVoMqckgrTlzb1Jzam2rR36S3ynCaTML2zR8EUluRog==</xenc:CipherValue>
+      </xenc:CipherData>
+    </xenc:EncryptedKey>
+  </dsig:KeyInfo>
+  <xenc:CipherData>
+    <xenc:CipherValue>sbV9a2blGtvsL8q0S7SGzz3/QI9nQBH1Gj5OB/ZMAlIvGovNW5b+dA2Eylrj2nxM
+yRONtqDZ6F/s5acoMfToLm7GowMkIenFHlyvjVKed4EZBi1i35AijgVJJipUzkot
+XcT3I981dLrK/v66i4e/LQxVNMCFj1aRkkdzy21Fp9pz9FppqzCuINc6MZhBg+xm
+kvuKfEoUO9p0k6Y4K4ovJzlEQ7a0BUYguLbZI4Vvq7ivao888xCyEGkfAh+MpDsL
+FT4mbee9GDO6rhGry5haD4QM1NxAKkigzDNpue2VSOhVxIdyGTMmK4A5BEA0Khb2
+WloxOrkrvO8544YLhyJX2nLiFlOQEVFxMgmhEEvmwIYT5OprrInqHnIBrrlBO4eW
+WZt2+CM=</xenc:CipherValue>
+  </xenc:CipherData>
+</xenc:EncryptedData>

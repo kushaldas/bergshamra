@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PaymentInfo xmlns="http://example.org/paymentv2">
+  <Name>John Smith</Name>
+  <CreditCard Currency="USD" Limit="5,000"><EncryptedData xmlns="http://www.w3.org/2001/04/xmlenc#" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns:xenc11="http://www.w3.org/2009/xmlenc11#" Id="ED" Type="http://www.w3.org/2001/04/xmlenc#Content">
+
+  <EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#aes256-cbc"/>
+	<ds:KeyInfo>
+	  <EncryptedKey Id="EK">
+ 		  <EncryptionMethod Algorithm="http://www.w3.org/2009/xmlenc11#rsa-oaep">
+  		  <ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha512"/>
+        <xenc11:MGF Algorithm="http://www.w3.org/2009/xmlenc11#mgf1sha512"/>
+      </EncryptionMethod>
+      <ds:KeyInfo>
+        <ds:KeyName>TestKeyName-rsa-4096</ds:KeyName>
+      </ds:KeyInfo>
+      <CipherData>
+        <CipherValue>D/URGRsuSZIi7c9Yb0tMrw9osxAZQQkxo742XNhYtT9wkMfqSXQepUCPbGPQy51c
+2ZK9gLhHTfHQYhyGaM9P/ib7KmsGO8fDsaWB1FemC2/4TD6uJGfyKtcllwgI5MKo
+YfP8I1pcR3s82sf+F0buDpd1CV8Fow16gMQ3aviOMssfH1b+CbD5XXHrmHAQv09n
+qsJJ5bv5V+m2AaUO9yy/q0bzhRZZSH0BmOves2OERip9H2s562C4L7bvaaEEv0ei
+KbwxyNW/18dOHwBi68mH9EHk1hmbpp6qsocbDLHXWpkCgclLT0PRtgi/Hg9xvaQl
+xnAhzwFV9pzPGxPJymsG1PFv7UI5Tq4XLyqLK2+5sjx4EDRgFJmlT4RcsdinvDVG
+T8y9A9KBB7/o7Q7ahIcb0kSwGvZuFV3kktS77D07i532QnURv7VpUohz24+sCW3s
+ihjSqqV8y6nZJqzR6SAA4YNHs7HAperl0u5+jYGM5HVVJhIMPKB9rJ+oVPjfeWXu
+uztlawV/rgcxnibzfgeDsIHUXG1XlkhEZIaqbYDAIlg55FTxDcRh6HOU5ehmRkwW
+4rDHJz2EBMqxoAFDbCg9F3QUcZbZfD2Ggfh4RTSq6L2h2r1xn9gqGipnX20qN7xa
+S8qe5fQ8JqJAGj9e7IOutZLkA7owkhVAuVdHCpnYREI=</CipherValue>
+      </CipherData>
+    </EncryptedKey>
+  </ds:KeyInfo>
+  <CipherData>
+    <CipherValue>YCiWFTb3n5xoJWsNXjhdLfE6B5PPbaMCWpGu3HwA6/EqsAs5wHZMJ2H6u8gjQWF2
+IvIa+uE7kOA5F2J7KlIlqoDLydwPqCYh/EJQKmUgPEEydKtJAxKoz4TGbZziLRLi
+9PHsryV7FYezUZwxWYpwuwCN8j8AUaGBvOgkQjzcNQztBk5DJ3VQ3v1ZsUJm5dSh</CipherValue>
+  </CipherData>
+</EncryptedData></CreditCard>
+</PaymentInfo>

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Envelope xmlns="urn:envelope">
+  <Data>
+	Hello, World!
+  </Data>
+  <Signature xmlns="http://www.w3.org/2000/09/xmldsig#">
+    <SignedInfo>
+      <CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/>
+      <SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha512"/>
+      <Reference URI="">
+        <Transforms>
+          <Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/>
+	<Transform Algorithm="http://www.w3.org/TR/1999/REC-xpath-19991116">
+	<XPath xmlns:dsig="http://www.w3.org/2000/09/xmldsig#">not(ancestor-or-self::dsig:Signature)</XPath>
+	</Transform>
+        </Transforms>
+        <DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha512"/>
+        <DigestValue>j12SN+LRqX4RricEwl5iEpjyand0nCMO8T5dNYR5P661F2ZrUS5wSbyMdu826KrG
+IQbvvjmkI+9+QmCrcJyXXA==</DigestValue>
+      </Reference>
+    </SignedInfo>
+    <SignatureValue>I7zw3oL/+cUbeXJCqb06PM/AMXLH8WRJw/zIBSxh87/5qsM9mXrjMYt0qwBKBynJ
+JjPKtvJzGXB+oQDJS/SaPL+z/mcFn5ojITRkh7ipw5l+1tT7jqZlmafGcCjV6H4E
+NYI4jHdBN5qdeK4E5ZgxBKwlaJPBurGPQvasjI5o6jV16KNPScnWOh3NGX8Vh+7h
+G0VBlkDsR/S8q0r8WSiLT8PTDeYySh3tAmG3qSe200fXTFSEfZQMYCMd/+rb9P+y
+kwYCdmeMpf0RBO2mWLpnHJS1ar2v7Dt6k+PEweyUH1BEriOezkT500bLJTW2qUBI
+imoJMNO8+kirHMTe2LiHV4S6rJoucWdAJnzlSjw/wzVNhA2FZ6fJdnMY3+f9Dodt
+mQmYhHWoUPGb06YWB+TL0HDPz8UZW2zLO3rLxGPHkG7oTp5XOXMAMrIE84VY32PN
+Zs2tntczqezULOBK3P7YFjDo6RUIARJwZz0r0bWbcpL12rHQ7QycAw9uVC1vqVSv
+tMG+QLhUW9Y6TWLEReV6Z1M0+GavH0RFPTsyihVoyH27hGvTCV4X4aRgaK3HWhsw
+mGRgT/dbPhdfZehaq19Iz12r95vRC2sInggfS7Vk5VPOCvBokaolf/R3k/gWArjN
+9DP60iX/iHmWfDWHgCIFBRI9L+rYKPYW9dq5+9M5QoY=</SignatureValue>
+    <KeyInfo>
+      <X509Data>
+        <X509IssuerSerial>
+          <X509IssuerName>emailAddress=xmlsec@aleksey.com,CN=Aleksey Sanin,O=XML Security Library (http://www.aleksey.com/xmlsec),ST=California,C=US</X509IssuerName>
+          <X509SerialNumber>12655831530416757462</X509SerialNumber>
+        </X509IssuerSerial>
+        <X509IssuerSerial>
+          <X509IssuerName>emailAddress=xmlsec@aleksey.com,CN=Aleksey Sanin,OU=Root CA,O=XML Security Library (http://www.aleksey.com/xmlsec),ST=California,C=US</X509IssuerName>
+          <X509SerialNumber>12655831530416757421</X509SerialNumber>
+        </X509IssuerSerial>
+        <X509IssuerSerial>
+          <X509IssuerName>emailAddress=xmlsec@aleksey.com,CN=Aleksey Sanin,OU=Root CA,O=XML Security Library (http://www.aleksey.com/xmlsec),ST=California,C=US</X509IssuerName>
+          <X509SerialNumber>12655831530416757420</X509SerialNumber>
+        </X509IssuerSerial>s
+      </X509Data>
+    </KeyInfo>
+  </Signature>
+</Envelope>
