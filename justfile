@@ -1,4 +1,7 @@
 # Bergshamra — build, test, and integration test recipes
+_default:
+  @just --list
+
 
 # Paths
 shim := justfile_directory() / "tests/xmlsec1-shim.py"
