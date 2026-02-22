@@ -86,7 +86,8 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
                 if self.with_comments && self.is_visible(id) {
                     let text = text.clone();
                     // Check if we need newlines around comments at the document level
-                    let parent_is_root = self.doc
+                    let parent_is_root = self
+                        .doc
                         .parent(id)
                         .is_some_and(|p| matches!(self.doc.node_kind(p), Some(NodeKind::Document)));
 
@@ -116,7 +117,8 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
                     let target = pi.target.clone();
                     let data = pi.data.clone();
 
-                    let parent_is_root = self.doc
+                    let parent_is_root = self
+                        .doc
                         .parent(id)
                         .is_some_and(|p| matches!(self.doc.node_kind(p), Some(NodeKind::Document)));
 
@@ -167,12 +169,12 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
             // If the node set has namespace node visibility filtering,
             // restrict in-scope namespaces to only those whose namespace
             // node is in the node-set (per C14N spec section 2.3).
-            let has_ns_filter = self.node_set
-                .map_or(false, |ns| ns.has_ns_visible());
+            let has_ns_filter = self.node_set.map_or(false, |ns| ns.has_ns_visible());
             let visible_ns: BTreeMap<String, String> = if has_ns_filter {
                 let eid = id.index();
                 let ns = self.node_set.unwrap();
-                current_ns.into_iter()
+                current_ns
+                    .into_iter()
                     .filter(|(prefix, _)| ns.is_ns_visible(eid, prefix))
                     .collect()
             } else {
@@ -224,8 +226,7 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
 
             // Collect attributes (non-namespace)
             // Skip if the node set excludes attribute nodes entirely.
-            let attrs_excluded = self.node_set
-                .map_or(false, |ns| ns.excludes_attrs());
+            let attrs_excluded = self.node_set.map_or(false, |ns| ns.excludes_attrs());
             let mut attrs: Vec<Attr> = Vec::new();
             if !attrs_excluded {
                 let elem = self.doc.element(id).unwrap();
@@ -254,9 +255,9 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
             // output its own xml:* attrs, so no inheritance is needed.
             // Skip when attribute nodes are excluded from the node set.
             if self.node_set.is_some() && !attrs_excluded {
-                let parent_not_visible = self.doc
-                    .parent(id)
-                    .map_or(true, |p| self.doc.element(p).is_none() || !self.is_visible(p));
+                let parent_not_visible = self.doc.parent(id).map_or(true, |p| {
+                    self.doc.element(p).is_none() || !self.is_visible(p)
+                });
                 if parent_not_visible {
                     let extra = self.collect_inherited_xml_attrs(id, &attrs);
                     attrs.extend(extra);
@@ -351,8 +352,7 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
             // nodes on invisible elements are output as text (not attached
             // to an element tag). This produces the ` xmlns:prefix="URI"`
             // text that appears "floating" in the canonical form.
-            let has_ns_filter = self.node_set
-                .map_or(false, |ns| ns.has_ns_visible());
+            let has_ns_filter = self.node_set.map_or(false, |ns| ns.has_ns_visible());
             if has_ns_filter {
                 let eid = id.index();
                 let ns = self.node_set.unwrap();
@@ -361,7 +361,8 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
                 let current_ns = collect_inscope_namespaces(self.doc, id);
 
                 // Filter by ns_visible
-                let visible_ns: BTreeMap<String, String> = current_ns.into_iter()
+                let visible_ns: BTreeMap<String, String> = current_ns
+                    .into_iter()
                     .filter(|(prefix, _)| ns.is_ns_visible(eid, prefix))
                     .collect();
 
@@ -408,11 +409,7 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
     /// visible. Per the spec and libxml2, we walk ALL ancestors (regardless
     /// of visibility) collecting xml:* attrs, then remove any already
     /// present on the element's own attribute axis.
-    fn collect_inherited_xml_attrs(
-        &self,
-        id: NodeId,
-        existing_attrs: &[Attr],
-    ) -> Vec<Attr> {
+    fn collect_inherited_xml_attrs(&self, id: NodeId, existing_attrs: &[Attr]) -> Vec<Attr> {
         let xml_ns = "http://www.w3.org/XML/1998/namespace";
         let mut inherited_xml: BTreeMap<String, String> = BTreeMap::new();
 
@@ -626,7 +623,10 @@ fn parse_uri_components(uri: &str) -> (String, String, String) {
     let (authority, path) = if rest.starts_with("//") {
         // Authority is //host[:port] up to next '/'
         if let Some(slash_pos) = rest[2..].find('/') {
-            (rest[..slash_pos + 2].to_owned(), rest[slash_pos + 2..].to_owned())
+            (
+                rest[..slash_pos + 2].to_owned(),
+                rest[slash_pos + 2..].to_owned(),
+            )
         } else {
             (rest.to_owned(), String::new())
         }
@@ -645,12 +645,7 @@ mod tests {
     fn test_simple_c14n() {
         let xml = r#"<root><a b="1" a="2"/></root>"#;
         let doc = uppsala::parse(xml).unwrap();
-        let result = canonicalize(
-            &doc,
-            false,
-            None,
-        )
-        .unwrap();
+        let result = canonicalize(&doc, false, None).unwrap();
         let output = String::from_utf8(result).unwrap();
         // Attributes should be sorted by local name (no namespace)
         assert_eq!(output, r#"<root><a a="2" b="1"></a></root>"#);
@@ -660,12 +655,7 @@ mod tests {
     fn test_namespace_rendering() {
         let xml = r#"<root xmlns:a="http://a" xmlns:b="http://b"><a:child/></root>"#;
         let doc = uppsala::parse(xml).unwrap();
-        let result = canonicalize(
-            &doc,
-            false,
-            None,
-        )
-        .unwrap();
+        let result = canonicalize(&doc, false, None).unwrap();
         let output = String::from_utf8(result).unwrap();
         assert!(output.contains("xmlns:a=\"http://a\""));
         assert!(output.contains("xmlns:b=\"http://b\""));
@@ -675,13 +665,154 @@ mod tests {
     fn test_text_escaping() {
         let xml = r#"<root>a &amp; b &lt; c</root>"#;
         let doc = uppsala::parse(xml).unwrap();
-        let result = canonicalize(
-            &doc,
-            false,
-            None,
-        )
-        .unwrap();
+        let result = canonicalize(&doc, false, None).unwrap();
         let output = String::from_utf8(result).unwrap();
         assert_eq!(output, "<root>a &amp; b &lt; c</root>");
+    }
+
+    // --- W3C C14N 1.0 Spec Examples ---
+    // From: https://www.w3.org/TR/2001/REC-xml-c14n-20010315#Examples
+
+    #[test]
+    fn test_w3c_example_3_1_without_comments() {
+        // Example 3.1: PIs, Comments, and Outside of Document Element
+        // The XML declaration and DTD are not reproduced.
+        // Comments are stripped in the without-comments variant.
+        // PIs are normalized (trailing spaces removed from PI without data).
+        // Note: The DTD "<!DOCTYPE doc SYSTEM "doc.dtd">" is ignored by the parser.
+        let input = "<?xml version=\"1.0\"?>\n\n\
+            <?xml-stylesheet   href=\"doc.xsl\" type=\"text/xsl\"   ?>\n\n\
+            <doc>Hello, world!<!-- Comment 1 --></doc>\n\n\
+            <?pi-without-data     ?>\n\n\
+            <!-- Comment 2 -->\n\n\
+            <!-- Comment 3 -->";
+        let doc = uppsala::parse(input).unwrap();
+        let result = canonicalize(&doc, false, None).unwrap();
+        let output = String::from_utf8(result).unwrap();
+        // Expected: PI normalized, doc element, PI without data normalized, no comments
+        let expected = "<?xml-stylesheet href=\"doc.xsl\" type=\"text/xsl\"   ?>\n\
+            <doc>Hello, world!</doc>\n\
+            <?pi-without-data?>";
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_w3c_example_3_1_with_comments() {
+        // Example 3.1 with comments preserved.
+        let input = "<?xml version=\"1.0\"?>\n\n\
+            <?xml-stylesheet   href=\"doc.xsl\" type=\"text/xsl\"   ?>\n\n\
+            <doc>Hello, world!<!-- Comment 1 --></doc>\n\n\
+            <?pi-without-data     ?>\n\n\
+            <!-- Comment 2 -->\n\n\
+            <!-- Comment 3 -->";
+        let doc = uppsala::parse(input).unwrap();
+        let result = canonicalize(&doc, true, None).unwrap();
+        let output = String::from_utf8(result).unwrap();
+        let expected = "<?xml-stylesheet href=\"doc.xsl\" type=\"text/xsl\"   ?>\n\
+            <doc>Hello, world!<!-- Comment 1 --></doc>\n\
+            <?pi-without-data?>\n\
+            <!-- Comment 2 -->\n\
+            <!-- Comment 3 -->";
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_w3c_example_3_2_whitespace_in_content() {
+        // Example 3.2: Whitespace in Document Content
+        // Whitespace within elements is preserved as-is.
+        let input = "<doc>\n\
+            \x20\x20\x20<clean>   </clean>\n\
+            \x20\x20\x20<dirty>   A   B   </dirty>\n\
+            \x20\x20\x20<mixed>\n\
+            \x20\x20\x20\x20\x20\x20A\n\
+            \x20\x20\x20\x20\x20\x20<clean>   </clean>\n\
+            \x20\x20\x20\x20\x20\x20B\n\
+            \x20\x20\x20\x20\x20\x20<dirty>   A   B   </dirty>\n\
+            \x20\x20\x20\x20\x20\x20C\n\
+            \x20\x20\x20</mixed>\n\
+            </doc>";
+        let doc = uppsala::parse(input).unwrap();
+        let result = canonicalize(&doc, false, None).unwrap();
+        let output = String::from_utf8(result).unwrap();
+        // Output should be identical to input (whitespace is preserved in C14N)
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_w3c_example_3_4_character_modifications() {
+        // Example 3.4: Character Modifications and Character References
+        // - Character references are replaced with the actual characters
+        // - CDATA sections are replaced with their content (with escaping)
+        // - Attribute values are normalized per XML spec
+        // Note: DTD-driven attribute normalization (NMTOKENS) is NOT supported
+        // by our parser, so normNames differs from the spec output.
+        //
+        // Modified test (same as Go library) - skip DTD-dependent normalizations.
+        let input = "<doc>\n\
+            \x20\x20\x20<text>First line&#x0d;&#10;Second line</text>\n\
+            \x20\x20\x20<value>&#x32;</value>\n\
+            \x20\x20\x20<compute><![CDATA[value>\"0\" && value<\"10\" ?\"valid\":\"error\"]]></compute>\n\
+            \x20\x20\x20<compute expr='value>\"0\" &amp;&amp; value&lt;\"10\" ?\"valid\":\"error\"'>valid</compute>\n\
+            \x20\x20\x20<norm attr=' &apos;   &#x20;&#13;&#xa;&#9;   &apos; '/>\n\
+            \x20\x20\x20<normNames attr='   A   &#x20;&#13;&#xa;&#9;   B   '/>\n\
+            </doc>";
+        let doc = uppsala::parse(input).unwrap();
+        let result = canonicalize(&doc, false, None).unwrap();
+        let output = String::from_utf8(result).unwrap();
+        // Expected output per W3C spec, modified for no-DTD:
+        // - &#x0d; -> &#xD; (CR in text)
+        // - &#10; -> actual newline
+        // - &#x32; -> "2"
+        // - CDATA replaced with escaped text
+        // - Attribute values use double quotes, entities escaped
+        // - normNames NOT NMTOKENS-normalized (no DTD support)
+        let expected = "<doc>\n\
+            \x20\x20\x20<text>First line&#xD;\n\
+            Second line</text>\n\
+            \x20\x20\x20<value>2</value>\n\
+            \x20\x20\x20<compute>value&gt;\"0\" &amp;&amp; value&lt;\"10\" ?\"valid\":\"error\"</compute>\n\
+            \x20\x20\x20<compute expr=\"value>&quot;0&quot; &amp;&amp; value&lt;&quot;10&quot; ?&quot;valid&quot;:&quot;error&quot;\">valid</compute>\n\
+            \x20\x20\x20<norm attr=\" '    &#xD;&#xA;&#x9;   ' \"></norm>\n\
+            \x20\x20\x20<normNames attr=\"   A    &#xD;&#xA;&#x9;   B   \"></normNames>\n\
+            </doc>";
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_w3c_example_3_6_utf8_encoding() {
+        // Example 3.6: UTF-8 Encoding
+        // The copyright character (©, U+00A9) encoded as ISO-8859-1 in the
+        // XML declaration. C14N output is UTF-8 without XML declaration.
+        // Note: Our parser handles UTF-8 input. The copyright sign is U+00A9
+        // which is 0xC2 0xA9 in UTF-8.
+        let input = "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>\n<doc>\u{00A9}</doc>";
+        let doc = uppsala::parse(input).unwrap();
+        let result = canonicalize(&doc, false, None).unwrap();
+        let output = String::from_utf8(result).unwrap();
+        assert_eq!(output, "<doc>\u{00A9}</doc>");
+    }
+
+    #[test]
+    fn test_comment_stripping() {
+        // Multiple adjacent comments should all be stripped in without-comments mode.
+        // Ported from Go signedxml GitHub Issue #50.
+        let input = "<a><!-- comment0 --><!-- comment1 --><!-- comment2 --></a>";
+        let doc = uppsala::parse(input).unwrap();
+        let result = canonicalize(&doc, false, None).unwrap();
+        let output = String::from_utf8(result).unwrap();
+        assert_eq!(output, "<a></a>");
+    }
+
+    #[test]
+    fn test_comment_preservation() {
+        // Multiple adjacent comments should all be preserved in with-comments mode.
+        let input = "<a><!-- comment0 --><!-- comment1 --><!-- comment2 --></a>";
+        let doc = uppsala::parse(input).unwrap();
+        let result = canonicalize(&doc, true, None).unwrap();
+        let output = String::from_utf8(result).unwrap();
+        assert_eq!(
+            output,
+            "<a><!-- comment0 --><!-- comment1 --><!-- comment2 --></a>"
+        );
     }
 }

@@ -88,7 +88,14 @@ def parse_xmlsec1_args(args):
             sys.exit(0)
         elif arg == "check-transforms" or arg == "check-key-data":
             # The test runner calls these to check if features are supported.
-            # We accept everything for now.
+            # Reject unsupported algorithms so the test runner skips them.
+            # To re-enable a family, remove its entry from UNSUPPORTED.
+            UNSUPPORTED = ("gost",)  # GOST R 34.10/34.11 — no RustCrypto crate yet
+            remaining = [a for a in args[i + 1 :] if not a.startswith("-")]
+            for name in remaining:
+                if any(u in name.lower() for u in UNSUPPORTED):
+                    print(f"xmlsec1-shim: unsupported {arg}: {name}", file=sys.stderr)
+                    sys.exit(1)
             sys.exit(0)
 
         # Output
@@ -461,9 +468,7 @@ def main():
             sys.stderr.write(result.stderr)
         sys.exit(result.returncode)
     except FileNotFoundError:
-        print(
-            f"xmlsec1-shim: bergshamra not found at {BERGSHAMRA}", file=sys.stderr
-        )
+        print(f"xmlsec1-shim: bergshamra not found at {BERGSHAMRA}", file=sys.stderr)
         print(
             "Set BERGSHAMRA env var or build with: cargo build --release",
             file=sys.stderr,

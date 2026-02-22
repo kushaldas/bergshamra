@@ -32,7 +32,7 @@ bergshamra-enc = { path = "crates/bergshamra-enc" }
 bergshamra-pkcs12 = { path = "crates/bergshamra-pkcs12" }
 
 # XML parsing
-uppsala = "0.1.2"
+uppsala = "0.2.0"
 
 # Cryptography (RustCrypto ecosystem)
 sha1 = { version = "0.10", features = ["oid"] }

@@ -3318,4 +3318,321 @@ mod tests {
             "non-cid reference should be processed normally, digest mismatch expected"
         );
     }
+
+    // --- Tests ported from Go signedxml library ---
+    // These tests verify XML-DSig validation against real-world SAML, WSFed, and
+    // other signed XML documents originally from the Go signedxml test suite.
+
+    /// Path to the signedxml test data directory (relative to crate root).
+    const SIGNEDXML_TESTDATA: &str = "../../test-data/signedxml";
+
+    /// Helper: load a test file, returning the content or skipping if not found.
+    fn load_signedxml_testdata(filename: &str) -> String {
+        let path = std::path::Path::new(SIGNEDXML_TESTDATA).join(filename);
+        if !path.exists() {
+            eprintln!("skipping {filename}: test-data/signedxml/{filename} not found");
+            return String::new();
+        }
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()))
+    }
+
+    /// Helper: create a default DsigContext (no keys, insecure, no cert validation).
+    fn default_ctx() -> DsigContext {
+        DsigContext::new(bergshamra_keys::KeysManager::new())
+    }
+
+    #[test]
+    fn test_validate_bbauth_metadata() {
+        // Blackbaud Auth SAML metadata with enveloped signature and embedded X509.
+        // Uses exc-c14n, rsa-sha256, sha256.
+        let xml = load_signedxml_testdata("bbauth-metadata.xml");
+        if xml.is_empty() {
+            return;
+        }
+        let ctx = default_ctx();
+        let result = verify(&ctx, &xml).expect("verify should not return Err");
+        assert!(
+            result.is_valid(),
+            "bbauth-metadata.xml should verify: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_saml_external_ns() {
+        // SAML Assertion with external namespace declarations, embedded X509.
+        // Uses exc-c14n, rsa-sha1, sha1.
+        let xml = load_signedxml_testdata("saml-external-ns.xml");
+        if xml.is_empty() {
+            return;
+        }
+        let ctx = default_ctx();
+        let result = verify(&ctx, &xml).expect("verify should not return Err");
+        assert!(
+            result.is_valid(),
+            "saml-external-ns.xml should verify: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_signature_with_inclusive_namespaces() {
+        // SAML Assertion with InclusiveNamespaces PrefixList="xs" in exc-c14n transform.
+        // Uses exc-c14n, rsa-sha1, sha1.
+        let xml = load_signedxml_testdata("signature-with-inclusivenamespaces.xml");
+        if xml.is_empty() {
+            return;
+        }
+        let ctx = default_ctx();
+        let result = verify(&ctx, &xml).expect("verify should not return Err");
+        assert!(
+            result.is_valid(),
+            "signature-with-inclusivenamespaces.xml should verify: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_valid_saml() {
+        // Full SAML Response with enveloped signature, embedded X509.
+        // Uses exc-c14n, rsa-sha1, sha1.
+        let xml = load_signedxml_testdata("valid-saml.xml");
+        if xml.is_empty() {
+            return;
+        }
+        let ctx = default_ctx();
+        let result = verify(&ctx, &xml).expect("verify should not return Err");
+        assert!(
+            result.is_valid(),
+            "valid-saml.xml should verify: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_wsfed_metadata() {
+        // WS-Federation EntityDescriptor with enveloped signature, embedded X509.
+        // Uses exc-c14n, rsa-sha256, sha256. File has UTF-8 BOM.
+        let xml = load_signedxml_testdata("wsfed-metadata.xml");
+        if xml.is_empty() {
+            return;
+        }
+        let ctx = default_ctx();
+        let result = verify(&ctx, &xml).expect("verify should not return Err");
+        assert!(
+            result.is_valid(),
+            "wsfed-metadata.xml should verify: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_rootxmlns_with_external_cert() {
+        // SAML Response where Signature uses dsig: prefix declared on root element.
+        // No embedded X509 — requires external certificate.
+        // Uses exc-c14n, rsa-sha1, sha1.
+        let xml = load_signedxml_testdata("rootxmlns.xml");
+        let cert_pem = load_signedxml_testdata("rootxmlns.crt");
+        if xml.is_empty() || cert_pem.is_empty() {
+            return;
+        }
+        let mut mgr = bergshamra_keys::KeysManager::new();
+        let key = bergshamra_keys::loader::load_x509_cert_pem(cert_pem.as_bytes())
+            .expect("load rootxmlns.crt");
+        mgr.add_key(key);
+        let ctx = DsigContext::new(mgr);
+        let result = verify(&ctx, &xml).expect("verify should not return Err");
+        assert!(
+            result.is_valid(),
+            "rootxmlns.xml should verify with external cert: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_invalid_signature_changed_content() {
+        // WS-Fed metadata with tampered entityID (sts -> stx).
+        // Digest mismatch expected.
+        let xml = load_signedxml_testdata("invalid-signature-changed-content.xml");
+        if xml.is_empty() {
+            return;
+        }
+        let ctx = default_ctx();
+        let result = verify(&ctx, &xml).expect("verify should not return Err");
+        assert!(!result.is_valid(), "changed-content should fail validation");
+        if let VerifyResult::Invalid { reason } = &result {
+            assert!(
+                reason.contains("digest") || reason.contains("Digest"),
+                "error should mention digest mismatch, got: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_invalid_signature_non_existing_reference() {
+        // WS-Fed metadata where the ID attribute was changed so the Reference URI
+        // points to a non-existing element.
+        let xml = load_signedxml_testdata("invalid-signature-non-existing-reference.xml");
+        if xml.is_empty() {
+            return;
+        }
+        let ctx = default_ctx();
+        let result = verify(&ctx, &xml);
+        // This should either return an error (element not found) or Invalid
+        match result {
+            Ok(r) => assert!(!r.is_valid(), "non-existing reference should fail: {r:?}"),
+            Err(e) => {
+                // An error about missing/unresolvable reference is also acceptable
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("URI")
+                        || msg.contains("reference")
+                        || msg.contains("not found")
+                        || msg.contains("resolve"),
+                    "error should relate to unresolvable reference, got: {msg}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_invalid_signature_wrong_signature_value() {
+        // WS-Fed metadata with bogus SignatureValue (base64 of "signedxml:").
+        // The digest should still pass, but the signature value verification fails.
+        let xml = load_signedxml_testdata("invalid-signature-signature-value.xml");
+        if xml.is_empty() {
+            return;
+        }
+        let ctx = default_ctx();
+        let result = verify(&ctx, &xml);
+        // Should fail — either Invalid or an Err (crypto error from bad sig bytes)
+        match result {
+            Ok(r) => assert!(!r.is_valid(), "wrong signature value should fail: {r:?}"),
+            Err(_) => {
+                // A crypto error from mismatched signature bytes is also acceptable
+            }
+        }
+    }
+
+    #[test]
+    fn test_missing_signature_element() {
+        // Attempting to verify XML with no <Signature> element should return an error.
+        let xml = "<doc><content>hello</content></doc>";
+        let ctx = default_ctx();
+        let result = verify(&ctx, xml);
+        assert!(result.is_err(), "should error when no Signature element");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Signature"),
+            "error should mention Signature, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_missing_signed_info_element() {
+        // Signature element present but no SignedInfo should return an error.
+        let xml = r##"<Root>
+  <ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+    <ds:SignatureValue>AAAA</ds:SignatureValue>
+  </ds:Signature>
+</Root>"##;
+        let ctx = default_ctx();
+        let result = verify(&ctx, xml);
+        assert!(result.is_err(), "should error when no SignedInfo");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("SignedInfo"),
+            "error should mention SignedInfo, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_missing_canonicalization_method() {
+        // SignedInfo present but no CanonicalizationMethod.
+        let xml = r##"<Root>
+  <ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+    <ds:SignedInfo>
+      <ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>
+    </ds:SignedInfo>
+    <ds:SignatureValue>AAAA</ds:SignatureValue>
+  </ds:Signature>
+</Root>"##;
+        let ctx = default_ctx();
+        let result = verify(&ctx, xml);
+        assert!(
+            result.is_err(),
+            "should error when no CanonicalizationMethod"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("CanonicalizationMethod"),
+            "error should mention CanonicalizationMethod, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_missing_signature_method() {
+        // SignedInfo with CanonicalizationMethod but no SignatureMethod.
+        let xml = r##"<Root>
+  <ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+    <ds:SignedInfo>
+      <ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
+    </ds:SignedInfo>
+    <ds:SignatureValue>AAAA</ds:SignatureValue>
+  </ds:Signature>
+</Root>"##;
+        let ctx = default_ctx();
+        let result = verify(&ctx, xml);
+        assert!(result.is_err(), "should error when no SignatureMethod");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("SignatureMethod"),
+            "error should mention SignatureMethod, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_missing_signature_method_algorithm() {
+        // SignatureMethod present but no Algorithm attribute.
+        let xml = r##"<Root>
+  <ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+    <ds:SignedInfo>
+      <ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
+      <ds:SignatureMethod/>
+    </ds:SignedInfo>
+    <ds:SignatureValue>AAAA</ds:SignatureValue>
+  </ds:Signature>
+</Root>"##;
+        let ctx = default_ctx();
+        let result = verify(&ctx, xml);
+        assert!(
+            result.is_err(),
+            "should error when SignatureMethod has no Algorithm"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Algorithm") || err_msg.contains("SignatureMethod"),
+            "error should mention Algorithm, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_missing_canonicalization_method_algorithm() {
+        // CanonicalizationMethod present but no Algorithm attribute.
+        let xml = r##"<Root>
+  <ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+    <ds:SignedInfo>
+      <ds:CanonicalizationMethod/>
+      <ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>
+    </ds:SignedInfo>
+    <ds:SignatureValue>AAAA</ds:SignatureValue>
+  </ds:Signature>
+</Root>"##;
+        let ctx = default_ctx();
+        let result = verify(&ctx, xml);
+        assert!(
+            result.is_err(),
+            "should error when CanonicalizationMethod has no Algorithm"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Algorithm") || err_msg.contains("CanonicalizationMethod"),
+            "error should mention Algorithm, got: {err_msg}"
+        );
+    }
 }

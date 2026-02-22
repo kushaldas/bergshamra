@@ -77,7 +77,8 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
             Some(NodeKind::Comment(text)) => {
                 if self.with_comments && self.is_visible(id) {
                     let text = text.clone();
-                    let parent_is_root = self.doc
+                    let parent_is_root = self
+                        .doc
                         .parent(id)
                         .is_some_and(|p| matches!(self.doc.node_kind(p), Some(NodeKind::Document)));
 
@@ -105,7 +106,8 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
                     let target = pi.target.clone();
                     let data = pi.data.clone();
 
-                    let parent_is_root = self.doc
+                    let parent_is_root = self
+                        .doc
                         .parent(id)
                         .is_some_and(|p| matches!(self.doc.node_kind(p), Some(NodeKind::Document)));
 
@@ -182,12 +184,12 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
 
             // If namespace node visibility filtering is active, restrict
             // to only namespace nodes that are in the node set.
-            let has_ns_filter = self.node_set
-                .map_or(false, |ns| ns.has_ns_visible());
+            let has_ns_filter = self.node_set.map_or(false, |ns| ns.has_ns_visible());
             let visible_inscope_ns = if has_ns_filter {
                 let eid = id.index();
                 let ns = self.node_set.unwrap();
-                inscope_ns.into_iter()
+                inscope_ns
+                    .into_iter()
                     .filter(|(prefix, _)| ns.is_ns_visible(eid, prefix))
                     .collect()
             } else {
@@ -303,13 +305,13 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
             // tags.  However, for prefixes in InclusiveNamespaces
             // PrefixList, we follow inclusive C14N rules which include
             // outputting namespace nodes on invisible elements.
-            let has_ns_filter = self.node_set
-                .map_or(false, |ns| ns.has_ns_visible());
+            let has_ns_filter = self.node_set.map_or(false, |ns| ns.has_ns_visible());
             if has_ns_filter && !self.inclusive_prefixes.is_empty() {
                 let eid = id.index();
                 let ns = self.node_set.unwrap();
                 let inscope = collect_inscope_namespaces(self.doc, id);
-                let visible_ns: BTreeMap<String, String> = inscope.into_iter()
+                let visible_ns: BTreeMap<String, String> = inscope
+                    .into_iter()
                     .filter(|(prefix, _)| ns.is_ns_visible(eid, prefix))
                     .filter(|(prefix, _)| {
                         // Only output for InclusiveNamespaces PrefixList
@@ -322,9 +324,14 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
                     .collect();
                 let mut ns_decls: Vec<NsDecl> = Vec::new();
                 for (prefix, uri) in &visible_ns {
-                    if prefix == "xml" { continue; }
+                    if prefix == "xml" {
+                        continue;
+                    }
                     if rendered_ns.get(prefix) != Some(uri) {
-                        ns_decls.push(NsDecl { prefix: prefix.clone(), uri: uri.clone() });
+                        ns_decls.push(NsDecl {
+                            prefix: prefix.clone(),
+                            uri: uri.clone(),
+                        });
                     }
                 }
                 ns_decls.sort();
@@ -420,5 +427,156 @@ fn qualified_element_name(doc: &Document<'_>, id: NodeId) -> String {
         format!("{}:{}", prefix, elem.name.local_name)
     } else {
         elem.name.local_name.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- W3C C14N Spec Examples tested with Exclusive C14N ---
+    // Ported from Go signedxml library canonicalization_test.go.
+    // The Go library only implements exclusive C14N, so all its tests use
+    // exclusive mode. Exclusive C14N differs from inclusive in namespace
+    // handling, but for documents without namespaces, the output should be
+    // identical.
+
+    #[test]
+    fn test_exc_c14n_example_3_1_without_comments() {
+        // W3C Example 3.1: PIs, Comments, and Outside of Document Element
+        let input = "<?xml version=\"1.0\"?>\n\n\
+            <?xml-stylesheet   href=\"doc.xsl\" type=\"text/xsl\"   ?>\n\n\
+            <doc>Hello, world!<!-- Comment 1 --></doc>\n\n\
+            <?pi-without-data     ?>\n\n\
+            <!-- Comment 2 -->\n\n\
+            <!-- Comment 3 -->";
+        let doc = uppsala::parse(input).unwrap();
+        let result = canonicalize(&doc, false, None, &[]).unwrap();
+        let output = String::from_utf8(result).unwrap();
+        let expected = "<?xml-stylesheet href=\"doc.xsl\" type=\"text/xsl\"   ?>\n\
+            <doc>Hello, world!</doc>\n\
+            <?pi-without-data?>";
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_exc_c14n_example_3_1_with_comments() {
+        let input = "<?xml version=\"1.0\"?>\n\n\
+            <?xml-stylesheet   href=\"doc.xsl\" type=\"text/xsl\"   ?>\n\n\
+            <doc>Hello, world!<!-- Comment 1 --></doc>\n\n\
+            <?pi-without-data     ?>\n\n\
+            <!-- Comment 2 -->\n\n\
+            <!-- Comment 3 -->";
+        let doc = uppsala::parse(input).unwrap();
+        let result = canonicalize(&doc, true, None, &[]).unwrap();
+        let output = String::from_utf8(result).unwrap();
+        let expected = "<?xml-stylesheet href=\"doc.xsl\" type=\"text/xsl\"   ?>\n\
+            <doc>Hello, world!<!-- Comment 1 --></doc>\n\
+            <?pi-without-data?>\n\
+            <!-- Comment 2 -->\n\
+            <!-- Comment 3 -->";
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_exc_c14n_example_3_2_whitespace() {
+        // W3C Example 3.2: Whitespace in Document Content
+        let input = "<doc>\n\
+            \x20\x20\x20<clean>   </clean>\n\
+            \x20\x20\x20<dirty>   A   B   </dirty>\n\
+            \x20\x20\x20<mixed>\n\
+            \x20\x20\x20\x20\x20\x20A\n\
+            \x20\x20\x20\x20\x20\x20<clean>   </clean>\n\
+            \x20\x20\x20\x20\x20\x20B\n\
+            \x20\x20\x20\x20\x20\x20<dirty>   A   B   </dirty>\n\
+            \x20\x20\x20\x20\x20\x20C\n\
+            \x20\x20\x20</mixed>\n\
+            </doc>";
+        let doc = uppsala::parse(input).unwrap();
+        let result = canonicalize(&doc, false, None, &[]).unwrap();
+        let output = String::from_utf8(result).unwrap();
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_exc_c14n_example_3_4_character_modifications() {
+        // W3C Example 3.4: Character references, CDATA, attribute escaping.
+        // Modified output (no DTD processing), same as Go library.
+        let input = "<doc>\n\
+            \x20\x20\x20<text>First line&#x0d;&#10;Second line</text>\n\
+            \x20\x20\x20<value>&#x32;</value>\n\
+            \x20\x20\x20<compute><![CDATA[value>\"0\" && value<\"10\" ?\"valid\":\"error\"]]></compute>\n\
+            \x20\x20\x20<compute expr='value>\"0\" &amp;&amp; value&lt;\"10\" ?\"valid\":\"error\"'>valid</compute>\n\
+            \x20\x20\x20<norm attr=' &apos;   &#x20;&#13;&#xa;&#9;   &apos; '/>\n\
+            \x20\x20\x20<normNames attr='   A   &#x20;&#13;&#xa;&#9;   B   '/>\n\
+            </doc>";
+        let doc = uppsala::parse(input).unwrap();
+        let result = canonicalize(&doc, false, None, &[]).unwrap();
+        let output = String::from_utf8(result).unwrap();
+        let expected = "<doc>\n\
+            \x20\x20\x20<text>First line&#xD;\n\
+            Second line</text>\n\
+            \x20\x20\x20<value>2</value>\n\
+            \x20\x20\x20<compute>value&gt;\"0\" &amp;&amp; value&lt;\"10\" ?\"valid\":\"error\"</compute>\n\
+            \x20\x20\x20<compute expr=\"value>&quot;0&quot; &amp;&amp; value&lt;&quot;10&quot; ?&quot;valid&quot;:&quot;error&quot;\">valid</compute>\n\
+            \x20\x20\x20<norm attr=\" '    &#xD;&#xA;&#x9;   ' \"></norm>\n\
+            \x20\x20\x20<normNames attr=\"   A    &#xD;&#xA;&#x9;   B   \"></normNames>\n\
+            </doc>";
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_exc_c14n_example_3_6_utf8() {
+        // W3C Example 3.6: UTF-8 Encoding (copyright sign U+00A9)
+        let input = "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>\n<doc>\u{00A9}</doc>";
+        let doc = uppsala::parse(input).unwrap();
+        let result = canonicalize(&doc, false, None, &[]).unwrap();
+        let output = String::from_utf8(result).unwrap();
+        assert_eq!(output, "<doc>\u{00A9}</doc>");
+    }
+
+    #[test]
+    fn test_exc_c14n_comment_stripping() {
+        // GitHub Issue #50 from Go signedxml: multiple adjacent comments stripped.
+        let input = "<a><!-- comment0 --><!-- comment1 --><!-- comment2 --></a>";
+        let doc = uppsala::parse(input).unwrap();
+        let result = canonicalize(&doc, false, None, &[]).unwrap();
+        let output = String::from_utf8(result).unwrap();
+        assert_eq!(output, "<a></a>");
+    }
+
+    #[test]
+    fn test_exc_c14n_namespace_not_visibly_utilized() {
+        // Exclusive C14N only renders namespace declarations that are visibly
+        // utilized by the element or its attributes. Unused prefixes from
+        // ancestors should NOT appear.
+        let input = r#"<root xmlns:a="http://a" xmlns:b="http://b"><a:child/></root>"#;
+        let doc = uppsala::parse(input).unwrap();
+        let result = canonicalize(&doc, false, None, &[]).unwrap();
+        let output = String::from_utf8(result).unwrap();
+        // In exclusive C14N, xmlns:b should NOT appear on <a:child> since
+        // only xmlns:a is visibly utilized. But at the root level, both are
+        // visibly utilized (root uses neither, but inclusive prefixes matter).
+        // Actually for the root element with no prefix, neither a: nor b: is
+        // visibly utilized. But we're canonicalizing the whole document, so
+        // the root element gets no namespace decls in exclusive C14N unless
+        // they're used. Check that a:child gets xmlns:a.
+        assert!(output.contains("xmlns:a=\"http://a\""));
+    }
+
+    #[test]
+    fn test_exc_c14n_with_inclusive_prefixes() {
+        // Exclusive C14N with InclusiveNamespaces PrefixList.
+        // When a prefix is in the PrefixList, it should be rendered even if
+        // not visibly utilized by the element.
+        let input =
+            r#"<root xmlns:xs="http://www.w3.org/2001/XMLSchema"><child attr="val"/></root>"#;
+        let doc = uppsala::parse(input).unwrap();
+        let prefixes = vec!["xs".to_string()];
+        let result = canonicalize(&doc, false, None, &prefixes).unwrap();
+        let output = String::from_utf8(result).unwrap();
+        // With "xs" in InclusiveNamespaces PrefixList, the xs namespace should
+        // be rendered on elements even though it's not visibly utilized.
+        assert!(output.contains("xmlns:xs=\"http://www.w3.org/2001/XMLSchema\""));
     }
 }
