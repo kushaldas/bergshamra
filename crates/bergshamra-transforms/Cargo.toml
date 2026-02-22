@@ -13,4 +13,4 @@ bergshamra-c14n.workspace = true
 bergshamra-crypto.workspace = true
 bergshamra-keys.workspace = true
 base64.workspace = true
-roxmltree.workspace = true
+uppsala.workspace = true

@@ -9,6 +9,7 @@
 
 use bergshamra_core::Error;
 use std::collections::HashMap;
+use uppsala::{Document, NodeId};
 
 /// Parse a same-document reference (e.g., `#foo` → `foo`).
 pub fn parse_same_document_ref(uri: &str) -> Option<&str> {
@@ -16,14 +17,14 @@ pub fn parse_same_document_ref(uri: &str) -> Option<&str> {
 }
 
 /// Resolve an ID value in a parsed document using a pre-built ID map.
-pub fn resolve_id<'a>(
-    doc: &'a roxmltree::Document<'a>,
-    id_map: &HashMap<String, roxmltree::NodeId>,
+pub fn resolve_id(
+    _doc: &Document<'_>,
+    id_map: &HashMap<String, NodeId>,
     id: &str,
-) -> Result<roxmltree::Node<'a, 'a>, Error> {
+) -> Result<NodeId, Error> {
     id_map
         .get(id)
-        .and_then(|nid| doc.get_node(*nid))
+        .copied()
         .ok_or_else(|| Error::InvalidUri(format!("ID not found: {id}")))
 }
 
@@ -40,28 +41,29 @@ pub fn parse_xpointer_id(expr: &str) -> Option<&str> {
     None
 }
 
-/// Check if `ancestor` is an ancestor-or-self of `node`.
+/// Check if `ancestor_id` is an ancestor-or-self of `node_id`.
 pub fn is_ancestor_or_self(
-    ancestor: roxmltree::Node<'_, '_>,
-    node: roxmltree::Node<'_, '_>,
+    doc: &Document<'_>,
+    ancestor_id: NodeId,
+    node_id: NodeId,
 ) -> bool {
-    let mut current = Some(node);
+    let mut current = Some(node_id);
     while let Some(n) = current {
-        if n.id() == ancestor.id() {
+        if n == ancestor_id {
             return true;
         }
-        current = n.parent();
+        current = doc.parent(n);
     }
     false
 }
 
 /// Collect the ancestor-or-self axis for a node (node IDs from the node up to root).
-pub fn ancestor_or_self(node: roxmltree::Node<'_, '_>) -> Vec<roxmltree::NodeId> {
-    let mut result = vec![node.id()];
-    let mut current = node.parent();
+pub fn ancestor_or_self(doc: &Document<'_>, node_id: NodeId) -> Vec<NodeId> {
+    let mut result = vec![node_id];
+    let mut current = doc.parent(node_id);
     while let Some(n) = current {
-        result.push(n.id());
-        current = n.parent();
+        result.push(n);
+        current = doc.parent(n);
     }
     result
 }

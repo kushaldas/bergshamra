@@ -588,10 +588,13 @@ fn cmd_encrypt(
 /// Check if the template has a wrapper element around EncryptedData.
 /// Returns true if EncryptedData is NOT the root element (i.e., it's embedded in a document).
 fn template_has_wrapper(template_xml: &str) -> bool {
-    if let Ok(doc) = roxmltree::Document::parse_with_options(template_xml, bergshamra_xml::parsing_options()) {
-        let root = doc.root_element();
-        // If the root element is EncryptedData, there's no wrapper
-        root.tag_name().name() != "EncryptedData"
+    if let Ok(doc) = uppsala::parse(template_xml) {
+        if let Some(root_id) = doc.document_element() {
+            if let Some(elem) = doc.element(root_id) {
+                return &*elem.name.local_name != "EncryptedData";
+            }
+        }
+        false
     } else {
         false
     }
@@ -610,31 +613,40 @@ fn extract_node_data(
 
     let xml_str = std::str::from_utf8(data)
         .map_err(|e| Error::Other(format!("data is not valid UTF-8: {e}")))?;
-    let doc = roxmltree::Document::parse_with_options(xml_str, bergshamra_xml::parsing_options())
-        .map_err(|e: roxmltree::Error| Error::XmlParse(e.to_string()))?;
+    let doc = uppsala::parse(xml_str)
+        .map_err(|e| Error::XmlParse(e.to_string()))?;
 
-    let target_node = if let Some(name) = node_name {
+    let target_node_id = if let Some(name) = node_name {
         // Parse namespace:localname format
         let (ns_uri, local_name) = if let Some(colon_pos) = name.rfind(':') {
             (&name[..colon_pos], &name[colon_pos + 1..])
         } else {
             ("", name)
         };
-        doc.descendants()
-            .find(|n| {
-                n.is_element()
-                    && n.tag_name().name() == local_name
-                    && (ns_uri.is_empty() || n.tag_name().namespace().unwrap_or("") == ns_uri)
+        doc.descendants(doc.root())
+            .into_iter()
+            .find(|&nid| {
+                if let Some(elem) = doc.element(nid) {
+                    &*elem.name.local_name == local_name
+                        && (ns_uri.is_empty()
+                            || elem.name.namespace_uri.as_deref().unwrap_or("") == ns_uri)
+                } else {
+                    false
+                }
             })
             .ok_or_else(|| Error::MissingElement(format!("element matching --node-name {name}")))?
     } else if let Some(id) = node_id {
         let mut id_attr_names: Vec<&str> = vec!["Id", "ID", "id"];
         let extra: Vec<&str> = id_attrs.iter().map(|s| s.as_str()).collect();
         id_attr_names.extend(extra);
-        doc.descendants()
-            .find(|n| {
-                n.is_element()
-                    && id_attr_names.iter().any(|attr| n.attribute(*attr) == Some(id))
+        doc.descendants(doc.root())
+            .into_iter()
+            .find(|&nid| {
+                if let Some(elem) = doc.element(nid) {
+                    id_attr_names.iter().any(|attr| elem.get_attribute(attr) == Some(id))
+                } else {
+                    false
+                }
             })
             .ok_or_else(|| Error::MissingElement(format!("element with ID={id}")))?
     } else {
@@ -642,7 +654,8 @@ fn extract_node_data(
     };
 
     // Extract the element's serialized form from the original XML
-    let range = target_node.range();
+    let range = doc.node_range(target_node_id)
+        .ok_or_else(|| Error::Other("could not determine source range for node".into()))?;
     Ok(xml_str[range.start..range.end].as_bytes().to_vec())
 }
 

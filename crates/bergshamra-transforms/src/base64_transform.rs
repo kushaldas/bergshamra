@@ -5,20 +5,22 @@
 use crate::pipeline::{Transform, TransformData};
 use bergshamra_core::{algorithm, Error};
 use bergshamra_xml::NodeSet;
+use uppsala::NodeKind;
 
 /// Extract text content from an XML document, optionally filtered by a node set.
 fn extract_text_content(xml_text: &str, node_set: Option<&NodeSet>) -> Result<String, Error> {
-    let doc = roxmltree::Document::parse_with_options(xml_text, bergshamra_xml::parsing_options())
+    let doc = uppsala::parse(xml_text)
         .map_err(|e| Error::Transform(format!("base64: XML parse: {e}")))?;
     let mut text = String::new();
-    for node in doc.descendants() {
-        if node.is_text() {
+    let root = doc.root();
+    for id in doc.descendants(root) {
+        if let Some(NodeKind::Text(t)) | Some(NodeKind::CData(t)) = doc.node_kind(id) {
             if let Some(ns) = node_set {
-                if ns.contains(&node) {
-                    text.push_str(node.text().unwrap_or(""));
+                if ns.contains_id(id) {
+                    text.push_str(t);
                 }
             } else {
-                text.push_str(node.text().unwrap_or(""));
+                text.push_str(t);
             }
         }
     }

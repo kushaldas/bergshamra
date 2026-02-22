@@ -15,6 +15,7 @@ pub mod render;
 
 use bergshamra_core::{algorithm, Error};
 use bergshamra_xml::NodeSet;
+use uppsala::Document;
 
 /// The canonicalization mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,7 +86,7 @@ pub fn canonicalize(
     node_set: Option<&NodeSet>,
     inclusive_prefixes: &[String],
 ) -> Result<Vec<u8>, Error> {
-    let doc = roxmltree::Document::parse_with_options(xml, roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() }).map_err(|e| Error::XmlParse(e.to_string()))?;
+    let doc = uppsala::parse(xml).map_err(|e| Error::XmlParse(e.to_string()))?;
 
     match mode {
         C14nMode::Inclusive | C14nMode::InclusiveWithComments => {
@@ -102,7 +103,7 @@ pub fn canonicalize(
 
 /// Convenience: canonicalize with a pre-parsed document.
 pub fn canonicalize_doc(
-    doc: &roxmltree::Document<'_>,
+    doc: &Document<'_>,
     mode: C14nMode,
     node_set: Option<&NodeSet>,
     inclusive_prefixes: &[String],

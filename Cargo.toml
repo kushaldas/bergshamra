@@ -10,7 +10,6 @@ members = [
     "crates/bergshamra-dsig",
     "crates/bergshamra-enc",
     "crates/bergshamra",
-    "crates/roxmltree",
 ]
 resolver = "2"
 
@@ -33,8 +32,7 @@ bergshamra-enc = { path = "crates/bergshamra-enc" }
 bergshamra-pkcs12 = { path = "crates/bergshamra-pkcs12" }
 
 # XML parsing
-roxmltree = { path = "crates/roxmltree" }
-quick-xml = "0.36"
+uppsala = "0.1.2"
 
 # Cryptography (RustCrypto ecosystem)
 sha1 = { version = "0.10", features = ["oid"] }

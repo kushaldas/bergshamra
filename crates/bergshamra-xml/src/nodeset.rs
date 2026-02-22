@@ -3,10 +3,11 @@
 //! NodeSet type for XML canonicalization and transforms.
 //!
 //! A `NodeSet` represents a set of nodes from an XML document, identified by
-//! their `roxmltree::NodeId`.  It supports the set operations needed by
+//! their `NodeId`.  It supports the set operations needed by
 //! XPath Filter 2.0 and the enveloped-signature transform.
 
 use std::collections::{HashMap, HashSet};
+use uppsala::{Document, NodeId, NodeKind};
 
 /// The type of a node set, matching xmlsec's `xmlSecNodeSetType`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,7 +32,7 @@ pub enum NodeSetOp {
     Union,
 }
 
-/// A set of XML document nodes identified by `roxmltree::NodeId`.
+/// A set of XML document nodes identified by `NodeId`.
 #[derive(Debug, Clone)]
 pub struct NodeSet {
     /// The node IDs in this set.
@@ -80,8 +81,13 @@ impl NodeSet {
     }
 
     /// Create a node set containing all nodes in the document.
-    pub fn all(doc: &roxmltree::Document<'_>) -> Self {
-        let nodes: HashSet<usize> = doc.descendants().map(|n| node_index(n)).collect();
+    pub fn all(doc: &Document<'_>) -> Self {
+        let root = doc.root();
+        let mut nodes: HashSet<usize> = HashSet::new();
+        nodes.insert(root.index());
+        for id in doc.descendants(root) {
+            nodes.insert(id.index());
+        }
         Self {
             nodes,
             set_type: NodeSetType::Normal,
@@ -92,11 +98,15 @@ impl NodeSet {
 
     /// Create a node set containing all nodes except comments.
     /// Per W3C DSig spec, `URI=""` selects the document without comments.
-    pub fn all_without_comments(doc: &roxmltree::Document<'_>) -> Self {
-        let nodes: HashSet<usize> = doc.descendants()
-            .filter(|n| !n.is_comment())
-            .map(|n| node_index(n))
-            .collect();
+    pub fn all_without_comments(doc: &Document<'_>) -> Self {
+        let root = doc.root();
+        let mut nodes: HashSet<usize> = HashSet::new();
+        nodes.insert(root.index());
+        for id in doc.descendants(root) {
+            if !matches!(doc.node_kind(id), Some(NodeKind::Comment(_))) {
+                nodes.insert(id.index());
+            }
+        }
         Self {
             nodes,
             set_type: NodeSetType::Normal,
@@ -106,9 +116,9 @@ impl NodeSet {
     }
 
     /// Create a node set for a subtree rooted at the given node (without comments).
-    pub fn tree_without_comments(root: roxmltree::Node<'_, '_>) -> Self {
+    pub fn tree_without_comments(root_id: NodeId, doc: &Document<'_>) -> Self {
         let mut nodes = HashSet::new();
-        collect_subtree(root, &mut nodes, false);
+        collect_subtree(root_id, doc, &mut nodes, false);
         Self {
             nodes,
             set_type: NodeSetType::Normal,
@@ -118,9 +128,9 @@ impl NodeSet {
     }
 
     /// Create a node set for a subtree rooted at the given node (with comments).
-    pub fn tree_with_comments(root: roxmltree::Node<'_, '_>) -> Self {
+    pub fn tree_with_comments(root_id: NodeId, doc: &Document<'_>) -> Self {
         let mut nodes = HashSet::new();
-        collect_subtree(root, &mut nodes, true);
+        collect_subtree(root_id, doc, &mut nodes, true);
         Self {
             nodes,
             set_type: NodeSetType::Normal,
@@ -130,16 +140,12 @@ impl NodeSet {
     }
 
     /// Check if a node is in this set.
-    pub fn contains(&self, node: &roxmltree::Node<'_, '_>) -> bool {
-        let idx = node_index(*node);
+    pub fn contains_id(&self, id: NodeId) -> bool {
+        let idx = id.index();
         match self.set_type {
             NodeSetType::Normal => self.nodes.contains(&idx),
             NodeSetType::Invert => !self.nodes.contains(&idx),
             NodeSetType::Tree | NodeSetType::TreeWithoutComments | NodeSetType::TreeInvert => {
-                // For tree types, the nodes set contains root nodes.
-                // We need to check if this node is a descendant of any root.
-                // This is a simplified implementation; for large sets,
-                // we'd pre-expand during construction.
                 self.nodes.contains(&idx)
             }
         }
@@ -156,13 +162,13 @@ impl NodeSet {
     }
 
     /// Add a node to this set.
-    pub fn insert(&mut self, node: &roxmltree::Node<'_, '_>) {
-        self.nodes.insert(node_index(*node));
+    pub fn insert_id(&mut self, id: NodeId) {
+        self.nodes.insert(id.index());
     }
 
     /// Remove a node from this set.
-    pub fn remove(&mut self, node: &roxmltree::Node<'_, '_>) {
-        self.nodes.remove(&node_index(*node));
+    pub fn remove_id(&mut self, id: NodeId) {
+        self.nodes.remove(&id.index());
     }
 
     /// Compute the intersection of two node sets.
@@ -318,68 +324,19 @@ fn merge_ns_visible_subtract(
     }
 }
 
-/// Get a stable numeric index for a roxmltree node.
-///
-/// `roxmltree::NodeId` doesn't expose its inner index directly, but
-/// we can use the node's position in document order.
-pub fn node_index(node: roxmltree::Node<'_, '_>) -> usize {
-    // roxmltree NodeId can be used as an index via get_node
-    // We use a trick: the Debug output of NodeId contains the index,
-    // but it's simpler to just track the document-order position.
-    // Actually, NodeId has a `get_usize()` — no it doesn't.
-    // Let's use the node's document position by iterating.
-    // This is O(1) because we can extract from the internal id.
-    //
-    // roxmltree::NodeId internally stores a usize index.
-    // We can get it via the id() method which returns a NodeId,
-    // then format it.
-    let id = node.id();
-    // NodeId doesn't expose its inner value, but we can use
-    // the document's get_node to verify. For efficiency, we'll
-    // just use the Debug representation to extract the index.
-    // Actually the simplest approach: store the NodeId directly.
-    // But HashSet needs Hash, and NodeId doesn't implement Hash.
-    //
-    // Workaround: NodeId is Copy and can be compared, but not hashed.
-    // We can create a wrapper, or simply use the debug string.
-    //
-    // Better approach: roxmltree documents are arena-allocated and
-    // nodes are indexed sequentially.  We can count by iterating
-    // from the root, but that's O(n).
-    //
-    // Best approach: use the internal representation.
-    // roxmltree::NodeId is a newtype around usize, but the field is private.
-    // We can use `std::mem::transmute` — but we forbid unsafe.
-    //
-    // Actually, let's just use Debug format since NodeId prints as
-    // `NodeId(N)`.  This is a hack but works without unsafe.
-    let debug = format!("{:?}", id);
-    // Format is "NodeId(123)"
-    let num_str = debug
-        .strip_prefix("NodeId(")
-        .and_then(|s| s.strip_suffix(')'))
-        .unwrap_or("0");
-    num_str.parse::<usize>().unwrap_or(0)
-}
-
 /// Collect all nodes in a subtree into a HashSet.
 fn collect_subtree(
-    node: roxmltree::Node<'_, '_>,
+    id: NodeId,
+    doc: &Document<'_>,
     set: &mut HashSet<usize>,
     include_comments: bool,
 ) {
-    if !include_comments && node.is_comment() {
+    if !include_comments && matches!(doc.node_kind(id), Some(NodeKind::Comment(_))) {
         return;
     }
-    set.insert(node_index(node));
+    set.insert(id.index());
 
-    // Also include namespace and attribute nodes for elements
-    if node.is_element() {
-        // Namespace declarations and attributes are tracked as part of the element
-        // in roxmltree, so they share the element's NodeId. No separate insertion needed.
-    }
-
-    for child in node.children() {
-        collect_subtree(child, set, include_comments);
+    for child in doc.children(id) {
+        collect_subtree(child, doc, set, include_comments);
     }
 }

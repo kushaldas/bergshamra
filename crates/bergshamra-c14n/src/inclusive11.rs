@@ -12,6 +12,7 @@
 
 use bergshamra_core::Error;
 use bergshamra_xml::nodeset::NodeSet;
+use uppsala::Document;
 
 /// Canonicalize using Inclusive C14N 1.1.
 ///
@@ -19,7 +20,7 @@ use bergshamra_xml::nodeset::NodeSet;
 /// The differences (xml:id and xml:base handling) will be added
 /// incrementally as test vectors require them.
 pub fn canonicalize(
-    doc: &roxmltree::Document<'_>,
+    doc: &Document<'_>,
     with_comments: bool,
     node_set: Option<&NodeSet>,
 ) -> Result<Vec<u8>, Error> {

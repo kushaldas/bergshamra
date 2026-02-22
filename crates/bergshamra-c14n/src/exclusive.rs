@@ -17,10 +17,11 @@ use crate::render::{Attr, NsDecl};
 use bergshamra_core::Error;
 use bergshamra_xml::nodeset::NodeSet;
 use std::collections::{BTreeMap, HashSet};
+use uppsala::{Document, NodeId, NodeKind};
 
 /// Canonicalize using Exclusive C14N 1.0.
 pub fn canonicalize(
-    doc: &roxmltree::Document<'_>,
+    doc: &Document<'_>,
     with_comments: bool,
     node_set: Option<&NodeSet>,
     inclusive_prefixes: &[String],
@@ -28,6 +29,7 @@ pub fn canonicalize(
     let prefix_set: HashSet<String> = inclusive_prefixes.iter().cloned().collect();
     let mut output = Vec::new();
     let mut ctx = ExcC14nContext {
+        doc,
         with_comments,
         node_set,
         inclusive_prefixes: prefix_set,
@@ -36,82 +38,87 @@ pub fn canonicalize(
     Ok(output)
 }
 
-struct ExcC14nContext<'a> {
+struct ExcC14nContext<'a, 'doc> {
+    doc: &'a Document<'doc>,
     with_comments: bool,
     node_set: Option<&'a NodeSet>,
     inclusive_prefixes: HashSet<String>,
 }
 
-impl<'a> ExcC14nContext<'a> {
-    fn is_visible(&self, node: &roxmltree::Node<'_, '_>) -> bool {
+impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
+    fn is_visible(&self, id: NodeId) -> bool {
         match self.node_set {
             None => true,
-            Some(ns) => ns.contains(node),
+            Some(ns) => ns.contains_id(id),
         }
     }
 
     fn process_node(
         &mut self,
-        node: roxmltree::Node<'_, '_>,
+        id: NodeId,
         output: &mut Vec<u8>,
         rendered_ns: &BTreeMap<String, String>,
     ) -> Result<(), Error> {
-        match node.node_type() {
-            roxmltree::NodeType::Root => {
-                for child in node.children() {
+        match self.doc.node_kind(id) {
+            Some(NodeKind::Document) => {
+                for child in self.doc.children(id) {
                     self.process_node(child, output, rendered_ns)?;
                 }
             }
-            roxmltree::NodeType::Element => {
-                self.process_element(node, output, rendered_ns)?;
+            Some(NodeKind::Element(_)) => {
+                self.process_element(id, output, rendered_ns)?;
             }
-            roxmltree::NodeType::Text => {
-                if self.is_visible(&node) {
-                    let text = node.text().unwrap_or("");
-                    output.extend_from_slice(escape::escape_text(text).as_bytes());
+            Some(NodeKind::Text(text)) | Some(NodeKind::CData(text)) => {
+                if self.is_visible(id) {
+                    let text = text.clone();
+                    output.extend_from_slice(escape::escape_text(&text).as_bytes());
                 }
             }
-            roxmltree::NodeType::Comment => {
-                if self.with_comments && self.is_visible(&node) {
-                    let parent_is_root = node
-                        .parent()
-                        .is_some_and(|p| p.node_type() == roxmltree::NodeType::Root);
+            Some(NodeKind::Comment(text)) => {
+                if self.with_comments && self.is_visible(id) {
+                    let text = text.clone();
+                    let parent_is_root = self.doc
+                        .parent(id)
+                        .is_some_and(|p| matches!(self.doc.node_kind(p), Some(NodeKind::Document)));
 
                     if parent_is_root {
-                        let has_preceding_element = node.prev_siblings().any(|s| s.is_element());
+                        let has_preceding_element = has_preceding_element(self.doc, id);
                         if has_preceding_element {
                             output.push(b'\n');
                         }
                     }
 
                     output.extend_from_slice(b"<!--");
-                    output.extend_from_slice(node.text().unwrap_or("").as_bytes());
+                    output.extend_from_slice(text.as_bytes());
                     output.extend_from_slice(b"-->");
 
                     if parent_is_root {
-                        let has_following_element = node.next_siblings().any(|s| s.is_element());
+                        let has_following_element = has_following_element(self.doc, id);
                         if has_following_element {
                             output.push(b'\n');
                         }
                     }
                 }
             }
-            roxmltree::NodeType::PI => {
-                if self.is_visible(&node) {
-                    let parent_is_root = node
-                        .parent()
-                        .is_some_and(|p| p.node_type() == roxmltree::NodeType::Root);
+            Some(NodeKind::ProcessingInstruction(pi)) => {
+                if self.is_visible(id) {
+                    let target = pi.target.clone();
+                    let data = pi.data.clone();
+
+                    let parent_is_root = self.doc
+                        .parent(id)
+                        .is_some_and(|p| matches!(self.doc.node_kind(p), Some(NodeKind::Document)));
 
                     if parent_is_root {
-                        let has_preceding_element = node.prev_siblings().any(|s| s.is_element());
+                        let has_preceding_element = has_preceding_element(self.doc, id);
                         if has_preceding_element {
                             output.push(b'\n');
                         }
                     }
 
                     output.extend_from_slice(b"<?");
-                    output.extend_from_slice(node.tag_name().name().as_bytes());
-                    if let Some(value) = node.text() {
+                    output.extend_from_slice(target.as_bytes());
+                    if let Some(value) = &data {
                         if !value.is_empty() {
                             output.push(b' ');
                             output.extend_from_slice(escape::escape_pi(value).as_bytes());
@@ -120,38 +127,42 @@ impl<'a> ExcC14nContext<'a> {
                     output.extend_from_slice(b"?>");
 
                     if parent_is_root {
-                        let has_following_element = node.next_siblings().any(|s| s.is_element());
+                        let has_following_element = has_following_element(self.doc, id);
                         if has_following_element {
                             output.push(b'\n');
                         }
                     }
                 }
             }
+            _ => {}
         }
         Ok(())
     }
 
     fn process_element(
         &mut self,
-        node: roxmltree::Node<'_, '_>,
+        id: NodeId,
         output: &mut Vec<u8>,
         rendered_ns: &BTreeMap<String, String>,
     ) -> Result<(), Error> {
-        let visible = self.is_visible(&node);
+        let visible = self.is_visible(id);
 
         if visible {
             // Determine which namespace prefixes are "visibly utilized"
             let mut utilized_prefixes: HashSet<String> = HashSet::new();
 
             // 1. Prefix used by the element's tag name
-            let elem_prefix = get_element_prefix(&node);
+            let elem_prefix = get_element_prefix(self.doc, id);
             utilized_prefixes.insert(elem_prefix.clone());
 
             // 2. Prefixes used by attributes
-            for attr in node.attributes() {
-                if let Some(prefix) = get_attr_prefix(&node, &attr) {
-                    if !prefix.is_empty() {
-                        utilized_prefixes.insert(prefix);
+            {
+                let elem = self.doc.element(id).unwrap();
+                for attr in &elem.attributes {
+                    if let Some(prefix) = get_attr_prefix(attr) {
+                        if !prefix.is_empty() {
+                            utilized_prefixes.insert(prefix);
+                        }
                     }
                 }
             }
@@ -167,14 +178,14 @@ impl<'a> ExcC14nContext<'a> {
             }
 
             // Collect all in-scope namespaces
-            let inscope_ns = collect_inscope_namespaces(&node);
+            let inscope_ns = collect_inscope_namespaces(self.doc, id);
 
             // If namespace node visibility filtering is active, restrict
             // to only namespace nodes that are in the node set.
             let has_ns_filter = self.node_set
                 .map_or(false, |ns| ns.has_ns_visible());
             let visible_inscope_ns = if has_ns_filter {
-                let eid = bergshamra_xml::nodeset::node_index(node);
+                let eid = id.index();
                 let ns = self.node_set.unwrap();
                 inscope_ns.into_iter()
                     .filter(|(prefix, _)| ns.is_ns_visible(eid, prefix))
@@ -216,28 +227,31 @@ impl<'a> ExcC14nContext<'a> {
 
             // Collect attributes
             let mut attrs: Vec<Attr> = Vec::new();
-            for attr in node.attributes() {
-                let ns_uri = attr.namespace().unwrap_or("");
-                let qname = if let Some(prefix) = get_attr_prefix(&node, &attr) {
-                    if prefix.is_empty() {
-                        attr.name().to_owned()
+            {
+                let elem = self.doc.element(id).unwrap();
+                for attr in &elem.attributes {
+                    let ns_uri = attr.name.namespace_uri.as_deref().unwrap_or("");
+                    let qname = if let Some(prefix) = get_attr_prefix(attr) {
+                        if prefix.is_empty() {
+                            attr.name.local_name.to_string()
+                        } else {
+                            format!("{}:{}", prefix, attr.name.local_name)
+                        }
                     } else {
-                        format!("{}:{}", prefix, attr.name())
-                    }
-                } else {
-                    attr.name().to_owned()
-                };
-                attrs.push(Attr {
-                    ns_uri: ns_uri.to_owned(),
-                    local_name: attr.name().to_owned(),
-                    qualified_name: qname,
-                    value: attr.value().to_owned(),
-                });
+                        attr.name.local_name.to_string()
+                    };
+                    attrs.push(Attr {
+                        ns_uri: ns_uri.to_owned(),
+                        local_name: attr.name.local_name.to_string(),
+                        qualified_name: qname,
+                        value: attr.value.to_string(),
+                    });
+                }
             }
             attrs.sort();
 
             // Build qualified element name
-            let elem_name = qualified_element_name(&node);
+            let elem_name = qualified_element_name(self.doc, id);
 
             // Output start tag
             output.push(b'<');
@@ -275,7 +289,7 @@ impl<'a> ExcC14nContext<'a> {
             }
 
             // Process children
-            for child in node.children() {
+            for child in self.doc.children(id) {
                 self.process_node(child, output, &child_rendered_ns)?;
             }
 
@@ -284,7 +298,7 @@ impl<'a> ExcC14nContext<'a> {
             output.extend_from_slice(elem_name.as_bytes());
             output.push(b'>');
         } else {
-            // Element not visible — in exclusive C14N, namespace
+            // Element not visible -- in exclusive C14N, namespace
             // declarations are only rendered on visible element start
             // tags.  However, for prefixes in InclusiveNamespaces
             // PrefixList, we follow inclusive C14N rules which include
@@ -292,9 +306,9 @@ impl<'a> ExcC14nContext<'a> {
             let has_ns_filter = self.node_set
                 .map_or(false, |ns| ns.has_ns_visible());
             if has_ns_filter && !self.inclusive_prefixes.is_empty() {
-                let eid = bergshamra_xml::nodeset::node_index(node);
+                let eid = id.index();
                 let ns = self.node_set.unwrap();
-                let inscope = collect_inscope_namespaces(&node);
+                let inscope = collect_inscope_namespaces(self.doc, id);
                 let visible_ns: BTreeMap<String, String> = inscope.into_iter()
                     .filter(|(prefix, _)| ns.is_ns_visible(eid, prefix))
                     .filter(|(prefix, _)| {
@@ -321,7 +335,7 @@ impl<'a> ExcC14nContext<'a> {
 
             // Children inherit same rendered_ns (invisible element
             // doesn't affect the visible ancestor tracking).
-            for child in node.children() {
+            for child in self.doc.children(id) {
                 self.process_node(child, output, rendered_ns)?;
             }
         }
@@ -329,41 +343,61 @@ impl<'a> ExcC14nContext<'a> {
     }
 }
 
+/// Check if any preceding sibling is an element.
+fn has_preceding_element(doc: &Document<'_>, id: NodeId) -> bool {
+    let mut sib = doc.previous_sibling(id);
+    while let Some(s) = sib {
+        if doc.element(s).is_some() {
+            return true;
+        }
+        sib = doc.previous_sibling(s);
+    }
+    false
+}
+
+/// Check if any following sibling is an element.
+fn has_following_element(doc: &Document<'_>, id: NodeId) -> bool {
+    let mut sib = doc.next_sibling(id);
+    while let Some(s) = sib {
+        if doc.element(s).is_some() {
+            return true;
+        }
+        sib = doc.next_sibling(s);
+    }
+    false
+}
+
 /// Get the prefix for an element's tag name.
-fn get_element_prefix(node: &roxmltree::Node<'_, '_>) -> String {
-    node.tag_name_prefix().unwrap_or("").to_owned()
+fn get_element_prefix(doc: &Document<'_>, id: NodeId) -> String {
+    let elem = doc.element(id).unwrap();
+    elem.name.prefix.as_deref().unwrap_or("").to_owned()
 }
 
 /// Get the prefix for an attribute.
-fn get_attr_prefix(
-    _node: &roxmltree::Node<'_, '_>,
-    attr: &roxmltree::Attribute<'_, '_>,
-) -> Option<String> {
-    if let Some(ns_uri) = attr.namespace() {
-        if ns_uri == "http://www.w3.org/XML/1998/namespace" {
+fn get_attr_prefix(attr: &uppsala::Attribute<'_>) -> Option<String> {
+    if let Some(ns_uri) = &attr.name.namespace_uri {
+        if &**ns_uri == "http://www.w3.org/XML/1998/namespace" {
             return Some("xml".to_owned());
         }
-        Some(attr.prefix().unwrap_or("").to_owned())
+        Some(attr.name.prefix.as_deref().unwrap_or("").to_owned())
     } else {
         None
     }
 }
 
 /// Collect all in-scope namespaces for an element.
-fn collect_inscope_namespaces(node: &roxmltree::Node<'_, '_>) -> BTreeMap<String, String> {
+fn collect_inscope_namespaces(doc: &Document<'_>, id: NodeId) -> BTreeMap<String, String> {
     let mut ns_stack: Vec<BTreeMap<String, String>> = Vec::new();
-    let mut current = Some(*node);
+    let mut current = Some(id);
     while let Some(n) = current {
-        if n.is_element() {
+        if let Some(elem) = doc.element(n) {
             let mut level = BTreeMap::new();
-            for ns in n.namespaces() {
-                let prefix = ns.name().unwrap_or("").to_owned();
-                let uri = ns.uri().to_owned();
-                level.insert(prefix, uri);
+            for (prefix, uri) in &elem.namespace_declarations {
+                level.insert(prefix.to_string(), uri.to_string());
             }
             ns_stack.push(level);
         }
-        current = n.parent();
+        current = doc.parent(n);
     }
 
     let mut result = BTreeMap::new();
@@ -380,10 +414,11 @@ fn collect_inscope_namespaces(node: &roxmltree::Node<'_, '_>) -> BTreeMap<String
 }
 
 /// Get the qualified element name.
-fn qualified_element_name(node: &roxmltree::Node<'_, '_>) -> String {
-    if let Some(prefix) = node.tag_name_prefix() {
-        format!("{}:{}", prefix, node.tag_name().name())
+fn qualified_element_name(doc: &Document<'_>, id: NodeId) -> String {
+    let elem = doc.element(id).unwrap();
+    if let Some(prefix) = &elem.name.prefix {
+        format!("{}:{}", prefix, elem.name.local_name)
     } else {
-        node.tag_name().name().to_owned()
+        elem.name.local_name.to_string()
     }
 }

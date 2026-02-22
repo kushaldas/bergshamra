@@ -9,4 +9,4 @@ description = "XML Canonicalization (C14N) for Bergshamra XML Security library"
 [dependencies]
 bergshamra-core.workspace = true
 bergshamra-xml.workspace = true
-roxmltree.workspace = true
+uppsala.workspace = true

@@ -5,6 +5,7 @@
 use crate::key::{Key, KeyData, KeyUsage};
 use crate::manager::KeysManager;
 use bergshamra_core::{ns, Error};
+use uppsala::{Document, NodeId};
 
 /// Decode a CryptoBinary value that may be base64 or hex encoded.
 ///
@@ -47,19 +48,22 @@ fn decode_crypto_binary(
 
 /// Process a `<KeyInfo>` element and attempt to resolve a key from the manager.
 pub fn resolve_key_info<'a>(
-    key_info_node: roxmltree::Node<'_, '_>,
+    key_info_node: NodeId,
+    doc: &Document<'_>,
     manager: &'a KeysManager,
 ) -> Result<&'a Key, Error> {
     // Try <KeyName> first
-    for child in key_info_node.children() {
-        if !child.is_element() {
-            continue;
-        }
-        let ns_uri = child.tag_name().namespace().unwrap_or("");
-        let local = child.tag_name().name();
+    for child in doc.children(key_info_node) {
+        let elem = match doc.element(child) {
+            Some(e) => e,
+            None => continue,
+        };
+        let ns_uri = elem.name.namespace_uri.as_deref().unwrap_or("");
+        let local = &*elem.name.local_name;
 
         if ns_uri == ns::DSIG && local == ns::node::KEY_NAME {
-            let name_text = child.text().unwrap_or("").trim();
+            let name_text = doc.text_content_deep(child);
+            let name_text = name_text.trim();
             if !name_text.is_empty() {
                 if let Some(key) = manager.find_by_name(name_text) {
                     return Ok(key);
@@ -69,25 +73,35 @@ pub fn resolve_key_info<'a>(
     }
 
     // Try <X509Data><X509IssuerSerial> — match cert by issuer+serial
-    for child in key_info_node.children() {
-        if !child.is_element() {
-            continue;
-        }
-        let ns_uri = child.tag_name().namespace().unwrap_or("");
-        let local = child.tag_name().name();
+    for child in doc.children(key_info_node) {
+        let elem = match doc.element(child) {
+            Some(e) => e,
+            None => continue,
+        };
+        let ns_uri = elem.name.namespace_uri.as_deref().unwrap_or("");
+        let local = &*elem.name.local_name;
 
         if local == ns::node::X509_DATA && (ns_uri == ns::DSIG || ns_uri.is_empty()) {
             // Collect serial numbers from X509IssuerSerial elements
-            for issuer_serial in child.children() {
-                if !issuer_serial.is_element() {
+            for issuer_serial in doc.children(child) {
+                let is_elem = match doc.element(issuer_serial) {
+                    Some(e) => e,
+                    None => continue,
+                };
+                if &*is_elem.name.local_name != ns::node::X509_ISSUER_SERIAL {
                     continue;
                 }
-                if issuer_serial.tag_name().name() != ns::node::X509_ISSUER_SERIAL {
-                    continue;
-                }
-                let serial_text = issuer_serial.children().find(|n| {
-                    n.is_element() && n.tag_name().name() == ns::node::X509_SERIAL_NUMBER
-                }).and_then(|n| n.text()).unwrap_or("").trim().to_string();
+                let serial_text = doc.children(issuer_serial)
+                    .into_iter()
+                    .find(|&n| {
+                        doc.element(n)
+                            .map(|e| &*e.name.local_name == ns::node::X509_SERIAL_NUMBER)
+                            .unwrap_or(false)
+                    })
+                    .map(|n| doc.text_content_deep(n))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
 
                 if serial_text.is_empty() {
                     continue;
@@ -102,16 +116,17 @@ pub fn resolve_key_info<'a>(
     }
 
     // Try <KeyValue> — extract RSA or EC public key from inline XML
-    for child in key_info_node.children() {
-        if !child.is_element() {
-            continue;
-        }
-        let ns_uri = child.tag_name().namespace().unwrap_or("");
-        let local = child.tag_name().name();
+    for child in doc.children(key_info_node) {
+        let elem = match doc.element(child) {
+            Some(e) => e,
+            None => continue,
+        };
+        let ns_uri = elem.name.namespace_uri.as_deref().unwrap_or("");
+        let local = &*elem.name.local_name;
 
         if local == ns::node::KEY_VALUE && (ns_uri == ns::DSIG || ns_uri.is_empty()) {
             // Try RSA KeyValue
-            if let Ok(_key) = parse_rsa_key_value(child) {
+            if let Ok(_key) = parse_rsa_key_value(child, doc) {
                 // We can't return an owned key from a borrow-based API,
                 // so we need a different approach. For now, fall through
                 // to first_key() which will be reached below.
@@ -204,39 +219,40 @@ fn format_serial_decimal(bytes: &[u8]) -> String {
 /// Try to extract an inline key from `<KeyInfo>` (RSA, EC, DSA KeyValue, or X509Certificate).
 ///
 /// Returns `Some(Key)` if a KeyValue or X509Certificate was found and parsed, `None` otherwise.
-pub fn extract_key_value(key_info_node: roxmltree::Node<'_, '_>) -> Option<Key> {
-    for child in key_info_node.children() {
-        if !child.is_element() {
-            continue;
-        }
-        let ns_uri = child.tag_name().namespace().unwrap_or("");
-        let local = child.tag_name().name();
+pub fn extract_key_value(key_info_node: NodeId, doc: &Document<'_>) -> Option<Key> {
+    for child in doc.children(key_info_node) {
+        let elem = match doc.element(child) {
+            Some(e) => e,
+            None => continue,
+        };
+        let ns_uri = elem.name.namespace_uri.as_deref().unwrap_or("");
+        let local = &*elem.name.local_name;
 
         if local == ns::node::KEY_VALUE && (ns_uri == ns::DSIG || ns_uri.is_empty()) {
             // Try RSA KeyValue
-            if let Ok(key) = parse_rsa_key_value(child) {
+            if let Ok(key) = parse_rsa_key_value(child, doc) {
                 return Some(key);
             }
             // Try EC KeyValue
-            if let Ok(key) = parse_ec_key_value(child) {
+            if let Ok(key) = parse_ec_key_value(child, doc) {
                 return Some(key);
             }
             // Try DSA KeyValue
-            if let Ok(key) = parse_dsa_key_value(child) {
+            if let Ok(key) = parse_dsa_key_value(child, doc) {
                 return Some(key);
             }
         }
 
         // Try X509Data > X509Certificate
         if local == ns::node::X509_DATA && (ns_uri == ns::DSIG || ns_uri.is_empty()) {
-            if let Some(key) = extract_x509_certificate(child) {
+            if let Some(key) = extract_x509_certificate(child, doc) {
                 return Some(key);
             }
         }
 
         // Try DEREncodedKeyValue (dsig11 namespace)
         if local == ns::node::DER_ENCODED_KEY_VALUE && ns_uri == ns::DSIG11 {
-            if let Some(key) = parse_der_encoded_key_value(child) {
+            if let Some(key) = parse_der_encoded_key_value(child, doc) {
                 return Some(key);
             }
         }
@@ -361,18 +377,20 @@ fn find_leaf_cert(certs: &[ParsedCert]) -> usize {
 /// end-entity (leaf) certificate: checks BasicConstraints and builds an
 /// issuer/subject graph to identify which cert is NOT a CA and NOT an issuer
 /// of any other cert in the chain.
-fn extract_x509_certificate(x509_data_node: roxmltree::Node<'_, '_>) -> Option<Key> {
+fn extract_x509_certificate(x509_data_node: NodeId, doc: &Document<'_>) -> Option<Key> {
     use base64::Engine;
     use der::Decode;
     let engine = base64::engine::general_purpose::STANDARD;
 
     let mut parsed_certs = Vec::new();
-    for child in x509_data_node.children() {
-        if !child.is_element() {
-            continue;
-        }
-        if child.tag_name().name() == ns::node::X509_CERTIFICATE {
-            let b64 = child.text().unwrap_or("").trim();
+    for child in doc.children(x509_data_node) {
+        let elem = match doc.element(child) {
+            Some(e) => e,
+            None => continue,
+        };
+        if &*elem.name.local_name == ns::node::X509_CERTIFICATE {
+            let b64 = doc.text_content_deep(child);
+            let b64 = b64.trim();
             let clean: String = b64.chars().filter(|c| !c.is_whitespace()).collect();
             if let Ok(der) = engine.decode(&clean) {
                 if let Ok(cert) = x509_cert::Certificate::from_der(&der) {
@@ -395,10 +413,11 @@ fn extract_x509_certificate(x509_data_node: roxmltree::Node<'_, '_>) -> Option<K
 }
 
 /// Parse a `<dsig11:DEREncodedKeyValue>` element containing base64-encoded SPKI DER.
-fn parse_der_encoded_key_value(node: roxmltree::Node<'_, '_>) -> Option<Key> {
+fn parse_der_encoded_key_value(node: NodeId, doc: &Document<'_>) -> Option<Key> {
     use base64::Engine;
     let engine = base64::engine::general_purpose::STANDARD;
-    let b64_text = node.text().unwrap_or("").trim();
+    let b64_text = doc.text_content_deep(node);
+    let b64_text = b64_text.trim();
     let clean: String = b64_text.chars().filter(|c| !c.is_whitespace()).collect();
     if clean.is_empty() {
         return None;
@@ -408,36 +427,43 @@ fn parse_der_encoded_key_value(node: roxmltree::Node<'_, '_>) -> Option<Key> {
 }
 
 /// Extract an RSA public key from a `<KeyValue><RSAKeyValue>` element.
-pub fn parse_rsa_key_value(key_value_node: roxmltree::Node<'_, '_>) -> Result<Key, Error> {
-    let rsa_kv: roxmltree::Node<'_, '_> = key_value_node
-        .children()
-        .find(|n: &roxmltree::Node<'_, '_>| {
-            n.is_element()
-                && n.tag_name().name() == ns::node::RSA_KEY_VALUE
-                && n.tag_name().namespace().unwrap_or("") == ns::DSIG
+pub fn parse_rsa_key_value(key_value_node: NodeId, doc: &Document<'_>) -> Result<Key, Error> {
+    let rsa_kv = doc.children(key_value_node)
+        .into_iter()
+        .find(|&n| {
+            doc.element(n)
+                .map(|e| {
+                    &*e.name.local_name == ns::node::RSA_KEY_VALUE
+                        && e.name.namespace_uri.as_deref().unwrap_or("") == ns::DSIG
+                })
+                .unwrap_or(false)
         })
         .ok_or_else(|| Error::MissingElement("RSAKeyValue".into()))?;
 
-    let modulus_b64: &str = rsa_kv
-        .children()
-        .find(|n: &roxmltree::Node<'_, '_>| {
-            n.is_element() && n.tag_name().name() == ns::node::RSA_MODULUS
+    let modulus_b64 = doc.children(rsa_kv)
+        .into_iter()
+        .find(|&n| {
+            doc.element(n)
+                .map(|e| &*e.name.local_name == ns::node::RSA_MODULUS)
+                .unwrap_or(false)
         })
-        .and_then(|n: roxmltree::Node<'_, '_>| n.text())
+        .map(|n| doc.text_content_deep(n))
         .ok_or_else(|| Error::MissingElement("Modulus".into()))?;
 
-    let exponent_b64: &str = rsa_kv
-        .children()
-        .find(|n: &roxmltree::Node<'_, '_>| {
-            n.is_element() && n.tag_name().name() == ns::node::RSA_EXPONENT
+    let exponent_b64 = doc.children(rsa_kv)
+        .into_iter()
+        .find(|&n| {
+            doc.element(n)
+                .map(|e| &*e.name.local_name == ns::node::RSA_EXPONENT)
+                .unwrap_or(false)
         })
-        .and_then(|n: roxmltree::Node<'_, '_>| n.text())
+        .map(|n| doc.text_content_deep(n))
         .ok_or_else(|| Error::MissingElement("Exponent".into()))?;
 
     let engine = base64::engine::general_purpose::STANDARD;
-    let modulus_bytes = decode_crypto_binary(modulus_b64, &engine)
+    let modulus_bytes = decode_crypto_binary(&modulus_b64, &engine)
         .map_err(|e| Error::Base64(format!("Modulus: {e}")))?;
-    let exponent_bytes = decode_crypto_binary(exponent_b64, &engine)
+    let exponent_bytes = decode_crypto_binary(&exponent_b64, &engine)
         .map_err(|e| Error::Base64(format!("Exponent: {e}")))?;
 
     let n = rsa::BigUint::from_bytes_be(&modulus_bytes);
@@ -454,13 +480,16 @@ pub fn parse_rsa_key_value(key_value_node: roxmltree::Node<'_, '_>) -> Result<Ke
 /// Extract a DSA public key from a `<KeyValue><DSAKeyValue>` element.
 ///
 /// DSAKeyValue contains P, Q, G (domain parameters) and Y (public key).
-pub fn parse_dsa_key_value(key_value_node: roxmltree::Node<'_, '_>) -> Result<Key, Error> {
-    let dsa_kv = key_value_node
-        .children()
-        .find(|n| {
-            n.is_element()
-                && n.tag_name().name() == ns::node::DSA_KEY_VALUE
-                && n.tag_name().namespace().unwrap_or("") == ns::DSIG
+pub fn parse_dsa_key_value(key_value_node: NodeId, doc: &Document<'_>) -> Result<Key, Error> {
+    let dsa_kv = doc.children(key_value_node)
+        .into_iter()
+        .find(|&n| {
+            doc.element(n)
+                .map(|e| {
+                    &*e.name.local_name == ns::node::DSA_KEY_VALUE
+                        && e.name.namespace_uri.as_deref().unwrap_or("") == ns::DSIG
+                })
+                .unwrap_or(false)
         })
         .ok_or_else(|| Error::MissingElement("DSAKeyValue".into()))?;
 
@@ -468,10 +497,14 @@ pub fn parse_dsa_key_value(key_value_node: roxmltree::Node<'_, '_>) -> Result<Ke
     let engine = base64::engine::general_purpose::STANDARD;
 
     let decode_elem = |name: &str| -> Result<Vec<u8>, Error> {
-        let b64 = dsa_kv
-            .children()
-            .find(|n| n.is_element() && n.tag_name().name() == name)
-            .and_then(|n| n.text())
+        let b64 = doc.children(dsa_kv)
+            .into_iter()
+            .find(|&n| {
+                doc.element(n)
+                    .map(|e| &*e.name.local_name == name)
+                    .unwrap_or(false)
+            })
+            .map(|n| doc.text_content_deep(n))
             .ok_or_else(|| Error::MissingElement(name.into()))?;
         let clean: String = b64.trim().chars().filter(|c| !c.is_whitespace()).collect();
         engine
@@ -503,33 +536,46 @@ pub fn parse_dsa_key_value(key_value_node: roxmltree::Node<'_, '_>) -> Result<Ke
 /// Extract an EC public key from a `<KeyValue><ECKeyValue>` element.
 ///
 /// Supports P-256, P-384, P-521 curves via NamedCurve OID.
-pub fn parse_ec_key_value(key_value_node: roxmltree::Node<'_, '_>) -> Result<Key, Error> {
+pub fn parse_ec_key_value(key_value_node: NodeId, doc: &Document<'_>) -> Result<Key, Error> {
     // ECKeyValue is in the xmldsig11 namespace
-    let ec_kv = key_value_node
-        .children()
-        .find(|n| {
-            n.is_element()
-                && n.tag_name().name() == ns::node::EC_KEY_VALUE
-                && (n.tag_name().namespace().unwrap_or("") == ns::DSIG11
-                    || n.tag_name().namespace().unwrap_or("") == ns::DSIG)
+    let ec_kv = doc.children(key_value_node)
+        .into_iter()
+        .find(|&n| {
+            doc.element(n)
+                .map(|e| {
+                    &*e.name.local_name == ns::node::EC_KEY_VALUE
+                        && (e.name.namespace_uri.as_deref().unwrap_or("") == ns::DSIG11
+                            || e.name.namespace_uri.as_deref().unwrap_or("") == ns::DSIG)
+                })
+                .unwrap_or(false)
         })
         .ok_or_else(|| Error::MissingElement("ECKeyValue".into()))?;
 
     // Read NamedCurve URI
-    let named_curve = ec_kv
-        .children()
-        .find(|n| n.is_element() && n.tag_name().name() == ns::node::NAMED_CURVE)
+    let named_curve = doc.children(ec_kv)
+        .into_iter()
+        .find(|&n| {
+            doc.element(n)
+                .map(|e| &*e.name.local_name == ns::node::NAMED_CURVE)
+                .unwrap_or(false)
+        })
         .ok_or_else(|| Error::MissingElement("NamedCurve".into()))?;
 
-    let curve_uri = named_curve
-        .attribute(ns::attr::URI)
-        .ok_or_else(|| Error::MissingAttribute("URI on NamedCurve".into()))?;
+    let curve_uri = doc.element(named_curve)
+        .unwrap()
+        .get_attribute(ns::attr::URI)
+        .ok_or_else(|| Error::MissingAttribute("URI on NamedCurve".into()))?
+        .to_string();
 
     // Read PublicKey (base64-encoded uncompressed point)
-    let public_key_b64 = ec_kv
-        .children()
-        .find(|n| n.is_element() && n.tag_name().name() == ns::node::PUBLIC_KEY)
-        .and_then(|n| n.text())
+    let public_key_b64 = doc.children(ec_kv)
+        .into_iter()
+        .find(|&n| {
+            doc.element(n)
+                .map(|e| &*e.name.local_name == ns::node::PUBLIC_KEY)
+                .unwrap_or(false)
+        })
+        .map(|n| doc.text_content_deep(n))
         .ok_or_else(|| Error::MissingElement("PublicKey".into()))?;
 
     use base64::Engine;
@@ -538,7 +584,7 @@ pub fn parse_ec_key_value(key_value_node: roxmltree::Node<'_, '_>) -> Result<Key
         .decode(public_key_b64.trim().replace(['\n', '\r', ' '], ""))
         .map_err(|e| Error::Base64(format!("EC PublicKey: {e}")))?;
 
-    match curve_uri {
+    match &*curve_uri {
         "urn:oid:1.2.840.10045.3.1.7" => {
             // P-256
             use p256::elliptic_curve::sec1::FromEncodedPoint;

@@ -7,6 +7,7 @@
 
 use crate::context::EncContext;
 use bergshamra_core::{algorithm, ns, Error};
+use uppsala::{Document, NodeId};
 
 /// Encrypt XML data using a template.
 ///
@@ -17,22 +18,23 @@ use bergshamra_core::{algorithm, ns, Error};
 /// Returns the XML document with `<EncryptedData>` populated.
 pub fn encrypt(ctx: &EncContext, template_xml: &str, data: &[u8]) -> Result<String, Error> {
     let doc =
-        roxmltree::Document::parse_with_options(template_xml, bergshamra_xml::parsing_options())
-            .map_err(|e: roxmltree::Error| Error::XmlParse(e.to_string()))?;
+        uppsala::parse(template_xml).map_err(|e| Error::XmlParse(e.to_string()))?;
 
     // Find EncryptedData element
-    let enc_data_node = find_element(&doc, ns::ENC, ns::node::ENCRYPTED_DATA)
+    let enc_data_id = find_element(&doc, ns::ENC, ns::node::ENCRYPTED_DATA)
         .ok_or_else(|| Error::MissingElement("EncryptedData".into()))?;
 
     // Read EncryptionMethod
-    let enc_method_node = find_child_element(enc_data_node, ns::ENC, ns::node::ENCRYPTION_METHOD)
+    let enc_method_id = find_child_element(&doc, enc_data_id, ns::ENC, ns::node::ENCRYPTION_METHOD)
         .ok_or_else(|| Error::MissingElement("EncryptionMethod".into()))?;
-    let enc_uri = enc_method_node
-        .attribute(ns::attr::ALGORITHM)
+    let enc_uri = doc
+        .element(enc_method_id)
+        .unwrap()
+        .get_attribute(ns::attr::ALGORITHM)
         .ok_or_else(|| Error::MissingAttribute("Algorithm on EncryptionMethod".into()))?;
 
     // Resolve encryption key
-    let key_bytes = resolve_encryption_key(ctx, enc_data_node, enc_uri)?;
+    let key_bytes = resolve_encryption_key(ctx, &doc, enc_data_id, enc_uri)?;
 
     // Encrypt the data
     let cipher_alg = bergshamra_crypto::cipher::from_uri(enc_uri)?;
@@ -43,12 +45,13 @@ pub fn encrypt(ctx: &EncContext, template_xml: &str, data: &[u8]) -> Result<Stri
     let cipher_b64 = engine.encode(&ciphertext);
 
     // Replace empty CipherValue in EncryptedData using node range
-    let cipher_data = find_child_element(enc_data_node, ns::ENC, ns::node::CIPHER_DATA)
+    let cipher_data_id = find_child_element(&doc, enc_data_id, ns::ENC, ns::node::CIPHER_DATA)
         .ok_or_else(|| Error::MissingElement("CipherData".into()))?;
-    let cipher_value = find_child_element(cipher_data, ns::ENC, ns::node::CIPHER_VALUE)
-        .ok_or_else(|| Error::MissingElement("CipherValue".into()))?;
+    let cipher_value_id =
+        find_child_element(&doc, cipher_data_id, ns::ENC, ns::node::CIPHER_VALUE)
+            .ok_or_else(|| Error::MissingElement("CipherValue".into()))?;
 
-    let cv_range = cipher_value.range();
+    let cv_range = doc.node_range(cipher_value_id).unwrap();
     let cv_xml = &template_xml[cv_range.start..cv_range.end];
     let prefix = extract_prefix(cv_xml, "CipherValue");
     let replacement = if prefix.is_empty() {
@@ -81,23 +84,26 @@ pub fn encrypt(ctx: &EncContext, template_xml: &str, data: &[u8]) -> Result<Stri
 /// Resolve the encryption key — either from the manager or generate a session key.
 fn resolve_encryption_key(
     ctx: &EncContext,
-    enc_data_node: roxmltree::Node<'_, '_>,
+    doc: &Document<'_>,
+    enc_data_id: NodeId,
     enc_uri: &str,
 ) -> Result<Vec<u8>, Error> {
     // Check KeyInfo for a key name
-    let key_info = find_child_element(enc_data_node, ns::DSIG, ns::node::KEY_INFO);
+    let key_info = find_child_element(doc, enc_data_id, ns::DSIG, ns::node::KEY_INFO);
 
-    if let Some(ki) = key_info {
+    if let Some(ki_id) = key_info {
         // Check for KeyName
-        for child in ki.children() {
-            if !child.is_element() {
-                continue;
-            }
-            let child_ns = child.tag_name().namespace().unwrap_or("");
-            let child_local = child.tag_name().name();
+        for child_id in doc.children(ki_id) {
+            let elem = match doc.element(child_id) {
+                Some(e) => e,
+                None => continue,
+            };
+            let child_ns = elem.name.namespace_uri.as_deref().unwrap_or("");
+            let child_local = &*elem.name.local_name;
 
             if child_ns == ns::DSIG && child_local == ns::node::KEY_NAME {
-                let name = child.text().unwrap_or("").trim();
+                let name = doc.text_content_deep(child_id);
+                let name = name.trim();
                 if !name.is_empty() {
                     if let Some(key) = ctx.keys_manager.find_by_name(name) {
                         if let Some(bytes) = key.symmetric_key_bytes() {
@@ -115,7 +121,7 @@ fn resolve_encryption_key(
 
             // Check for DerivedKey (ConcatKDF / PBKDF2)
             if child_ns == ns::ENC11 && child_local == ns::node::DERIVED_KEY {
-                if let Ok(key) = crate::decrypt::resolve_derived_key(ctx, child, enc_uri) {
+                if let Ok(key) = crate::decrypt::resolve_derived_key(ctx, doc, child_id, enc_uri) {
                     return Ok(key);
                 }
             }
@@ -160,39 +166,49 @@ fn encrypt_session_key(
     _data_enc_uri: &str,
     session_key: &[u8],
 ) -> Result<String, Error> {
-    let doc = roxmltree::Document::parse_with_options(xml, bergshamra_xml::parsing_options())
-        .map_err(|e: roxmltree::Error| Error::XmlParse(e.to_string()))?;
+    let doc = uppsala::parse(xml).map_err(|e| Error::XmlParse(e.to_string()))?;
 
     // Find EncryptedKey elements
     let mut result = xml.to_owned();
-    for node in doc.descendants() {
-        if !node.is_element()
-            || node.tag_name().name() != ns::node::ENCRYPTED_KEY
-            || node.tag_name().namespace().unwrap_or("") != ns::ENC
+    for node_id in doc.descendants(doc.root()) {
+        let elem = match doc.element(node_id) {
+            Some(e) => e,
+            None => continue,
+        };
+        if &*elem.name.local_name != ns::node::ENCRYPTED_KEY
+            || elem.name.namespace_uri.as_deref().unwrap_or("") != ns::ENC
         {
             continue;
         }
 
         // Read EncryptionMethod on EncryptedKey
-        let enc_method = match find_child_element(node, ns::ENC, ns::node::ENCRYPTION_METHOD) {
-            Some(m) => m,
-            None => continue,
-        };
-        let enc_uri = match enc_method.attribute(ns::attr::ALGORITHM) {
+        let enc_method_id =
+            match find_child_element(&doc, node_id, ns::ENC, ns::node::ENCRYPTION_METHOD) {
+                Some(m) => m,
+                None => continue,
+            };
+        let enc_uri = match doc
+            .element(enc_method_id)
+            .unwrap()
+            .get_attribute(ns::attr::ALGORITHM)
+        {
             Some(u) => u,
             None => continue,
         };
 
         // Check if CipherValue is empty
-        let cipher_data = match find_child_element(node, ns::ENC, ns::node::CIPHER_DATA) {
-            Some(cd) => cd,
-            None => continue,
-        };
-        let cipher_value = match find_child_element(cipher_data, ns::ENC, ns::node::CIPHER_VALUE) {
-            Some(cv) => cv,
-            None => continue,
-        };
-        let cv_text = cipher_value.text().unwrap_or("").trim();
+        let cipher_data_id =
+            match find_child_element(&doc, node_id, ns::ENC, ns::node::CIPHER_DATA) {
+                Some(cd) => cd,
+                None => continue,
+            };
+        let cipher_value_id =
+            match find_child_element(&doc, cipher_data_id, ns::ENC, ns::node::CIPHER_VALUE) {
+                Some(cv) => cv,
+                None => continue,
+            };
+        let cv_text = doc.text_content_deep(cipher_value_id);
+        let cv_text = cv_text.trim();
         if !cv_text.is_empty() {
             continue; // Already filled
         }
@@ -200,12 +216,12 @@ fn encrypt_session_key(
         // Encrypt the session key
         let encrypted_key_bytes = match enc_uri {
             algorithm::RSA_PKCS1 | algorithm::RSA_OAEP | algorithm::RSA_OAEP_ENC11 => {
-                let oaep_params = read_oaep_params(enc_method);
+                let oaep_params = read_oaep_params(&doc, enc_method_id);
                 let transport =
                     bergshamra_crypto::keytransport::from_uri_with_params(enc_uri, oaep_params)?;
                 // Look for KeyName in this EncryptedKey's KeyInfo to select the
                 // correct RSA key (important for multi-recipient encryption).
-                let rsa_key = resolve_encrypted_key_rsa(ctx, node)?;
+                let rsa_key = resolve_encrypted_key_rsa(ctx, &doc, node_id)?;
                 let public_key = rsa_key
                     .rsa_public_key()
                     .ok_or_else(|| Error::Key("RSA public key required".into()))?;
@@ -220,9 +236,11 @@ fn encrypt_session_key(
                     _ => 0,
                 };
                 // Check for ECDH-ES key agreement (AgreementMethod in KeyInfo)
-                if let Some(kek) = resolve_agreement_method_encrypt(ctx, node, expected_kek_size)? {
+                if let Some(kek) =
+                    resolve_agreement_method_encrypt(ctx, &doc, node_id, expected_kek_size)?
+                {
                     // Fill in OriginatorKeyInfo's KeyValue with the originator's public key
-                    result = fill_originator_key_value(ctx, node, &result)?;
+                    result = fill_originator_key_value(ctx, &doc, node_id, &result)?;
                     kw.wrap(&kek, session_key)?
                 } else {
                     let aes_key = ctx
@@ -257,7 +275,7 @@ fn encrypt_session_key(
             | algorithm::AES256_GCM
             | algorithm::TRIPLEDES_CBC => {
                 let cipher = bergshamra_crypto::cipher::from_uri(enc_uri)?;
-                let kek_bytes = resolve_encrypted_key_kek(ctx, node)?;
+                let kek_bytes = resolve_encrypted_key_kek(ctx, &doc, node_id)?;
                 cipher.encrypt(&kek_bytes, session_key)?
             }
             _ => {
@@ -273,7 +291,7 @@ fn encrypt_session_key(
 
         // Replace the empty CipherValue for this EncryptedKey
         // Use text replacement based on the element's byte range
-        let cv_range = cipher_value.range();
+        let cv_range = doc.node_range(cipher_value_id).unwrap();
         let cv_xml = &xml[cv_range.start..cv_range.end];
 
         // Build the replacement
@@ -300,12 +318,14 @@ fn encrypt_session_key(
 /// Resolve the key-encryption key (KEK) for an EncryptedKey that uses a regular cipher.
 fn resolve_encrypted_key_kek(
     ctx: &EncContext,
-    enc_key_node: roxmltree::Node<'_, '_>,
+    doc: &Document<'_>,
+    enc_key_id: NodeId,
 ) -> Result<Vec<u8>, Error> {
-    if let Some(ki) = find_child_element(enc_key_node, ns::DSIG, ns::node::KEY_INFO) {
+    if let Some(ki_id) = find_child_element(doc, enc_key_id, ns::DSIG, ns::node::KEY_INFO) {
         // Try KeyName lookup
-        if let Some(key_name_node) = find_child_element(ki, ns::DSIG, ns::node::KEY_NAME) {
-            let name = key_name_node.text().unwrap_or("").trim();
+        if let Some(key_name_id) = find_child_element(doc, ki_id, ns::DSIG, ns::node::KEY_NAME) {
+            let name = doc.text_content_deep(key_name_id);
+            let name = name.trim();
             if !name.is_empty() {
                 if let Some(key) = ctx.keys_manager.find_by_name(name) {
                     if let Some(bytes) = key.symmetric_key_bytes() {
@@ -327,11 +347,13 @@ fn resolve_encrypted_key_kek(
 /// (needed for multi-recipient encryption where each EncryptedKey targets a different key).
 fn resolve_encrypted_key_rsa<'a>(
     ctx: &'a EncContext,
-    enc_key_node: roxmltree::Node<'_, '_>,
+    doc: &Document<'_>,
+    enc_key_id: NodeId,
 ) -> Result<&'a bergshamra_keys::Key, Error> {
-    if let Some(ki) = find_child_element(enc_key_node, ns::DSIG, ns::node::KEY_INFO) {
-        if let Some(key_name_node) = find_child_element(ki, ns::DSIG, ns::node::KEY_NAME) {
-            let name = key_name_node.text().unwrap_or("").trim();
+    if let Some(ki_id) = find_child_element(doc, enc_key_id, ns::DSIG, ns::node::KEY_INFO) {
+        if let Some(key_name_id) = find_child_element(doc, ki_id, ns::DSIG, ns::node::KEY_NAME) {
+            let name = doc.text_content_deep(key_name_id);
+            let name = name.trim();
             if !name.is_empty() {
                 if let Some(key) = ctx.keys_manager.find_by_name(name) {
                     if key.rsa_public_key().is_some() {
@@ -353,30 +375,35 @@ fn resolve_encrypted_key_rsa<'a>(
 /// `Ok(None)` if no AgreementMethod found, or `Err` on failure.
 fn resolve_agreement_method_encrypt(
     ctx: &EncContext,
-    enc_key_node: roxmltree::Node<'_, '_>,
+    doc: &Document<'_>,
+    enc_key_id: NodeId,
     kek_len: usize,
 ) -> Result<Option<Vec<u8>>, Error> {
-    let ki = match find_child_element(enc_key_node, ns::DSIG, ns::node::KEY_INFO) {
+    let ki_id = match find_child_element(doc, enc_key_id, ns::DSIG, ns::node::KEY_INFO) {
         Some(ki) => ki,
         None => return Ok(None),
     };
 
-    let agreement = match find_child_element(ki, ns::ENC, ns::node::AGREEMENT_METHOD) {
+    let agreement_id = match find_child_element(doc, ki_id, ns::ENC, ns::node::AGREEMENT_METHOD) {
         Some(a) => a,
         None => return Ok(None),
     };
 
-    let agreement_alg = agreement.attribute(ns::attr::ALGORITHM).unwrap_or("");
+    let agreement_alg = doc
+        .element(agreement_id)
+        .unwrap()
+        .get_attribute(ns::attr::ALGORITHM)
+        .unwrap_or("");
 
     // For encryption, we use:
-    //   originator's PRIVATE key + recipient's PUBLIC key → shared secret
+    //   originator's PRIVATE key + recipient's PUBLIC key -> shared secret
     // Then derive KEK from the shared secret via ConcatKDF or PBKDF2.
 
     // Resolve originator private key (by name in OriginatorKeyInfo)
-    let originator_key = resolve_originator_key(ctx, agreement)?;
+    let originator_key = resolve_originator_key(ctx, doc, agreement_id)?;
 
     // Resolve recipient public key (by name in RecipientKeyInfo)
-    let recipient_key = resolve_recipient_public_key(ctx, agreement)?;
+    let recipient_key = resolve_recipient_public_key(ctx, doc, agreement_id)?;
 
     let shared_secret = match agreement_alg {
         algorithm::ECDH_ES => {
@@ -385,7 +412,7 @@ fn resolve_agreement_method_encrypt(
                 .ec_public_key_bytes()
                 .ok_or_else(|| Error::Key("recipient key has no EC public key bytes".into()))?;
 
-            // Compute ECDH shared secret: originator_private × recipient_public
+            // Compute ECDH shared secret: originator_private x recipient_public
             match &originator_key.data {
                 bergshamra_keys::key::KeyData::EcP256 {
                     private: Some(sk), ..
@@ -450,17 +477,22 @@ fn resolve_agreement_method_encrypt(
     };
 
     // Apply KDF to derive KEK
-    let kdf_method = find_child_element(agreement, ns::ENC11, ns::node::KEY_DERIVATION_METHOD);
-    let kek = match kdf_method {
-        Some(kdm) => {
-            let kdf_uri = kdm.attribute(ns::attr::ALGORITHM).unwrap_or("");
+    let kdf_method_id =
+        find_child_element(doc, agreement_id, ns::ENC11, ns::node::KEY_DERIVATION_METHOD);
+    let kek = match kdf_method_id {
+        Some(kdm_id) => {
+            let kdf_uri = doc
+                .element(kdm_id)
+                .unwrap()
+                .get_attribute(ns::attr::ALGORITHM)
+                .unwrap_or("");
             match kdf_uri {
                 algorithm::CONCAT_KDF => {
-                    let params = crate::decrypt::parse_concat_kdf_params(kdm)?;
+                    let params = crate::decrypt::parse_concat_kdf_params(doc, kdm_id)?;
                     bergshamra_crypto::kdf::concat_kdf(&shared_secret, kek_len, &params)?
                 }
                 algorithm::PBKDF2 => {
-                    let params = crate::decrypt::parse_pbkdf2_params(kdm, kek_len)?;
+                    let params = crate::decrypt::parse_pbkdf2_params(doc, kdm_id, kek_len)?;
                     bergshamra_crypto::kdf::pbkdf2_derive(&shared_secret, &params)?
                 }
                 _ => {
@@ -479,11 +511,15 @@ fn resolve_agreement_method_encrypt(
 /// Resolve the originator's private key from AgreementMethod (EC or DH, for encryption).
 fn resolve_originator_key<'a>(
     ctx: &'a EncContext,
-    agreement_node: roxmltree::Node<'_, '_>,
+    doc: &Document<'_>,
+    agreement_id: NodeId,
 ) -> Result<&'a bergshamra_keys::key::Key, Error> {
-    if let Some(oki) = find_child_element(agreement_node, ns::ENC, ns::node::ORIGINATOR_KEY_INFO) {
-        if let Some(key_name_node) = find_child_element(oki, ns::DSIG, ns::node::KEY_NAME) {
-            let name = key_name_node.text().unwrap_or("").trim();
+    if let Some(oki_id) =
+        find_child_element(doc, agreement_id, ns::ENC, ns::node::ORIGINATOR_KEY_INFO)
+    {
+        if let Some(key_name_id) = find_child_element(doc, oki_id, ns::DSIG, ns::node::KEY_NAME) {
+            let name = doc.text_content_deep(key_name_id);
+            let name = name.trim();
             if !name.is_empty() {
                 if let Some(key) = ctx.keys_manager.find_by_name(name) {
                     return Ok(key);
@@ -542,11 +578,15 @@ fn resolve_originator_key<'a>(
 /// Resolve the recipient's public key from AgreementMethod (EC or DH, for encryption).
 fn resolve_recipient_public_key<'a>(
     ctx: &'a EncContext,
-    agreement_node: roxmltree::Node<'_, '_>,
+    doc: &Document<'_>,
+    agreement_id: NodeId,
 ) -> Result<&'a bergshamra_keys::key::Key, Error> {
-    if let Some(rki) = find_child_element(agreement_node, ns::ENC, ns::node::RECIPIENT_KEY_INFO) {
-        if let Some(key_name_node) = find_child_element(rki, ns::DSIG, ns::node::KEY_NAME) {
-            let name = key_name_node.text().unwrap_or("").trim();
+    if let Some(rki_id) =
+        find_child_element(doc, agreement_id, ns::ENC, ns::node::RECIPIENT_KEY_INFO)
+    {
+        if let Some(key_name_id) = find_child_element(doc, rki_id, ns::DSIG, ns::node::KEY_NAME) {
+            let name = doc.text_content_deep(key_name_id);
+            let name = name.trim();
             if !name.is_empty() {
                 if let Some(key) = ctx.keys_manager.find_by_name(name) {
                     return Ok(key);
@@ -562,35 +602,37 @@ fn resolve_recipient_public_key<'a>(
 /// Fill in the empty `<dsig:KeyValue/>` in OriginatorKeyInfo with the originator's EC public key.
 fn fill_originator_key_value(
     ctx: &EncContext,
-    enc_key_node: roxmltree::Node<'_, '_>,
+    doc: &Document<'_>,
+    enc_key_id: NodeId,
     xml: &str,
 ) -> Result<String, Error> {
-    let ki = match find_child_element(enc_key_node, ns::DSIG, ns::node::KEY_INFO) {
+    let ki_id = match find_child_element(doc, enc_key_id, ns::DSIG, ns::node::KEY_INFO) {
         Some(ki) => ki,
         None => return Ok(xml.to_owned()),
     };
-    let agreement = match find_child_element(ki, ns::ENC, ns::node::AGREEMENT_METHOD) {
+    let agreement_id = match find_child_element(doc, ki_id, ns::ENC, ns::node::AGREEMENT_METHOD) {
         Some(a) => a,
         None => return Ok(xml.to_owned()),
     };
-    let oki = match find_child_element(agreement, ns::ENC, ns::node::ORIGINATOR_KEY_INFO) {
+    let oki_id = match find_child_element(doc, agreement_id, ns::ENC, ns::node::ORIGINATOR_KEY_INFO)
+    {
         Some(oki) => oki,
         None => return Ok(xml.to_owned()),
     };
-    let key_value = match find_child_element(oki, ns::DSIG, ns::node::KEY_VALUE) {
+    let key_value_id = match find_child_element(doc, oki_id, ns::DSIG, ns::node::KEY_VALUE) {
         Some(kv) => kv,
         None => return Ok(xml.to_owned()),
     };
 
     // Get the originator's key and generate KeyValue XML
-    let originator_key = resolve_originator_key(ctx, agreement)?;
+    let originator_key = resolve_originator_key(ctx, doc, agreement_id)?;
     let kv_xml_content = originator_key
         .data
         .to_key_value_xml("")
         .ok_or_else(|| Error::Key("originator key has no KeyValue XML representation".into()))?;
 
     // Build the prefix for KeyValue tag from the template
-    let kv_range = key_value.range();
+    let kv_range = doc.node_range(key_value_id).unwrap();
     let kv_xml = &xml[kv_range.start..kv_range.end];
     let prefix = extract_prefix(kv_xml, "KeyValue");
 
@@ -618,30 +660,33 @@ fn extract_prefix<'a>(xml_fragment: &'a str, local_name: &str) -> &'a str {
 
 /// Read RSA-OAEP parameters from EncryptionMethod child elements.
 fn read_oaep_params(
-    enc_method: roxmltree::Node<'_, '_>,
+    doc: &Document<'_>,
+    enc_method_id: NodeId,
 ) -> bergshamra_crypto::keytransport::OaepParams {
     let mut params = bergshamra_crypto::keytransport::OaepParams::default();
 
-    for child in enc_method.children() {
-        if !child.is_element() {
-            continue;
-        }
-        let local = child.tag_name().name();
-        let child_ns = child.tag_name().namespace().unwrap_or("");
+    for child_id in doc.children(enc_method_id) {
+        let elem = match doc.element(child_id) {
+            Some(e) => e,
+            None => continue,
+        };
+        let local = &*elem.name.local_name;
+        let child_ns = elem.name.namespace_uri.as_deref().unwrap_or("");
 
         if local == ns::node::DIGEST_METHOD && (child_ns == ns::DSIG || child_ns == ns::ENC) {
-            if let Some(alg) = child.attribute(ns::attr::ALGORITHM) {
+            if let Some(alg) = elem.get_attribute(ns::attr::ALGORITHM) {
                 params.digest_uri = Some(alg.to_owned());
             }
         }
         if local == ns::node::RSA_MGF && (child_ns == ns::ENC11 || child_ns == ns::ENC) {
-            if let Some(alg) = child.attribute(ns::attr::ALGORITHM) {
+            if let Some(alg) = elem.get_attribute(ns::attr::ALGORITHM) {
                 params.mgf_uri = Some(alg.to_owned());
             }
         }
         if local == ns::node::RSA_OAEP_PARAMS {
-            if let Some(text) = child.text() {
-                let clean: String = text.trim().chars().filter(|c| !c.is_whitespace()).collect();
+            let text = doc.text_content_deep(child_id);
+            let clean: String = text.trim().chars().filter(|c| !c.is_whitespace()).collect();
+            if !clean.is_empty() {
                 use base64::Engine;
                 let engine = base64::engine::general_purpose::STANDARD;
                 if let Ok(bytes) = engine.decode(&clean) {
@@ -654,28 +699,35 @@ fn read_oaep_params(
     params
 }
 
-// ── Helper functions ─────────────────────────────────────────────────
+// -- Helper functions --
 
-fn find_element<'a>(
-    doc: &'a roxmltree::Document<'a>,
-    ns_uri: &str,
-    local_name: &str,
-) -> Option<roxmltree::Node<'a, 'a>> {
-    doc.descendants().find(|n| {
-        n.is_element()
-            && n.tag_name().name() == local_name
-            && n.tag_name().namespace().unwrap_or("") == ns_uri
-    })
+fn find_element(doc: &Document<'_>, ns_uri: &str, local_name: &str) -> Option<NodeId> {
+    for id in doc.descendants(doc.root()) {
+        if let Some(elem) = doc.element(id) {
+            if &*elem.name.local_name == local_name
+                && elem.name.namespace_uri.as_deref().unwrap_or("") == ns_uri
+            {
+                return Some(id);
+            }
+        }
+    }
+    None
 }
 
-fn find_child_element<'a>(
-    parent: roxmltree::Node<'a, 'a>,
+fn find_child_element(
+    doc: &Document<'_>,
+    parent_id: NodeId,
     ns_uri: &str,
     local_name: &str,
-) -> Option<roxmltree::Node<'a, 'a>> {
-    parent.children().find(|n| {
-        n.is_element()
-            && n.tag_name().name() == local_name
-            && n.tag_name().namespace().unwrap_or("") == ns_uri
-    })
+) -> Option<NodeId> {
+    for child_id in doc.children(parent_id) {
+        if let Some(elem) = doc.element(child_id) {
+            if &*elem.name.local_name == local_name
+                && elem.name.namespace_uri.as_deref().unwrap_or("") == ns_uri
+            {
+                return Some(child_id);
+            }
+        }
+    }
+    None
 }

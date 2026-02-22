@@ -8,5 +8,4 @@ description = "XML DOM abstraction for Bergshamra XML Security library"
 
 [dependencies]
 bergshamra-core.workspace = true
-roxmltree.workspace = true
-quick-xml.workspace = true
+uppsala.workspace = true

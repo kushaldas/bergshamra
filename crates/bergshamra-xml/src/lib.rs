@@ -2,7 +2,7 @@
 
 //! XML document abstraction for the Bergshamra XML Security library.
 //!
-//! Provides a DOM-like interface over `roxmltree`, plus `NodeSet` operations
+//! Provides a DOM-like interface over `uppsala`, plus `NodeSet` operations
 //! needed for canonicalization and signature transforms.
 
 pub mod document;
@@ -12,15 +12,4 @@ pub mod writer;
 
 pub use document::XmlDocument;
 pub use nodeset::NodeSet;
-
-/// Return roxmltree parsing options that allow DTD.
-///
-/// DTD is allowed because roxmltree does not expand external entities or
-/// perform entity substitution beyond the five predefined XML entities,
-/// so it is safe. Many xmlsec test vectors use DTDs for entity definitions.
-pub fn parsing_options() -> roxmltree::ParsingOptions {
-    roxmltree::ParsingOptions {
-        allow_dtd: true,
-        ..roxmltree::ParsingOptions::default()
-    }
-}
+pub use uppsala::{self, Document, NodeId, NodeKind, Element, QName, Attribute};

@@ -15,27 +15,29 @@
 use crate::key::Key;
 use crate::loader;
 use bergshamra_core::Error;
+use uppsala::{Document, NodeId};
 
 const ALEKSEY_NS: &str = "http://www.aleksey.com/xmlsec/2002";
 const DSIG_NS: &str = "http://www.w3.org/2000/09/xmldsig#";
 
 /// Parse an xmlsec `keys.xml` file and return all named keys.
 pub fn parse_keys_xml(xml: &str) -> Result<Vec<Key>, Error> {
-    let doc = roxmltree::Document::parse_with_options(xml, roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() })
+    let doc = uppsala::parse(xml)
         .map_err(|e| Error::XmlParse(format!("keys.xml: {e}")))?;
 
     let mut keys = Vec::new();
 
-    for node in doc.descendants() {
-        if !node.is_element() {
-            continue;
-        }
-        let ns = node.tag_name().namespace().unwrap_or("");
-        let local = node.tag_name().name();
+    for node in doc.descendants(doc.root()) {
+        let elem = match doc.element(node) {
+            Some(e) => e,
+            None => continue,
+        };
+        let ns_uri = elem.name.namespace_uri.as_deref().unwrap_or("");
+        let local = &*elem.name.local_name;
 
         // Each <KeyInfo xmlns="http://www.w3.org/2000/09/xmldsig#"> is one key entry
-        if ns == DSIG_NS && local == "KeyInfo" {
-            if let Some(key) = parse_key_info_entry(node)? {
+        if ns_uri == DSIG_NS && local == "KeyInfo" {
+            if let Some(key) = parse_key_info_entry(node, &doc)? {
                 keys.push(key);
             }
         }
@@ -45,24 +47,32 @@ pub fn parse_keys_xml(xml: &str) -> Result<Vec<Key>, Error> {
 }
 
 /// Parse a single `<KeyInfo>` entry from keys.xml.
-fn parse_key_info_entry(key_info_node: roxmltree::Node<'_, '_>) -> Result<Option<Key>, Error> {
+fn parse_key_info_entry(key_info_node: NodeId, doc: &Document<'_>) -> Result<Option<Key>, Error> {
     // Extract <KeyName>
-    let key_name = key_info_node
-        .children()
-        .find(|n| {
-            n.is_element()
-                && n.tag_name().name() == "KeyName"
-                && n.tag_name().namespace().unwrap_or("") == DSIG_NS
+    let key_name = doc.children(key_info_node)
+        .into_iter()
+        .find(|&n| {
+            doc.element(n)
+                .map(|e| {
+                    &*e.name.local_name == "KeyName"
+                        && e.name.namespace_uri.as_deref().unwrap_or("") == DSIG_NS
+                })
+                .unwrap_or(false)
         })
-        .and_then(|n| n.text())
+        .map(|n| doc.text_content_deep(n))
         .map(|s| s.trim().to_owned());
 
     // Extract <KeyValue>
-    let key_value_node = key_info_node.children().find(|n| {
-        n.is_element()
-            && n.tag_name().name() == "KeyValue"
-            && n.tag_name().namespace().unwrap_or("") == DSIG_NS
-    });
+    let key_value_node = doc.children(key_info_node)
+        .into_iter()
+        .find(|&n| {
+            doc.element(n)
+                .map(|e| {
+                    &*e.name.local_name == "KeyValue"
+                        && e.name.namespace_uri.as_deref().unwrap_or("") == DSIG_NS
+                })
+                .unwrap_or(false)
+        });
 
     let key_value_node = match key_value_node {
         Some(n) => n,
@@ -70,32 +80,36 @@ fn parse_key_info_entry(key_info_node: roxmltree::Node<'_, '_>) -> Result<Option
     };
 
     // Determine key type from the child of <KeyValue>
-    for child in key_value_node.children() {
-        if !child.is_element() {
-            continue;
-        }
-        let child_ns = child.tag_name().namespace().unwrap_or("");
-        let child_local = child.tag_name().name();
+    for child in doc.children(key_value_node) {
+        let elem = match doc.element(child) {
+            Some(e) => e,
+            None => continue,
+        };
+        let child_ns = elem.name.namespace_uri.as_deref().unwrap_or("");
+        let child_local = &*elem.name.local_name;
 
         let mut key = match (child_ns, child_local) {
             (ALEKSEY_NS, "HMACKeyValue") => {
-                let b64 = child.text().unwrap_or("").trim();
+                let b64 = doc.text_content_deep(child);
+                let b64 = b64.trim();
                 let bytes = decode_b64(b64, "HMACKeyValue")?;
                 loader::load_hmac_key(&bytes)
             }
             (ALEKSEY_NS, "AESKeyValue") => {
-                let b64 = child.text().unwrap_or("").trim();
+                let b64 = doc.text_content_deep(child);
+                let b64 = b64.trim();
                 let bytes = decode_b64(b64, "AESKeyValue")?;
                 loader::load_aes_key(&bytes)?
             }
             (ALEKSEY_NS, "DESKeyValue") => {
-                let b64 = child.text().unwrap_or("").trim();
+                let b64 = doc.text_content_deep(child);
+                let b64 = b64.trim();
                 let bytes = decode_b64(b64, "DESKeyValue")?;
                 loader::load_des3_key(&bytes)?
             }
             (DSIG_NS, "RSAKeyValue") => {
                 // Re-use the existing RSAKeyValue parser
-                crate::keyinfo::parse_rsa_key_value(key_value_node)?
+                crate::keyinfo::parse_rsa_key_value(key_value_node, doc)?
             }
             _ => continue, // Skip DSAKeyValue and other unsupported types
         };
