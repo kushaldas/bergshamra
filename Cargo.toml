@@ -14,7 +14,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "BSD-2-Clause"
 repository = "https://github.com/kushaldas/bergshamra"
@@ -23,15 +23,15 @@ rust-version = "1.75"
 
 [workspace.dependencies]
 # Internal crates
-bergshamra-core = { version = "0.2.0", path = "crates/bergshamra-core" }
-bergshamra-xml = { version = "0.2.0", path = "crates/bergshamra-xml" }
-bergshamra-c14n = { version = "0.2.0", path = "crates/bergshamra-c14n" }
-bergshamra-crypto = { version = "0.2.0", path = "crates/bergshamra-crypto" }
-bergshamra-keys = { version = "0.2.0", path = "crates/bergshamra-keys" }
-bergshamra-transforms = { version = "0.2.0", path = "crates/bergshamra-transforms" }
-bergshamra-dsig = { version = "0.2.0", path = "crates/bergshamra-dsig" }
-bergshamra-enc = { version = "0.2.0", path = "crates/bergshamra-enc" }
-bergshamra-pkcs12 = { version = "0.2.0", path = "crates/bergshamra-pkcs12" }
+bergshamra-core = { version = "0.2.1", path = "crates/bergshamra-core" }
+bergshamra-xml = { version = "0.2.1", path = "crates/bergshamra-xml" }
+bergshamra-c14n = { version = "0.2.1", path = "crates/bergshamra-c14n" }
+bergshamra-crypto = { version = "0.2.1", path = "crates/bergshamra-crypto" }
+bergshamra-keys = { version = "0.2.1", path = "crates/bergshamra-keys" }
+bergshamra-transforms = { version = "0.2.1", path = "crates/bergshamra-transforms" }
+bergshamra-dsig = { version = "0.2.1", path = "crates/bergshamra-dsig" }
+bergshamra-enc = { version = "0.2.1", path = "crates/bergshamra-enc" }
+bergshamra-pkcs12 = { version = "0.2.1", path = "crates/bergshamra-pkcs12" }
 
 # XML parsing
 uppsala = "0.3.0"
