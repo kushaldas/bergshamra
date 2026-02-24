@@ -169,7 +169,7 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
             // If the node set has namespace node visibility filtering,
             // restrict in-scope namespaces to only those whose namespace
             // node is in the node-set (per C14N spec section 2.3).
-            let has_ns_filter = self.node_set.map_or(false, |ns| ns.has_ns_visible());
+            let has_ns_filter = self.node_set.is_some_and(|ns| ns.has_ns_visible());
             let visible_ns: BTreeMap<String, String> = if has_ns_filter {
                 let eid = id.index();
                 let ns = self.node_set.unwrap();
@@ -226,7 +226,7 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
 
             // Collect attributes (non-namespace)
             // Skip if the node set excludes attribute nodes entirely.
-            let attrs_excluded = self.node_set.map_or(false, |ns| ns.excludes_attrs());
+            let attrs_excluded = self.node_set.is_some_and(|ns| ns.excludes_attrs());
             let mut attrs: Vec<Attr> = Vec::new();
             if !attrs_excluded {
                 let elem = self.doc.element(id).unwrap();
@@ -352,7 +352,7 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
             // nodes on invisible elements are output as text (not attached
             // to an element tag). This produces the ` xmlns:prefix="URI"`
             // text that appears "floating" in the canonical form.
-            let has_ns_filter = self.node_set.map_or(false, |ns| ns.has_ns_visible());
+            let has_ns_filter = self.node_set.is_some_and(|ns| ns.has_ns_visible());
             if has_ns_filter {
                 let eid = id.index();
                 let ns = self.node_set.unwrap();
@@ -620,9 +620,9 @@ fn parse_uri_components(uri: &str) -> (String, String, String) {
     };
 
     // Find authority
-    let (authority, path) = if rest.starts_with("//") {
+    let (authority, path) = if let Some(stripped) = rest.strip_prefix("//") {
         // Authority is //host[:port] up to next '/'
-        if let Some(slash_pos) = rest[2..].find('/') {
+        if let Some(slash_pos) = stripped.find('/') {
             (
                 rest[..slash_pos + 2].to_owned(),
                 rest[slash_pos + 2..].to_owned(),

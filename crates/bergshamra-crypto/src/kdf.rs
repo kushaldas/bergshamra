@@ -91,7 +91,7 @@ fn concat_kdf_inner<H: Digest + Clone>(
     key_len: usize,
 ) -> Result<Vec<u8>, Error> {
     let hash_len = <H as Digest>::output_size();
-    let reps = (key_len + hash_len - 1) / hash_len;
+    let reps = key_len.div_ceil(hash_len);
     let mut derived = Vec::with_capacity(reps * hash_len);
 
     for counter in 1..=(reps as u32) {

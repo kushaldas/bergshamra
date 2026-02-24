@@ -1403,9 +1403,9 @@ fn replace_encrypted_data_bytes(
     }
 
     let mut result = Vec::with_capacity(xml.len());
-    result.extend_from_slice(xml[..start].as_bytes());
+    result.extend_from_slice(&xml.as_bytes()[..start]);
     result.extend_from_slice(&output_bytes);
-    result.extend_from_slice(xml[end..].as_bytes());
+    result.extend_from_slice(&xml.as_bytes()[end..]);
 
     // Normalize the surrounding document: the encrypted XML may have " />"
     // where the original had "/>" and "<tag></tag>" where the original had "<tag/>".
@@ -1467,9 +1467,7 @@ fn normalize_empty_elements(data: &[u8]) -> Vec<u8> {
                     while open_start > 0 && bytes[open_start - 1] != b'<' {
                         open_start -= 1;
                     }
-                    if open_start > 0 {
-                        open_start -= 1;
-                    }
+                    open_start = open_start.saturating_sub(1);
                     if open_start < i
                         && bytes[open_start] == b'<'
                         && bytes[open_start + 1] != b'/'

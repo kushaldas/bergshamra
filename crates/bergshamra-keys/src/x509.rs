@@ -122,9 +122,7 @@ fn parse_verification_time(s: &str) -> Result<der::DateTime, Error> {
 }
 
 /// Get the current time as a `der::DateTime`, or use the override.
-fn resolve_verification_time(
-    override_time: Option<&str>,
-) -> Result<der::DateTime, Error> {
+fn resolve_verification_time(override_time: Option<&str>) -> Result<der::DateTime, Error> {
     if let Some(time_str) = override_time {
         return parse_verification_time(time_str);
     }
@@ -144,10 +142,7 @@ fn x509_time_to_datetime(t: &x509_cert::time::Time) -> Result<der::DateTime, Err
 }
 
 /// Check if a certificate is valid at the given time.
-fn check_cert_time_validity(
-    cert: &Certificate,
-    verif_time: &der::DateTime,
-) -> Result<(), Error> {
+fn check_cert_time_validity(cert: &Certificate, verif_time: &der::DateTime) -> Result<(), Error> {
     let not_before = x509_time_to_datetime(&cert.tbs_certificate.validity.not_before)?;
     let not_after = x509_time_to_datetime(&cert.tbs_certificate.validity.not_after)?;
 
@@ -210,11 +205,7 @@ fn build_and_verify_chain(
     let max_depth = 10;
 
     for _ in 0..max_depth {
-        let issuer_der = current
-            .tbs_certificate
-            .issuer
-            .to_der()
-            .unwrap_or_default();
+        let issuer_der = current.tbs_certificate.issuer.to_der().unwrap_or_default();
 
         // Try to find issuer in trusted certs
         let mut found_trusted = false;
@@ -222,16 +213,12 @@ fn build_and_verify_chain(
             let tc_subject_der = tc.tbs_certificate.subject.to_der().unwrap_or_default();
             if tc_subject_der == issuer_der {
                 // Found a potential issuer — verify signature
-                if verify_cert_signature(
-                    &current,
-                    &tc.tbs_certificate.subject_public_key_info,
-                )
-                .is_ok()
+                if verify_cert_signature(&current, &tc.tbs_certificate.subject_public_key_info)
+                    .is_ok()
                 {
                     // Check time validity of the trusted cert too
                     if !config.skip_time_checks {
-                        if let Ok(verif_time) =
-                            resolve_verification_time(config.verification_time)
+                        if let Ok(verif_time) = resolve_verification_time(config.verification_time)
                         {
                             check_cert_time_validity(tc, &verif_time)?;
                         }
@@ -255,16 +242,12 @@ fn build_and_verify_chain(
             let ic_subject_der = ic.tbs_certificate.subject.to_der().unwrap_or_default();
             if ic_subject_der == issuer_der {
                 // Verify signature
-                if verify_cert_signature(
-                    &current,
-                    &ic.tbs_certificate.subject_public_key_info,
-                )
-                .is_ok()
+                if verify_cert_signature(&current, &ic.tbs_certificate.subject_public_key_info)
+                    .is_ok()
                 {
                     // Check time validity
                     if !config.skip_time_checks {
-                        if let Ok(verif_time) =
-                            resolve_verification_time(config.verification_time)
+                        if let Ok(verif_time) = resolve_verification_time(config.verification_time)
                         {
                             check_cert_time_validity(ic, &verif_time)?;
                         }
@@ -278,15 +261,13 @@ fn build_and_verify_chain(
         }
 
         if !found_intermediate {
-            return Err(Error::Certificate(format!(
-                "cannot find issuer certificate (incomplete chain)"
-            )));
+            return Err(Error::Certificate(
+                "cannot find issuer certificate (incomplete chain)".to_string(),
+            ));
         }
     }
 
-    Err(Error::Certificate(
-        "certificate chain too long".into(),
-    ))
+    Err(Error::Certificate("certificate chain too long".into()))
 }
 
 /// Verify a certificate's signature using the issuer's SPKI.
@@ -393,7 +374,10 @@ fn verify_ecdsa_signature_auto_curve(
     // Detect curve from SPKI algorithm parameters
     // EC SPKI has algorithm = id-ecPublicKey (1.2.840.10045.2.1)
     // and parameters = curve OID
-    let curve_oid = issuer_spki.algorithm.parameters.as_ref()
+    let curve_oid = issuer_spki
+        .algorithm
+        .parameters
+        .as_ref()
         .and_then(|p| der::asn1::ObjectIdentifier::from_der(p.value()).ok())
         .map(|oid| oid.to_string())
         .unwrap_or_default();
@@ -470,8 +454,9 @@ fn verify_ecdsa_p521_signature(
     let sig = p521::ecdsa::DerSignature::from_bytes(signature)
         .map_err(|e| Error::Certificate(format!("invalid ECDSA signature: {e}")))?;
     // Convert DER signature to normalized form for verification
-    let sig: p521::ecdsa::Signature = sig.try_into()
-        .map_err(|e: p521::ecdsa::Error| Error::Certificate(format!("ECDSA signature conversion: {e}")))?;
+    let sig: p521::ecdsa::Signature = sig.try_into().map_err(|e: p521::ecdsa::Error| {
+        Error::Certificate(format!("ECDSA signature conversion: {e}"))
+    })?;
 
     use signature::Verifier;
     vk.verify(tbs_der, &sig)

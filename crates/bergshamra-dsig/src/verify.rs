@@ -178,11 +178,14 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
     let key_info_node = find_child_element(&doc, sig_node, ns::DSIG, ns::node::KEY_INFO);
     let mut key_from_x509 = false;
     let mut key_from_manager = false;
-    // extracted_key holds ownership when key is extracted from inline KeyInfo
-    let extracted_key: Option<bergshamra_keys::Key>;
+    // extracted_key holds ownership when key is extracted from inline KeyInfo.
+    // The initial `None` is overwritten in every branch before being read, but
+    // the variable must be declared here so the borrow in the `else if` branch
+    // lives long enough.
+    #[allow(unused_assignments)]
+    let mut extracted_key: Option<bergshamra_keys::Key> = None;
     let key = if ctx.trusted_keys_only {
         // Secure mode: only use keys from the manager, never inline keys
-        extracted_key = None;
         if let Some(ki) = key_info_node {
             let effective_ki = resolve_key_info_reference(&doc, ki, &id_map).unwrap_or(ki);
             let k =
@@ -247,7 +250,6 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
             k
         }
     } else {
-        extracted_key = None;
         let k = ctx.keys_manager.first_key()?;
         if ctx.debug {
             eprintln!(
@@ -345,6 +347,7 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
 }
 
 /// Verify a single <Reference> element.
+#[allow(clippy::too_many_arguments)]
 fn verify_reference(
     reference: NodeId,
     doc: &Document<'_>,
@@ -407,7 +410,7 @@ fn verify_reference(
         for transform_node in doc.children(transforms) {
             let is_transform_elem = doc
                 .element(transform_node)
-                .map_or(false, |e| e.name.local_name.as_ref() == ns::node::TRANSFORM);
+                .is_some_and(|e| e.name.local_name.as_ref() == ns::node::TRANSFORM);
             if !is_transform_elem {
                 continue;
             }
@@ -719,7 +722,7 @@ fn apply_xslt_transform(
         .children(transform_node)
         .into_iter()
         .find(|&id| {
-            outer_doc.element(id).map_or(false, |e| {
+            outer_doc.element(id).is_some_and(|e| {
                 e.name.namespace_uri.as_deref() == Some(XSL_NS)
                     && e.name.local_name.as_ref() == "stylesheet"
             })
@@ -731,7 +734,7 @@ fn apply_xslt_transform(
         .children(stylesheet)
         .into_iter()
         .filter(|&id| {
-            outer_doc.element(id).map_or(false, |e| {
+            outer_doc.element(id).is_some_and(|e| {
                 e.name.namespace_uri.as_deref() == Some(XSL_NS)
                     && e.name.local_name.as_ref() == "template"
             })
@@ -750,7 +753,7 @@ fn apply_xslt_transform(
         if match_attr == "@*|node()" || match_attr == "node()|@*" {
             // Check for <xsl:copy><xsl:apply-templates select="@*|node()"/></xsl:copy>
             let has_copy = outer_doc.children(tmpl).into_iter().any(|id| {
-                outer_doc.element(id).map_or(false, |e| {
+                outer_doc.element(id).is_some_and(|e| {
                     e.name.namespace_uri.as_deref() == Some(XSL_NS)
                         && e.name.local_name.as_ref() == "copy"
                 })
@@ -794,7 +797,7 @@ fn apply_minimal_xslt(
         .children(stylesheet)
         .into_iter()
         .filter(|&id| {
-            outer_doc.element(id).map_or(false, |e| {
+            outer_doc.element(id).is_some_and(|e| {
                 e.name.namespace_uri.as_deref() == Some("http://www.w3.org/1999/XSL/Transform")
                     && e.name.local_name.as_ref() == "strip-space"
             })
@@ -818,7 +821,7 @@ fn apply_minimal_xslt(
         .children(stylesheet)
         .into_iter()
         .find(|&id| {
-            outer_doc.element(id).map_or(false, |e| {
+            outer_doc.element(id).is_some_and(|e| {
                 e.name.namespace_uri.as_deref() == Some("http://www.w3.org/1999/XSL/Transform")
                     && e.name.local_name.as_ref() == "output"
             })
@@ -911,6 +914,7 @@ fn xslt_apply_templates_to_node(
 ///
 /// `body` and `templates` are node IDs in `tmpl_doc` (the stylesheet/outer document).
 /// `context_node` is a node ID in `input_doc` (the input XML being transformed).
+#[allow(clippy::too_many_arguments)]
 fn xslt_execute_body(
     body: NodeId,
     context_node: NodeId,
@@ -1064,7 +1068,7 @@ fn xslt_node_matches_select(node: NodeId, select: &str, input_doc: &Document<'_>
         let last = parts.last().unwrap_or(&"");
         input_doc
             .element(node)
-            .map_or(false, |e| e.name.local_name.as_ref() == *last)
+            .is_some_and(|e| e.name.local_name.as_ref() == *last)
     }
 }
 
@@ -1155,7 +1159,7 @@ fn apply_xpath_transform(
         .find(|&id| {
             outer_doc
                 .element(id)
-                .map_or(false, |e| e.name.local_name.as_ref() == "XPath")
+                .is_some_and(|e| e.name.local_name.as_ref() == "XPath")
         })
         .ok_or_else(|| Error::MissingElement("XPath expression element".into()))?;
 
@@ -1735,10 +1739,8 @@ fn eval_xpath_bool(expr: &XPathBoolExpr, node: NodeId, doc: &Document<'_>) -> bo
             false
         }
         XPathBoolExpr::SelfText => matches!(doc.node_kind(node), Some(NodeKind::Text(_))),
-        XPathBoolExpr::HasAttributes => doc
-            .element(node)
-            .map_or(false, |e| !e.attributes.is_empty()),
-        XPathBoolExpr::SelfElement { ns_uri, local_name } => doc.element(node).map_or(false, |e| {
+        XPathBoolExpr::HasAttributes => doc.element(node).is_some_and(|e| !e.attributes.is_empty()),
+        XPathBoolExpr::SelfElement { ns_uri, local_name } => doc.element(node).is_some_and(|e| {
             e.name.local_name.as_ref() == local_name.as_str()
                 && (ns_uri.is_empty() || e.name.namespace_uri.as_deref().unwrap_or("") == ns_uri)
         }),
@@ -1786,7 +1788,7 @@ fn eval_xpath_bool(expr: &XPathBoolExpr, node: NodeId, doc: &Document<'_>) -> bo
         }
         XPathBoolExpr::ParentIs { ns_uri, local_name } => {
             if let Some(parent) = doc.parent(node) {
-                doc.element(parent).map_or(false, |e| {
+                doc.element(parent).is_some_and(|e| {
                     e.name.local_name.as_ref() == local_name.as_str()
                         && (ns_uri.is_empty()
                             || e.name.namespace_uri.as_deref().unwrap_or("") == ns_uri)
@@ -1862,7 +1864,7 @@ fn eval_xpath_bool_ns(expr: &XPathBoolExpr, ns_node: &NsNode, doc: &Document<'_>
         }
         XPathBoolExpr::NamespaceUriNeq(s) => !s.is_empty(),
         XPathBoolExpr::ParentIs { ns_uri, local_name } => {
-            doc.element(ns_node.parent).map_or(false, |e| {
+            doc.element(ns_node.parent).is_some_and(|e| {
                 e.name.local_name.as_ref() == local_name.as_str()
                     && (ns_uri.is_empty()
                         || e.name.namespace_uri.as_deref().unwrap_or("") == ns_uri)
@@ -2268,8 +2270,8 @@ fn evaluate_simple_xpath(
     }
 
     // Absolute path: `/step1/step2/step3[pred]`
-    if expr.starts_with('/') {
-        let steps = parse_xpath_path_steps(&expr[1..])?;
+    if let Some(stripped) = expr.strip_prefix('/') {
+        let steps = parse_xpath_path_steps(stripped)?;
         let mut nodes = HashSet::new();
         let matches = evaluate_path_steps(doc, &steps, xpath_node, outer_doc)?;
         for node in &matches {
@@ -2594,7 +2596,7 @@ fn apply_xpointer_transform(
         .find(|&id| {
             outer_doc
                 .element(id)
-                .map_or(false, |e| e.name.local_name.as_ref() == "XPointer")
+                .is_some_and(|e| e.name.local_name.as_ref() == "XPointer")
         })
         .ok_or_else(|| Error::MissingElement("XPointer expression element".into()))?;
 
@@ -2650,7 +2652,7 @@ fn try_unwrap_encrypted_key(
         .children(key_info_node)
         .into_iter()
         .find(|&id| {
-            doc.element(id).map_or(false, |e| {
+            doc.element(id).is_some_and(|e| {
                 e.name.local_name.as_ref() == ns::node::ENCRYPTED_KEY
                     && e.name.namespace_uri.as_deref().unwrap_or("") == ns::ENC
             })
@@ -2854,7 +2856,7 @@ fn find_child_elements(
     doc.children(parent)
         .into_iter()
         .filter(|&id| {
-            doc.element(id).map_or(false, |elem| {
+            doc.element(id).is_some_and(|elem| {
                 elem.name.local_name.as_ref() == local_name
                     && elem.name.namespace_uri.as_deref().unwrap_or("") == ns_uri
             })
@@ -3071,7 +3073,7 @@ fn try_resolve_retrieval_method_inline(
 
         // Look for X509Data inside the target element (or it might be the
         // target itself if an XPath filter selects it)
-        let x509_data = if doc.element(target_node).map_or(false, |e| {
+        let x509_data = if doc.element(target_node).is_some_and(|e| {
             e.name.local_name.as_ref() == "X509Data"
                 && e.name.namespace_uri.as_deref().unwrap_or("") == ns::DSIG
         }) {

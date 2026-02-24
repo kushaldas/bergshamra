@@ -775,7 +775,7 @@ use digest::Digest;
 /// Convert a DSA signature to XML-DSig r||s format.
 /// Each component is zero-padded to the byte-length of q.
 fn dsa_sig_to_xmldsig(vk: &dsa::VerifyingKey, sig: &dsa::Signature) -> Vec<u8> {
-    let q_len = (vk.components().q().bits() as usize + 7) / 8;
+    let q_len = vk.components().q().bits().div_ceil(8);
     let r_bytes = sig.r().to_bytes_be();
     let s_bytes = sig.s().to_bytes_be();
     let mut out = vec![0u8; q_len * 2];
@@ -790,7 +790,7 @@ fn dsa_sig_to_xmldsig(vk: &dsa::VerifyingKey, sig: &dsa::Signature) -> Vec<u8> {
 
 /// Convert XML-DSig r||s format to a DSA signature.
 fn xmldsig_to_dsa(vk: &dsa::VerifyingKey, rs: &[u8]) -> Result<dsa::Signature, Error> {
-    let q_len = (vk.components().q().bits() as usize + 7) / 8;
+    let q_len = vk.components().q().bits().div_ceil(8);
     if rs.len() != q_len * 2 {
         return Err(Error::Crypto(format!(
             "DSA signature must be {} bytes (2 * q_len={}), got {}",

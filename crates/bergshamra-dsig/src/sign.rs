@@ -164,7 +164,7 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
             for t_node in cur_doc.children(transforms_id) {
                 let is_transform = cur_doc
                     .element(t_node)
-                    .map_or(false, |e| &*e.name.local_name == ns::node::TRANSFORM);
+                    .is_some_and(|e| &*e.name.local_name == ns::node::TRANSFORM);
                 if !is_transform {
                     continue;
                 }
@@ -353,7 +353,7 @@ fn find_child_elements(
     doc.children(parent)
         .into_iter()
         .filter(|&id| {
-            doc.element(id).map_or(false, |elem| {
+            doc.element(id).is_some_and(|elem| {
                 &*elem.name.local_name == local_name
                     && elem.name.namespace_uri.as_deref().unwrap_or("") == ns_uri
             })
@@ -459,7 +459,7 @@ fn populate_x509_data(xml: &str, x509_chain: &[Vec<u8>]) -> Result<String, Error
 
     // Find X509Data element in KeyInfo
     let x509_data_id = doc.descendants(doc.root()).into_iter().find(|&id| {
-        doc.element(id).map_or(false, |elem| {
+        doc.element(id).is_some_and(|elem| {
             &*elem.name.local_name == ns::node::X509_DATA
                 && elem.name.namespace_uri.as_deref().unwrap_or("") == ns::DSIG
         })
@@ -815,7 +815,7 @@ fn populate_key_value(
     let doc = uppsala::parse(xml).map_err(|e| Error::XmlParse(e.to_string()))?;
 
     let kv_id = doc.descendants(doc.root()).into_iter().find(|&id| {
-        doc.element(id).map_or(false, |elem| {
+        doc.element(id).is_some_and(|elem| {
             &*elem.name.local_name == ns::node::KEY_VALUE
                 && elem.name.namespace_uri.as_deref().unwrap_or("") == ns::DSIG
         })
@@ -867,7 +867,7 @@ fn populate_der_encoded_key_value(
     let doc = uppsala::parse(xml).map_err(|e| Error::XmlParse(e.to_string()))?;
 
     let dek_id = doc.descendants(doc.root()).into_iter().find(|&id| {
-        doc.element(id).map_or(false, |elem| {
+        doc.element(id).is_some_and(|elem| {
             &*elem.name.local_name == ns::node::DER_ENCODED_KEY_VALUE
                 && elem.name.namespace_uri.as_deref().unwrap_or("") == ns::DSIG11
         })

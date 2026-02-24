@@ -184,7 +184,7 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
 
             // If namespace node visibility filtering is active, restrict
             // to only namespace nodes that are in the node set.
-            let has_ns_filter = self.node_set.map_or(false, |ns| ns.has_ns_visible());
+            let has_ns_filter = self.node_set.is_some_and(|ns| ns.has_ns_visible());
             let visible_inscope_ns = if has_ns_filter {
                 let eid = id.index();
                 let ns = self.node_set.unwrap();
@@ -305,7 +305,7 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
             // tags.  However, for prefixes in InclusiveNamespaces
             // PrefixList, we follow inclusive C14N rules which include
             // outputting namespace nodes on invisible elements.
-            let has_ns_filter = self.node_set.map_or(false, |ns| ns.has_ns_visible());
+            let has_ns_filter = self.node_set.is_some_and(|ns| ns.has_ns_visible());
             if has_ns_filter && !self.inclusive_prefixes.is_empty() {
                 let eid = id.index();
                 let ns = self.node_set.unwrap();

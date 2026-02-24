@@ -8,15 +8,12 @@ use bergshamra_core::{algorithm, Error};
 pub trait KeyTransportAlgorithm: Send {
     fn uri(&self) -> &'static str;
     fn encrypt(&self, public_key: &rsa::RsaPublicKey, key_data: &[u8]) -> Result<Vec<u8>, Error>;
-    fn decrypt(
-        &self,
-        private_key: &rsa::RsaPrivateKey,
-        encrypted: &[u8],
-    ) -> Result<Vec<u8>, Error>;
+    fn decrypt(&self, private_key: &rsa::RsaPrivateKey, encrypted: &[u8])
+        -> Result<Vec<u8>, Error>;
 }
 
 /// RSA-OAEP configuration parameters.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct OaepParams {
     /// Digest algorithm URI (default: SHA-1)
     pub digest_uri: Option<String>,
@@ -26,23 +23,16 @@ pub struct OaepParams {
     pub oaep_params: Option<Vec<u8>>,
 }
 
-impl Default for OaepParams {
-    fn default() -> Self {
-        Self {
-            digest_uri: None,
-            mgf_uri: None,
-            oaep_params: None,
-        }
-    }
-}
-
 /// Create a key transport algorithm from its URI.
 pub fn from_uri(uri: &str) -> Result<Box<dyn KeyTransportAlgorithm>, Error> {
     from_uri_with_params(uri, OaepParams::default())
 }
 
 /// Create a key transport algorithm from its URI with RSA-OAEP parameters.
-pub fn from_uri_with_params(uri: &str, params: OaepParams) -> Result<Box<dyn KeyTransportAlgorithm>, Error> {
+pub fn from_uri_with_params(
+    uri: &str,
+    params: OaepParams,
+) -> Result<Box<dyn KeyTransportAlgorithm>, Error> {
     match uri {
         algorithm::RSA_PKCS1 => Ok(Box::new(RsaPkcs1Transport)),
         algorithm::RSA_OAEP => Ok(Box::new(RsaOaepTransport {
@@ -53,9 +43,7 @@ pub fn from_uri_with_params(uri: &str, params: OaepParams) -> Result<Box<dyn Key
             uri: algorithm::RSA_OAEP_ENC11,
             params,
         })),
-        _ => Err(Error::UnsupportedAlgorithm(format!(
-            "key transport: {uri}"
-        ))),
+        _ => Err(Error::UnsupportedAlgorithm(format!("key transport: {uri}"))),
     }
 }
 

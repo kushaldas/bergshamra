@@ -394,6 +394,7 @@ impl Key {
     }
 
     /// Get the DH key data if available.
+    #[allow(clippy::type_complexity)]
     pub fn dh_data(&self) -> Option<(&[u8], &[u8], Option<&[u8]>, Option<&[u8]>, &[u8])> {
         match &self.data {
             KeyData::Dh {

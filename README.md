@@ -4,7 +4,7 @@ Pure Rust XML Security library implementing the W3C XML Digital Signatures
 (XML-DSig), XML Encryption (XML-Enc), and XML Canonicalization (C14N)
 specifications. Built entirely on the RustCrypto ecosystem with
 [Uppsala](https://crates.io/crates/uppsala) for XML parsing — no FFI, no
-unsafe code, no libxml2.
+unsafe code.
 
 ## Features
 

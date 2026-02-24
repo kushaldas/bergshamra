@@ -418,6 +418,7 @@ fn main() {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_verify(
     file: PathBuf,
     key: Option<PathBuf>,
@@ -524,6 +525,7 @@ fn cmd_verify(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_sign(
     template: PathBuf,
     key: Option<PathBuf>,
@@ -583,6 +585,7 @@ fn cmd_sign(
     write_output(output, signed.as_bytes())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_decrypt(
     file: PathBuf,
     key: Option<PathBuf>,
@@ -624,6 +627,7 @@ fn cmd_decrypt(
     write_output(output, &decrypted)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_encrypt(
     template: PathBuf,
     data_file: PathBuf,
@@ -752,7 +756,7 @@ fn extract_node_data(
     let range = doc
         .node_range(target_node_id)
         .ok_or_else(|| Error::Other("could not determine source range for node".into()))?;
-    Ok(xml_str[range.start..range.end].as_bytes().to_vec())
+    Ok(xml_str.as_bytes()[range.start..range.end].to_vec())
 }
 
 fn cmd_info() -> Result<(), Error> {
@@ -923,6 +927,7 @@ fn generate_session_key(spec: &str) -> Result<Key, Error> {
     Ok(Key::new(key_data, KeyUsage::Any))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_keys_manager(
     key_path: Option<PathBuf>,
     key_names: Vec<String>,
