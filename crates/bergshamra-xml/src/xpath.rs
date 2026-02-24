@@ -57,6 +57,14 @@ pub fn is_ancestor_or_self(
     false
 }
 
+/// Check if two nodes are siblings (share the same parent).
+pub fn is_sibling(doc: &Document<'_>, a: NodeId, b: NodeId) -> bool {
+    match (doc.parent(a), doc.parent(b)) {
+        (Some(pa), Some(pb)) => pa == pb,
+        _ => false,
+    }
+}
+
 /// Collect the ancestor-or-self axis for a node (node IDs from the node up to root).
 pub fn ancestor_or_self(doc: &Document<'_>, node_id: NodeId) -> Vec<NodeId> {
     let mut result = vec![node_id];

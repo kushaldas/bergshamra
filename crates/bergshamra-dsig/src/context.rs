@@ -33,6 +33,11 @@ pub struct DsigContext {
     /// This is the secure mode for SAML: only trust pre-configured IdP keys,
     /// not whatever an attacker embeds in the XML signature's KeyInfo.
     pub trusted_keys_only: bool,
+    /// When true, enforce that each reference target is either the document element,
+    /// an ancestor of the Signature, or a sibling of the Signature. This prevents
+    /// XML Signature Wrapping (XSW) attacks where signed content is moved to an
+    /// unexpected position in the document.
+    pub strict_verification: bool,
 }
 
 impl DsigContext {
@@ -51,6 +56,7 @@ impl DsigContext {
             skip_time_checks: false,
             enabled_key_data_x509: false,
             trusted_keys_only: false,
+            strict_verification: false,
         }
     }
 

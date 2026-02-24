@@ -99,6 +99,17 @@ enum Commands {
         #[arg(long = "enabled-key-data")]
         enabled_key_data: Option<String>,
 
+        /// Strict verification: reject references to nodes that are not ancestors,
+        /// siblings, or the document element relative to the Signature (XSW protection)
+        #[arg(long)]
+        strict: bool,
+
+        /// Only use pre-loaded keys for verification; ignore inline keys in KeyInfo
+        /// (KeyValue, X509Certificate, etc.). Essential for SAML and other deployments
+        /// where the signing key is known ahead of time.
+        #[arg(long = "trusted-keys-only")]
+        trusted_keys_only: bool,
+
         /// Load untrusted intermediate certificate(s)
         #[arg(long)]
         untrusted: Vec<PathBuf>,
@@ -302,6 +313,8 @@ fn main() {
             verification_gmt_time,
             x509_skip_time_checks,
             enabled_key_data,
+            strict,
+            trusted_keys_only,
             untrusted,
             crl,
         } => cmd_verify(
@@ -324,6 +337,8 @@ fn main() {
             verification_gmt_time,
             x509_skip_time_checks,
             enabled_key_data,
+            strict,
+            trusted_keys_only,
             untrusted,
             crl,
         ),
@@ -439,6 +454,8 @@ fn cmd_verify(
     verification_gmt_time: Option<String>,
     x509_skip_time_checks: bool,
     enabled_key_data: Option<String>,
+    strict: bool,
+    trusted_keys_only: bool,
     untrusted: Vec<PathBuf>,
     crl: Vec<PathBuf>,
 ) -> Result<(), Error> {
@@ -507,6 +524,8 @@ fn cmd_verify(
         .as_deref()
         .map(|s| s.split(',').any(|part| part.trim() == "x509"))
         .unwrap_or(false);
+    ctx.strict_verification = strict;
+    ctx.trusted_keys_only = trusted_keys_only;
 
     if verbose {
         eprintln!("Verifying: {}", file.display());
@@ -514,7 +533,7 @@ fn cmd_verify(
 
     let result = bergshamra_dsig::verify::verify(&ctx, &xml)?;
     match result {
-        bergshamra_dsig::verify::VerifyResult::Valid => {
+        bergshamra_dsig::verify::VerifyResult::Valid { .. } => {
             println!("OK");
             Ok(())
         }

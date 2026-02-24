@@ -4,7 +4,7 @@ Pure Rust XML Security library implementing the W3C XML Digital Signatures
 (XML-DSig), XML Encryption (XML-Enc), and XML Canonicalization (C14N)
 specifications. Built entirely on the RustCrypto ecosystem with
 [Uppsala](https://crates.io/crates/uppsala) for XML parsing — no FFI, no
-unsafe code.
+unsafe code, no libxml2.
 
 ## Features
 
@@ -128,6 +128,79 @@ bergshamra encrypt --cert recipient.pem --output encrypted.xml template.xml data
 Key loading options: `-k` (auto-detect PEM/DER), `-K NAME:FILE` (named key),
 `--pkcs12`, `--cert`, `--hmac-key`, `--aes-key`, `--keys-file` (xmlsec keys.xml),
 `--trusted` (CA cert), `--pwd` (password).
+
+## Security hardening
+
+XML Digital Signatures are a frequent target of attack. Bergshamra provides
+several layered protections — some always-on, some opt-in.
+
+### Duplicate ID rejection (always on)
+
+XML Signature Wrapping (XSW) attacks often rely on injecting a second element
+with the same `Id` attribute so that the signature verifies against one element
+while the application processes another. Bergshamra unconditionally rejects
+documents that contain duplicate ID values across any registered ID attribute
+(`Id`, `ID`, `id`, `AssertionID`, `xml:id`, and any names added via
+`DsigContext::add_id_attr`). Both `verify` and `sign` return an error if a
+duplicate is found.
+
+### Inspecting what was signed (`VerifyResult` metadata)
+
+A successful verification returns `VerifyResult::Valid` which carries:
+
+- **`signature_node`** — the `NodeId` of the `<Signature>` element that was
+  verified.
+- **`references`** — a `Vec<VerifiedReference>`, one per `<Reference>` in
+  `<SignedInfo>`. Each entry contains the URI string and the resolved target
+  node.
+
+You should always check that the signature covers the element you intend to
+consume. For example, a SAML Service Provider should verify that one of the
+references points to the `<Assertion>` it will process.
+
+### Strict verification mode (opt-in)
+
+Set `DsigContext::strict_verification = true` (or pass `--strict` on the CLI)
+to enforce positional constraints on reference targets. In strict mode every
+same-document reference must resolve to a node that is:
+
+- the **document element** (root), or
+- an **ancestor** of the `<Signature>` (the signed element wraps the signature
+  — the common enveloped pattern), or
+- a **sibling** of the `<Signature>` (both are children of the same parent).
+
+Any other position causes verification to fail. This is the strongest defence
+against XSW attacks and is recommended for SAML and WS-Security consumers
+where the document structure is well-known.
+
+### Trusted keys only (opt-in)
+
+Set `DsigContext::trusted_keys_only = true` to ignore inline keys embedded in
+`<KeyInfo>` (`<KeyValue>`, `<X509Certificate>`, etc.) and only use keys
+pre-loaded into the `KeysManager`. Without this, an attacker who controls the
+XML can embed their own key and sign with it — the signature will verify, but
+against the wrong key. This is essential for SAML Service Providers and any
+deployment where the signing key is known ahead of time.
+
+### HMAC output truncation (CVE-2009-0217)
+
+Set `DsigContext::hmac_min_out_len` to enforce a minimum `<HMACOutputLength>`
+in bits. A zero-length or very short HMAC is trivially forgeable.
+
+### Recommended configuration for SAML
+
+```rust
+let mut ctx = DsigContext::new(keys_manager);
+ctx.trusted_keys_only = true;     // reject inline keys
+ctx.strict_verification = true;   // reject unexpected reference positions
+ctx.verify_keys = true;           // validate the IdP certificate chain
+```
+
+Or on the CLI:
+
+```bash
+bergshamra verify --strict --trusted-keys-only --trusted idp-ca.pem signed-assertion.xml
+```
 
 ## License
 

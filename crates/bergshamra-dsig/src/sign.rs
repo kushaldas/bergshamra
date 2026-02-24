@@ -25,7 +25,7 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
     let mut id_attrs: Vec<&str> = vec!["Id", "ID", "id", "AssertionID"];
     let extra: Vec<&str> = ctx.id_attrs.iter().map(|s| s.as_str()).collect();
     id_attrs.extend(extra);
-    let _id_map = build_id_map(&doc, &id_attrs);
+    let _id_map = build_id_map(&doc, &id_attrs)?;
 
     // Find Signature element
     let sig_node = find_element(&doc, ns::DSIG, ns::node::SIGNATURE)
@@ -66,7 +66,7 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
     for ref_idx in 0..ref_count {
         // Re-parse current state so same-document refs see filled DigestValues
         let cur_doc = uppsala::parse(&result_xml).map_err(|e| Error::XmlParse(e.to_string()))?;
-        let cur_id_map = build_id_map(&cur_doc, &id_attrs);
+        let cur_id_map = build_id_map(&cur_doc, &id_attrs)?;
         let cur_sig = find_element(&cur_doc, ns::DSIG, ns::node::SIGNATURE)
             .ok_or_else(|| Error::MissingElement("Signature".into()))?;
         let cur_signed_info =
@@ -361,22 +361,26 @@ fn find_child_elements(
         .collect()
 }
 
-fn build_id_map(doc: &Document<'_>, attr_names: &[&str]) -> HashMap<String, NodeId> {
+fn build_id_map(doc: &Document<'_>, attr_names: &[&str]) -> Result<HashMap<String, NodeId>, Error> {
     let mut map = HashMap::new();
     for id in doc.descendants(doc.root()) {
         if let Some(elem) = doc.element(id) {
             for attr_name in attr_names {
                 if let Some(val) = elem.get_attribute(attr_name) {
-                    map.insert(val.to_owned(), id);
+                    if map.insert(val.to_owned(), id).is_some() {
+                        return Err(Error::XmlStructure(format!("duplicate ID: {val}")));
+                    }
                 }
             }
             // Also check xml:id
             if let Some(val) = elem.get_attribute_ns("http://www.w3.org/XML/1998/namespace", "id") {
-                map.insert(val.to_owned(), id);
+                if map.insert(val.to_owned(), id).is_some() {
+                    return Err(Error::XmlStructure(format!("duplicate ID: {val}")));
+                }
             }
         }
     }
-    map
+    Ok(map)
 }
 
 /// Replace the text content of the first XML element whose body is empty or

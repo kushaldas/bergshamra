@@ -19,18 +19,32 @@ use bergshamra_xml::xpath;
 use std::collections::HashMap;
 use uppsala::{Document, NodeId, NodeKind};
 
+/// Metadata about a single verified `<Reference>`.
+#[derive(Debug, Clone)]
+pub struct VerifiedReference {
+    /// The URI attribute from the `<Reference>` element.
+    pub uri: String,
+    /// The resolved target node (if a same-document reference).
+    pub resolved_node: Option<NodeId>,
+}
+
 /// Result of signature verification.
 #[derive(Debug)]
 pub enum VerifyResult {
     /// Signature is valid.
-    Valid,
+    Valid {
+        /// The `<Signature>` element that was verified.
+        signature_node: NodeId,
+        /// The verified references and their resolved targets.
+        references: Vec<VerifiedReference>,
+    },
     /// Signature is invalid.
     Invalid { reason: String },
 }
 
 impl VerifyResult {
     pub fn is_valid(&self) -> bool {
-        matches!(self, VerifyResult::Valid)
+        matches!(self, VerifyResult::Valid { .. })
     }
 }
 
@@ -42,7 +56,7 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
     let mut id_attrs: Vec<&str> = vec!["Id", "ID", "id", "AssertionID"];
     let extra: Vec<&str> = ctx.id_attrs.iter().map(|s| s.as_str()).collect();
     id_attrs.extend(extra);
-    let id_map = build_id_map(&doc, &id_attrs);
+    let id_map = build_id_map(&doc, &id_attrs)?;
 
     // Find <Signature> element
     let sig_node = find_element(&doc, ns::DSIG, ns::node::SIGNATURE)
@@ -153,8 +167,9 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
 
     // 3. Verify each Reference
     let references = find_child_elements(&doc, signed_info, ns::DSIG, ns::node::REFERENCE);
+    let mut verified_refs = Vec::with_capacity(references.len());
     for reference in &references {
-        let result = verify_reference(
+        let (mismatch, vref) = verify_reference(
             *reference,
             &doc,
             &id_map,
@@ -164,10 +179,20 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
             ctx.debug,
             ctx.base_dir.as_deref(),
         )?;
-        if let VerifyResult::Invalid { reason } = result {
+        verified_refs.push(vref);
+        if let Some(reason) = mismatch {
             return Ok(VerifyResult::Invalid {
                 reason: format!("Reference digest failed: {reason}"),
             });
+        }
+    }
+
+    // 3b. Strict mode: validate reference target positions
+    if ctx.strict_verification {
+        for vref in &verified_refs {
+            if let Some(target) = vref.resolved_node {
+                validate_reference_position(&doc, sig_node, target)?;
+            }
         }
     }
 
@@ -338,7 +363,10 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
     let valid = sig_alg.verify(&signing_key, &c14n_signed_info, &sig_value)?;
 
     if valid {
-        Ok(VerifyResult::Valid)
+        Ok(VerifyResult::Valid {
+            signature_node: sig_node,
+            references: verified_refs,
+        })
     } else {
         Ok(VerifyResult::Invalid {
             reason: "signature value verification failed".into(),
@@ -347,6 +375,9 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
 }
 
 /// Verify a single <Reference> element.
+///
+/// Returns `Ok((None, vref))` if the digest matches, `Ok((Some(reason), vref))` if it
+/// does not match. The `VerifiedReference` carries the URI and resolved target node.
 #[allow(clippy::too_many_arguments)]
 fn verify_reference(
     reference: NodeId,
@@ -357,7 +388,7 @@ fn verify_reference(
     url_maps: &[(String, String)],
     debug: bool,
     base_dir: Option<&str>,
-) -> Result<VerifyResult, Error> {
+) -> Result<(Option<String>, VerifiedReference), Error> {
     // Read URI attribute
     let uri = doc
         .element(reference)
@@ -368,7 +399,7 @@ fn verify_reference(
     // (common in WS-Security). The caller must verify attachment digests separately.
     // See docs/adr/0002-cid-uri-scheme-skip.md
     if uri.starts_with("cid:") {
-        return Ok(VerifyResult::Valid);
+        return Ok((None, VerifiedReference { uri: uri.to_owned(), resolved_node: None }));
     }
 
     // Read DigestMethod
@@ -399,12 +430,13 @@ fn verify_reference(
 
     // Read and apply transforms
     let transforms_node = find_child_element(doc, reference, ns::DSIG, ns::node::TRANSFORMS);
-    let mut data = match resolved {
-        ResolvedUri::Xml { xml_text, node_set } => {
-            bergshamra_transforms::TransformData::Xml { xml_text, node_set }
+    let (mut data, resolved_node) = match resolved {
+        ResolvedUri::Xml { xml_text, node_set, resolved_node } => {
+            (bergshamra_transforms::TransformData::Xml { xml_text, node_set }, resolved_node)
         }
-        ResolvedUri::Binary(bytes) => bergshamra_transforms::TransformData::Binary(bytes),
+        ResolvedUri::Binary(bytes) => (bergshamra_transforms::TransformData::Binary(bytes), None),
     };
+    let vref = VerifiedReference { uri: uri.to_owned(), resolved_node };
 
     if let Some(transforms) = transforms_node {
         for transform_node in doc.children(transforms) {
@@ -437,11 +469,9 @@ fn verify_reference(
 
     // Compare
     if computed == expected_digest {
-        Ok(VerifyResult::Valid)
+        Ok((None, vref))
     } else {
-        Ok(VerifyResult::Invalid {
-            reason: format!("URI={uri}: expected digest does not match computed digest"),
-        })
+        Ok((Some(format!("URI={uri}: expected digest does not match computed digest")), vref))
     }
 }
 
@@ -450,6 +480,8 @@ enum ResolvedUri {
     Xml {
         xml_text: String,
         node_set: Option<NodeSet>,
+        /// The node that this reference resolved to (for same-document ID refs).
+        resolved_node: Option<NodeId>,
     },
     Binary(Vec<u8>),
 }
@@ -470,6 +502,7 @@ fn resolve_reference_uri(
         Ok(ResolvedUri::Xml {
             xml_text: xml.to_owned(),
             node_set: Some(ns),
+            resolved_node: None,
         })
     } else if let Some(fragment) = xpath::parse_same_document_ref(uri) {
         // Handle xpointer(/) — selects entire document
@@ -477,6 +510,7 @@ fn resolve_reference_uri(
             return Ok(ResolvedUri::Xml {
                 xml_text: xml.to_owned(),
                 node_set: None,
+                resolved_node: None,
             });
         }
         // Handle xpointer(id('...')) — extract the ID.
@@ -492,6 +526,7 @@ fn resolve_reference_uri(
         Ok(ResolvedUri::Xml {
             xml_text: xml.to_owned(),
             node_set: Some(ns),
+            resolved_node: Some(node),
         })
     } else {
         // Try url-map for external URIs — read as raw bytes
@@ -1292,7 +1327,7 @@ fn try_compound_xpath_filter(
         find_ancestor_by_name_idx(xpath_node, outer_doc, &b_ns_uri, &b_local_name);
 
     // Find the id('X') element in the re-parsed document
-    let id_map = build_id_map(&inner_doc, &["Id", "ID", "id", "AssertionID"]);
+    let id_map = build_id_map(&inner_doc, &["Id", "ID", "id", "AssertionID"])?;
     let id_element_idx = id_map.get(id_value).map(|nid| nid.index());
 
     // Filter nodes
@@ -2615,7 +2650,7 @@ fn apply_xpointer_transform(
                 uppsala::parse(&xml_text).map_err(|e| Error::XmlParse(e.to_string()))?;
 
             // Build ID map
-            let id_map = build_id_map(&inner_doc, &["Id", "ID", "id", "AssertionID"]);
+            let id_map = build_id_map(&inner_doc, &["Id", "ID", "id", "AssertionID"])?;
 
             // Resolve the ID
             let target = xpath::resolve_id(&inner_doc, &id_map, id)?;
@@ -2910,22 +2945,61 @@ fn resolve_key_info_reference(
     None
 }
 
-fn build_id_map(doc: &Document<'_>, attr_names: &[&str]) -> HashMap<String, NodeId> {
+fn build_id_map(doc: &Document<'_>, attr_names: &[&str]) -> Result<HashMap<String, NodeId>, Error> {
     let mut map = HashMap::new();
     for id in doc.descendants(doc.root()) {
         if let Some(elem) = doc.element(id) {
             for attr_name in attr_names {
                 if let Some(val) = elem.get_attribute(attr_name) {
-                    map.insert(val.to_owned(), id);
+                    if map.insert(val.to_owned(), id).is_some() {
+                        return Err(Error::XmlStructure(format!("duplicate ID: {val}")));
+                    }
                 }
             }
             // Also check xml:id
             if let Some(val) = elem.get_attribute("xml:id") {
-                map.insert(val.to_owned(), id);
+                if map.insert(val.to_owned(), id).is_some() {
+                    return Err(Error::XmlStructure(format!("duplicate ID: {val}")));
+                }
             }
         }
     }
-    map
+    Ok(map)
+}
+
+/// Validate that a reference target is in an expected position relative to the
+/// Signature element. In strict mode, the target must be:
+/// - The document element (root), OR
+/// - An ancestor of the Signature (e.g. the signed element wraps the Signature), OR
+/// - A sibling of the Signature (e.g. both are children of the same parent).
+///
+/// This prevents XML Signature Wrapping (XSW) attacks where an attacker moves the
+/// signed element to an unexpected position and inserts a forged element at the
+/// original location.
+fn validate_reference_position(
+    doc: &Document<'_>,
+    sig_node: NodeId,
+    target_node: NodeId,
+) -> Result<(), Error> {
+    // Document element is always OK
+    if let Some(doc_elem) = doc.document_element() {
+        if target_node == doc_elem {
+            return Ok(());
+        }
+    }
+    // Ancestor of sig_node is OK (target wraps the Signature)
+    if xpath::is_ancestor_or_self(doc, target_node, sig_node) {
+        return Ok(());
+    }
+    // Sibling of sig_node is OK (target is next to the Signature)
+    if xpath::is_sibling(doc, target_node, sig_node) {
+        return Ok(());
+    }
+    Err(Error::XmlStructure(
+        "strict mode: reference target is not an ancestor, sibling, or document element \
+         relative to Signature (possible XSW attack)"
+            .into(),
+    ))
 }
 
 fn read_inclusive_prefixes(doc: &Document<'_>, node: NodeId) -> Vec<String> {
@@ -3270,7 +3344,7 @@ mod tests {
             <saml:AttributeStatement/>
         </saml:Assertion>"#;
         let doc = uppsala::parse(xml).expect("parse XML");
-        let id_map = build_id_map(&doc, &["Id", "ID", "id", "AssertionID"]);
+        let id_map = build_id_map(&doc, &["Id", "ID", "id", "AssertionID"]).expect("no duplicate IDs");
         assert!(
             id_map.contains_key("abc123"),
             "AssertionID should be in the ID map"
@@ -3285,7 +3359,7 @@ mod tests {
             <Elem3 id="e3"/>
         </Root>"#;
         let doc = uppsala::parse(xml).expect("parse XML");
-        let id_map = build_id_map(&doc, &["Id", "ID", "id", "AssertionID"]);
+        let id_map = build_id_map(&doc, &["Id", "ID", "id", "AssertionID"]).expect("no duplicate IDs");
         assert!(id_map.contains_key("e1"), "Id should be in map");
         assert!(id_map.contains_key("e2"), "ID should be in map");
         assert!(id_map.contains_key("e3"), "id should be in map");
@@ -3312,12 +3386,13 @@ mod tests {
         assert_eq!(refs.len(), 1);
 
         let id_map = HashMap::new();
-        let result = verify_reference(refs[0], &doc, &id_map, xml, sig_node, &[], false, None)
+        let (mismatch, vref) = verify_reference(refs[0], &doc, &id_map, xml, sig_node, &[], false, None)
             .expect("verify_reference failed");
         assert!(
-            matches!(result, VerifyResult::Valid),
+            mismatch.is_none(),
             "cid: reference should be skipped and reported as Valid"
         );
+        assert!(vref.uri.starts_with("cid:"));
     }
 
     #[test]
@@ -3342,14 +3417,114 @@ mod tests {
         let refs = find_child_elements(&doc, signed_info, ns::DSIG, ns::node::REFERENCE);
         assert_eq!(refs.len(), 1);
 
-        let id_map = build_id_map(&doc, &["Id", "ID", "id"]);
-        let result = verify_reference(refs[0], &doc, &id_map, xml, sig_node, &[], false, None)
+        let id_map = build_id_map(&doc, &["Id", "ID", "id"]).expect("no duplicate IDs");
+        let (mismatch, _vref) = verify_reference(refs[0], &doc, &id_map, xml, sig_node, &[], false, None)
             .expect("verify_reference failed");
-        // The digest will not match since AAAA is bogus, so we expect Invalid.
+        // The digest will not match since AAAA is bogus, so we expect Some(reason).
         assert!(
-            matches!(result, VerifyResult::Invalid { .. }),
+            mismatch.is_some(),
             "non-cid reference should be processed normally, digest mismatch expected"
         );
+    }
+
+    #[test]
+    fn test_build_id_map_rejects_duplicate_id() {
+        let xml = r#"<Root>
+            <Elem1 Id="dup"/>
+            <Elem2 Id="dup"/>
+        </Root>"#;
+        let doc = uppsala::parse(xml).expect("parse XML");
+        let result = build_id_map(&doc, &["Id", "ID", "id"]);
+        assert!(result.is_err(), "duplicate ID should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("duplicate ID: dup"), "error should name the duplicate ID, got: {err}");
+    }
+
+    #[test]
+    fn test_build_id_map_allows_different_ids() {
+        let xml = r#"<Root>
+            <Elem1 Id="a"/>
+            <Elem2 Id="b"/>
+            <Elem3 ID="c"/>
+        </Root>"#;
+        let doc = uppsala::parse(xml).expect("parse XML");
+        let id_map = build_id_map(&doc, &["Id", "ID", "id"]).expect("different IDs should be fine");
+        assert_eq!(id_map.len(), 3);
+    }
+
+    #[test]
+    fn test_build_id_map_cross_attr_duplicate_rejected() {
+        // Same value on different attribute names (Id vs ID) is still a duplicate
+        let xml = r#"<Root>
+            <Elem1 Id="same"/>
+            <Elem2 ID="same"/>
+        </Root>"#;
+        let doc = uppsala::parse(xml).expect("parse XML");
+        let result = build_id_map(&doc, &["Id", "ID", "id"]);
+        assert!(result.is_err(), "cross-attr-type duplicate should be rejected");
+    }
+
+    #[test]
+    fn test_validate_reference_position_ancestor_ok() {
+        // Target is an ancestor of Signature — allowed in strict mode
+        let xml = r#"<Root Id="root"><Signature/></Root>"#;
+        let doc = uppsala::parse(xml).expect("parse");
+        let root = doc.document_element().unwrap();
+        let sig = doc.children(root).into_iter().find(|&id| {
+            doc.element(id).is_some_and(|e| &*e.name.local_name == "Signature")
+        }).unwrap();
+        assert!(validate_reference_position(&doc, sig, root).is_ok());
+    }
+
+    #[test]
+    fn test_validate_reference_position_sibling_ok() {
+        // Target is a sibling of Signature — allowed in strict mode
+        let xml = r#"<Root><Data Id="d1"/><Signature/></Root>"#;
+        let doc = uppsala::parse(xml).expect("parse");
+        let root = doc.document_element().unwrap();
+        let children: Vec<_> = doc.children(root).into_iter()
+            .filter(|&id| doc.element(id).is_some())
+            .collect();
+        let data_node = children[0];
+        let sig_node = children[1];
+        assert!(validate_reference_position(&doc, sig_node, data_node).is_ok());
+    }
+
+    #[test]
+    fn test_validate_reference_position_document_element_ok() {
+        // Target is the document element — always allowed
+        let xml = r#"<Root Id="root"><Child><Signature/></Child></Root>"#;
+        let doc = uppsala::parse(xml).expect("parse");
+        let root = doc.document_element().unwrap();
+        let child = doc.children(root).into_iter().find(|&id| {
+            doc.element(id).is_some_and(|e| &*e.name.local_name == "Child")
+        }).unwrap();
+        let sig = doc.children(child).into_iter().find(|&id| {
+            doc.element(id).is_some_and(|e| &*e.name.local_name == "Signature")
+        }).unwrap();
+        assert!(validate_reference_position(&doc, sig, root).is_ok());
+    }
+
+    #[test]
+    fn test_validate_reference_position_unrelated_rejected() {
+        // Target is in a completely different subtree — rejected in strict mode
+        let xml = r#"<Root><A><Target Id="t1"/></A><B><Signature/></B></Root>"#;
+        let doc = uppsala::parse(xml).expect("parse");
+        let root = doc.document_element().unwrap();
+        let a = doc.children(root).into_iter().find(|&id| {
+            doc.element(id).is_some_and(|e| &*e.name.local_name == "A")
+        }).unwrap();
+        let b = doc.children(root).into_iter().find(|&id| {
+            doc.element(id).is_some_and(|e| &*e.name.local_name == "B")
+        }).unwrap();
+        let target = doc.children(a).into_iter().find(|&id| {
+            doc.element(id).is_some_and(|e| &*e.name.local_name == "Target")
+        }).unwrap();
+        let sig = doc.children(b).into_iter().find(|&id| {
+            doc.element(id).is_some_and(|e| &*e.name.local_name == "Signature")
+        }).unwrap();
+        let result = validate_reference_position(&doc, sig, target);
+        assert!(result.is_err(), "unrelated target should be rejected in strict mode");
     }
 
     // --- Tests ported from Go signedxml library ---
