@@ -28,6 +28,11 @@ pub struct DsigContext {
     pub skip_time_checks: bool,
     /// Whether --enabled-key-data includes x509.
     pub enabled_key_data_x509: bool,
+    /// When true, only use keys from the KeysManager for verification.
+    /// Skip extraction of inline keys from KeyInfo (KeyValue, X509Certificate, etc.).
+    /// This is the secure mode for SAML: only trust pre-configured IdP keys,
+    /// not whatever an attacker embeds in the XML signature's KeyInfo.
+    pub trusted_keys_only: bool,
 }
 
 impl DsigContext {
@@ -45,6 +50,7 @@ impl DsigContext {
             verification_time: None,
             skip_time_checks: false,
             enabled_key_data_x509: false,
+            trusted_keys_only: false,
         }
     }
 

@@ -6,6 +6,7 @@ use crate::key::{Key, KeyUsage};
 use bergshamra_core::Error;
 
 /// Manages a collection of keys for lookup during signature/encryption processing.
+#[derive(Clone)]
 pub struct KeysManager {
     keys: Vec<Key>,
     /// Trusted CA certificates (DER-encoded).

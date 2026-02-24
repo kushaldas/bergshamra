@@ -172,14 +172,44 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
     }
 
     // 4. Resolve signing key
-    // First try inline KeyValue (RSA/EC public key embedded in XML),
-    // then try EncryptedKey unwrap, then fall back to KeysManager lookup.
+    // When trusted_keys_only is set, skip inline key extraction and only use
+    // keys from the KeysManager. This is the secure mode for SAML: we only
+    // trust pre-configured IdP keys, not whatever cert an attacker embeds.
     let key_info_node = find_child_element(&doc, sig_node, ns::DSIG, ns::node::KEY_INFO);
-    let extracted_key: Option<bergshamra_keys::Key>;
     let mut key_from_x509 = false;
     let mut key_from_manager = false;
-    let key = if let Some(ki) = key_info_node {
-        // Check for KeyInfoReference — dereference to the target KeyInfo
+    // extracted_key holds ownership when key is extracted from inline KeyInfo
+    let extracted_key: Option<bergshamra_keys::Key>;
+    let key = if ctx.trusted_keys_only {
+        // Secure mode: only use keys from the manager, never inline keys
+        extracted_key = None;
+        if let Some(ki) = key_info_node {
+            let effective_ki = resolve_key_info_reference(&doc, ki, &id_map).unwrap_or(ki);
+            let k =
+                bergshamra_keys::keyinfo::resolve_key_info(effective_ki, &doc, &ctx.keys_manager)
+                    .or_else(|_| ctx.keys_manager.first_key())?;
+            if ctx.debug {
+                eprintln!(
+                    "== Key: resolved from manager (trusted_keys_only) ({})",
+                    k.data.algorithm_name()
+                );
+            }
+            key_from_manager = true;
+            k
+        } else {
+            let k = ctx.keys_manager.first_key()?;
+            if ctx.debug {
+                eprintln!(
+                    "== Key: first key from manager (trusted_keys_only) ({})",
+                    k.data.algorithm_name()
+                );
+            }
+            key_from_manager = true;
+            k
+        }
+    } else if let Some(ki) = key_info_node {
+        // Standard mode: try inline KeyValue (RSA/EC public key embedded in XML),
+        // then try EncryptedKey unwrap, then fall back to KeysManager lookup.
         let effective_ki = resolve_key_info_reference(&doc, ki, &id_map).unwrap_or(ki);
         extracted_key = bergshamra_keys::keyinfo::extract_key_value(effective_ki, &doc)
             .or_else(|| try_unwrap_encrypted_key(&doc, effective_ki, &ctx.keys_manager).ok())
@@ -217,6 +247,7 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
             k
         }
     } else {
+        extracted_key = None;
         let k = ctx.keys_manager.first_key()?;
         if ctx.debug {
             eprintln!(

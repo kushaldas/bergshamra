@@ -13,6 +13,7 @@ pub enum KeyUsage {
 }
 
 /// The underlying key data.
+#[derive(Clone)]
 pub enum KeyData {
     Rsa {
         private: Option<rsa::RsaPrivateKey>,
@@ -284,7 +285,7 @@ impl KeyData {
 }
 
 /// A named key with associated data.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Key {
     /// Optional name for key lookup.
     pub name: Option<String>,

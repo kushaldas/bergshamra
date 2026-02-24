@@ -1435,9 +1435,9 @@ dependencies = [
 
 [[package]]
 name = "uppsala"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58860fa85e33f0ac655115ae882275891a29f83a2df61b7b4d6494d88e3519e3"
+checksum = "1600dc6ec465bbba4056042fc73041b82081849ab3117f5d2e233eb96e3e1725"
 
 [[package]]
 name = "utf8parse"
