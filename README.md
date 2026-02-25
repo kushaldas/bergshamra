@@ -202,6 +202,19 @@ Or on the CLI:
 bergshamra verify --strict --trusted-keys-only --trusted idp-ca.pem signed-assertion.xml
 ```
 
+## Security examples
+
+The [secexample](https://github.com/kushaldas/secexample) repository
+contains runnable demonstrations of three XML signature attacks and how
+bergshamra detects and rejects each one:
+
+1. **XML Signature Wrapping (XSW)** — relocates signed content to fool the application
+2. **Key Injection** — attacker signs with their own key embedded in `<KeyInfo>`
+3. **HMAC Truncation (CVE-2009-0217)** — reduces HMAC output to a brute-forceable length
+
+Each demo shows both a naive verifier that is vulnerable and a secure
+verifier using the defences described above.
+
 ## License
 
 BSD-2-Clause License. See [LICENSE](LICENSE) for details.
