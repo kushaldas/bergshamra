@@ -22,8 +22,7 @@ const DSIG_NS: &str = "http://www.w3.org/2000/09/xmldsig#";
 
 /// Parse an xmlsec `keys.xml` file and return all named keys.
 pub fn parse_keys_xml(xml: &str) -> Result<Vec<Key>, Error> {
-    let doc = uppsala::parse(xml)
-        .map_err(|e| Error::XmlParse(format!("keys.xml: {e}")))?;
+    let doc = uppsala::parse(xml).map_err(|e| Error::XmlParse(format!("keys.xml: {e}")))?;
 
     let mut keys = Vec::new();
 
@@ -49,7 +48,8 @@ pub fn parse_keys_xml(xml: &str) -> Result<Vec<Key>, Error> {
 /// Parse a single `<KeyInfo>` entry from keys.xml.
 fn parse_key_info_entry(key_info_node: NodeId, doc: &Document<'_>) -> Result<Option<Key>, Error> {
     // Extract <KeyName>
-    let key_name = doc.children(key_info_node)
+    let key_name = doc
+        .children(key_info_node)
         .into_iter()
         .find(|&n| {
             doc.element(n)
@@ -63,16 +63,14 @@ fn parse_key_info_entry(key_info_node: NodeId, doc: &Document<'_>) -> Result<Opt
         .map(|s| s.trim().to_owned());
 
     // Extract <KeyValue>
-    let key_value_node = doc.children(key_info_node)
-        .into_iter()
-        .find(|&n| {
-            doc.element(n)
-                .map(|e| {
-                    &*e.name.local_name == "KeyValue"
-                        && e.name.namespace_uri.as_deref().unwrap_or("") == DSIG_NS
-                })
-                .unwrap_or(false)
-        });
+    let key_value_node = doc.children(key_info_node).into_iter().find(|&n| {
+        doc.element(n)
+            .map(|e| {
+                &*e.name.local_name == "KeyValue"
+                    && e.name.namespace_uri.as_deref().unwrap_or("") == DSIG_NS
+            })
+            .unwrap_or(false)
+    });
 
     let key_value_node = match key_value_node {
         Some(n) => n,
@@ -154,30 +152,52 @@ mod tests {
 
         // Should have: test-hmac-sha1, test-dsa (skipped), test-rsa, test-des, test-aes128/192/256
         // DSA is unsupported so 6 keys
-        assert!(keys.len() >= 6, "expected at least 6 keys, got {}", keys.len());
+        assert!(
+            keys.len() >= 6,
+            "expected at least 6 keys, got {}",
+            keys.len()
+        );
 
         // Check HMAC key
-        let hmac = keys.iter().find(|k| k.name.as_deref() == Some("test-hmac-sha1")).unwrap();
+        let hmac = keys
+            .iter()
+            .find(|k| k.name.as_deref() == Some("test-hmac-sha1"))
+            .unwrap();
         assert!(matches!(&hmac.data, KeyData::Hmac(v) if v == b"secret"));
 
         // Check AES-128 key
-        let aes128 = keys.iter().find(|k| k.name.as_deref() == Some("test-aes128")).unwrap();
+        let aes128 = keys
+            .iter()
+            .find(|k| k.name.as_deref() == Some("test-aes128"))
+            .unwrap();
         assert!(matches!(&aes128.data, KeyData::Aes(v) if v.len() == 16));
 
         // Check AES-192 key
-        let aes192 = keys.iter().find(|k| k.name.as_deref() == Some("test-aes192")).unwrap();
+        let aes192 = keys
+            .iter()
+            .find(|k| k.name.as_deref() == Some("test-aes192"))
+            .unwrap();
         assert!(matches!(&aes192.data, KeyData::Aes(v) if v.len() == 24));
 
         // Check AES-256 key
-        let aes256 = keys.iter().find(|k| k.name.as_deref() == Some("test-aes256")).unwrap();
+        let aes256 = keys
+            .iter()
+            .find(|k| k.name.as_deref() == Some("test-aes256"))
+            .unwrap();
         assert!(matches!(&aes256.data, KeyData::Aes(v) if v.len() == 32));
 
         // Check 3DES key
-        let des = keys.iter().find(|k| k.name.as_deref() == Some("test-des")).unwrap();
+        let des = keys
+            .iter()
+            .find(|k| k.name.as_deref() == Some("test-des"))
+            .unwrap();
         assert!(matches!(&des.data, KeyData::Des3(v) if v.len() == 24));
 
         // Check RSA key
-        let rsa_key = keys.iter().find(|k| k.name.as_deref() == Some("test-rsa")).unwrap();
+        let rsa_key = keys
+            .iter()
+            .find(|k| k.name.as_deref() == Some("test-rsa"))
+            .unwrap();
         assert!(matches!(&rsa_key.data, KeyData::Rsa { .. }));
     }
 }

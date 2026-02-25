@@ -12,15 +12,8 @@ use uppsala::{Document, NodeId};
 /// Some XML Security test vectors (particularly from NIST/xmlenc interop) encode
 /// RSA modulus/exponent values as hex strings rather than base64. This function
 /// detects the encoding and decodes accordingly.
-fn decode_crypto_binary(
-    text: &str,
-    engine: &impl base64::Engine,
-) -> Result<Vec<u8>, String> {
-    let clean: String = text
-        .trim()
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect();
+fn decode_crypto_binary(text: &str, engine: &impl base64::Engine) -> Result<Vec<u8>, String> {
+    let clean: String = text.trim().chars().filter(|c| !c.is_whitespace()).collect();
 
     if clean.is_empty() {
         return Err("empty value".into());
@@ -43,7 +36,10 @@ fn decode_crypto_binary(
         }
     }
 
-    Err(format!("Invalid symbol at position 0 for {}", &clean[..clean.len().min(20)]))
+    Err(format!(
+        "Invalid symbol at position 0 for {}",
+        &clean[..clean.len().min(20)]
+    ))
 }
 
 /// Process a `<KeyInfo>` element and attempt to resolve a key from the manager.
@@ -91,7 +87,8 @@ pub fn resolve_key_info<'a>(
                 if &*is_elem.name.local_name != ns::node::X509_ISSUER_SERIAL {
                     continue;
                 }
-                let serial_text = doc.children(issuer_serial)
+                let serial_text = doc
+                    .children(issuer_serial)
                     .into_iter()
                     .find(|&n| {
                         doc.element(n)
@@ -204,13 +201,21 @@ fn format_serial_decimal(bytes: &[u8]) -> String {
     }
 
     // result is in little-endian digit order, reverse and convert to string
-    result.iter().rev().map(|d| (b'0' + d) as char).collect::<String>()
+    result
+        .iter()
+        .rev()
+        .map(|d| (b'0' + d) as char)
+        .collect::<String>()
         .trim_start_matches('0')
         .to_string()
         .chars()
         .next()
         .map_or("0".to_string(), |_| {
-            result.iter().rev().map(|d| (b'0' + d) as char).collect::<String>()
+            result
+                .iter()
+                .rev()
+                .map(|d| (b'0' + d) as char)
+                .collect::<String>()
                 .trim_start_matches('0')
                 .to_string()
         })
@@ -277,9 +282,9 @@ impl ParsedCert {
         if let Some(exts) = &self.cert.tbs_certificate.extensions {
             for ext in exts.iter() {
                 if ext.extn_id == bc_oid {
-                    if let Ok(bc) = x509_cert::ext::pkix::BasicConstraints::from_der(
-                        ext.extn_value.as_bytes(),
-                    ) {
+                    if let Ok(bc) =
+                        x509_cert::ext::pkix::BasicConstraints::from_der(ext.extn_value.as_bytes())
+                    {
                         return bc.ca;
                     }
                 }
@@ -291,13 +296,21 @@ impl ParsedCert {
     /// Get the subject as DER bytes (for issuer/subject matching).
     fn subject_der(&self) -> Vec<u8> {
         use der::Encode;
-        self.cert.tbs_certificate.subject.to_der().unwrap_or_default()
+        self.cert
+            .tbs_certificate
+            .subject
+            .to_der()
+            .unwrap_or_default()
     }
 
     /// Get the issuer as DER bytes.
     fn issuer_der(&self) -> Vec<u8> {
         use der::Encode;
-        self.cert.tbs_certificate.issuer.to_der().unwrap_or_default()
+        self.cert
+            .tbs_certificate
+            .issuer
+            .to_der()
+            .unwrap_or_default()
     }
 }
 
@@ -351,9 +364,7 @@ fn find_leaf_cert(certs: &[ParsedCert]) -> usize {
 
     // Strategy 3: non-CA certs (even if they appear as issuers — shouldn't happen normally)
     if candidates.is_empty() {
-        candidates = (0..certs.len())
-            .filter(|&i| !certs[i].is_ca())
-            .collect();
+        candidates = (0..certs.len()).filter(|&i| !certs[i].is_ca()).collect();
     }
 
     // If we have multiple candidates, prefer the one with the largest key
@@ -428,7 +439,8 @@ fn parse_der_encoded_key_value(node: NodeId, doc: &Document<'_>) -> Option<Key> 
 
 /// Extract an RSA public key from a `<KeyValue><RSAKeyValue>` element.
 pub fn parse_rsa_key_value(key_value_node: NodeId, doc: &Document<'_>) -> Result<Key, Error> {
-    let rsa_kv = doc.children(key_value_node)
+    let rsa_kv = doc
+        .children(key_value_node)
         .into_iter()
         .find(|&n| {
             doc.element(n)
@@ -440,7 +452,8 @@ pub fn parse_rsa_key_value(key_value_node: NodeId, doc: &Document<'_>) -> Result
         })
         .ok_or_else(|| Error::MissingElement("RSAKeyValue".into()))?;
 
-    let modulus_b64 = doc.children(rsa_kv)
+    let modulus_b64 = doc
+        .children(rsa_kv)
         .into_iter()
         .find(|&n| {
             doc.element(n)
@@ -450,7 +463,8 @@ pub fn parse_rsa_key_value(key_value_node: NodeId, doc: &Document<'_>) -> Result
         .map(|n| doc.text_content_deep(n))
         .ok_or_else(|| Error::MissingElement("Modulus".into()))?;
 
-    let exponent_b64 = doc.children(rsa_kv)
+    let exponent_b64 = doc
+        .children(rsa_kv)
         .into_iter()
         .find(|&n| {
             doc.element(n)
@@ -472,7 +486,10 @@ pub fn parse_rsa_key_value(key_value_node: NodeId, doc: &Document<'_>) -> Result
         .map_err(|err| Error::Key(format!("invalid RSA public key: {err}")))?;
 
     Ok(Key::new(
-        KeyData::Rsa { private: None, public },
+        KeyData::Rsa {
+            private: None,
+            public,
+        },
         KeyUsage::Verify,
     ))
 }
@@ -481,7 +498,8 @@ pub fn parse_rsa_key_value(key_value_node: NodeId, doc: &Document<'_>) -> Result
 ///
 /// DSAKeyValue contains P, Q, G (domain parameters) and Y (public key).
 pub fn parse_dsa_key_value(key_value_node: NodeId, doc: &Document<'_>) -> Result<Key, Error> {
-    let dsa_kv = doc.children(key_value_node)
+    let dsa_kv = doc
+        .children(key_value_node)
         .into_iter()
         .find(|&n| {
             doc.element(n)
@@ -497,7 +515,8 @@ pub fn parse_dsa_key_value(key_value_node: NodeId, doc: &Document<'_>) -> Result
     let engine = base64::engine::general_purpose::STANDARD;
 
     let decode_elem = |name: &str| -> Result<Vec<u8>, Error> {
-        let b64 = doc.children(dsa_kv)
+        let b64 = doc
+            .children(dsa_kv)
             .into_iter()
             .find(|&n| {
                 doc.element(n)
@@ -528,7 +547,10 @@ pub fn parse_dsa_key_value(key_value_node: NodeId, doc: &Document<'_>) -> Result
         .map_err(|e| Error::Key(format!("invalid DSA public key: {e}")))?;
 
     Ok(Key::new(
-        KeyData::Dsa { private: None, public: vk },
+        KeyData::Dsa {
+            private: None,
+            public: vk,
+        },
         KeyUsage::Verify,
     ))
 }
@@ -538,7 +560,8 @@ pub fn parse_dsa_key_value(key_value_node: NodeId, doc: &Document<'_>) -> Result
 /// Supports P-256, P-384, P-521 curves via NamedCurve OID.
 pub fn parse_ec_key_value(key_value_node: NodeId, doc: &Document<'_>) -> Result<Key, Error> {
     // ECKeyValue is in the xmldsig11 namespace
-    let ec_kv = doc.children(key_value_node)
+    let ec_kv = doc
+        .children(key_value_node)
         .into_iter()
         .find(|&n| {
             doc.element(n)
@@ -552,7 +575,8 @@ pub fn parse_ec_key_value(key_value_node: NodeId, doc: &Document<'_>) -> Result<
         .ok_or_else(|| Error::MissingElement("ECKeyValue".into()))?;
 
     // Read NamedCurve URI
-    let named_curve = doc.children(ec_kv)
+    let named_curve = doc
+        .children(ec_kv)
         .into_iter()
         .find(|&n| {
             doc.element(n)
@@ -561,14 +585,16 @@ pub fn parse_ec_key_value(key_value_node: NodeId, doc: &Document<'_>) -> Result<
         })
         .ok_or_else(|| Error::MissingElement("NamedCurve".into()))?;
 
-    let curve_uri = doc.element(named_curve)
+    let curve_uri = doc
+        .element(named_curve)
         .unwrap()
         .get_attribute(ns::attr::URI)
         .ok_or_else(|| Error::MissingAttribute("URI on NamedCurve".into()))?
         .to_string();
 
     // Read PublicKey (base64-encoded uncompressed point)
-    let public_key_b64 = doc.children(ec_kv)
+    let public_key_b64 = doc
+        .children(ec_kv)
         .into_iter()
         .find(|&n| {
             doc.element(n)
@@ -596,7 +622,10 @@ pub fn parse_ec_key_value(key_value_node: NodeId, doc: &Document<'_>) -> Result<
             }
             let vk = p256::ecdsa::VerifyingKey::from(point.unwrap());
             Ok(Key::new(
-                KeyData::EcP256 { private: None, public: vk },
+                KeyData::EcP256 {
+                    private: None,
+                    public: vk,
+                },
                 KeyUsage::Verify,
             ))
         }
@@ -611,7 +640,10 @@ pub fn parse_ec_key_value(key_value_node: NodeId, doc: &Document<'_>) -> Result<
             }
             let vk = p384::ecdsa::VerifyingKey::from(point.unwrap());
             Ok(Key::new(
-                KeyData::EcP384 { private: None, public: vk },
+                KeyData::EcP384 {
+                    private: None,
+                    public: vk,
+                },
                 KeyUsage::Verify,
             ))
         }
@@ -624,14 +656,106 @@ pub fn parse_ec_key_value(key_value_node: NodeId, doc: &Document<'_>) -> Result<
             if point.is_none().into() {
                 return Err(Error::Key("invalid P-521 public key point".into()));
             }
-            let vk = p521::ecdsa::VerifyingKey::from(
-                ecdsa::VerifyingKey::from(point.unwrap()),
-            );
+            let vk = p521::ecdsa::VerifyingKey::from(ecdsa::VerifyingKey::from(point.unwrap()));
             Ok(Key::new(
-                KeyData::EcP521 { private: None, public: vk },
+                KeyData::EcP521 {
+                    private: None,
+                    public: vk,
+                },
                 KeyUsage::Verify,
             ))
         }
-        _ => Err(Error::UnsupportedAlgorithm(format!("EC curve: {curve_uri}"))),
+        _ => Err(Error::UnsupportedAlgorithm(format!(
+            "EC curve: {curve_uri}"
+        ))),
+    }
+}
+
+// ── KeyInfo XML construction ─────────────────────────────────────────
+
+/// Build a `<ds:KeyInfo>` XML fragment containing one or more X.509 certificates.
+///
+/// Certificates should be provided as base64-encoded DER strings (the content
+/// that goes inside `<ds:X509Certificate>`).
+///
+/// # Example output
+///
+/// ```xml
+/// <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:X509Data><ds:X509Certificate>MII...</ds:X509Certificate></ds:X509Data></ds:KeyInfo>
+/// ```
+pub fn build_x509_key_info(certs_b64: &[&str]) -> String {
+    use uppsala::XmlWriter;
+
+    let mut w = XmlWriter::new();
+    w.start_element("ds:KeyInfo", &[("xmlns:ds", ns::DSIG)]);
+    w.start_element("ds:X509Data", &[]);
+    for cert in certs_b64 {
+        w.start_element("ds:X509Certificate", &[]);
+        // Base64 content contains no XML-special characters, but text() is
+        // correct regardless and avoids any injection risk.
+        w.text(cert);
+        w.end_element("ds:X509Certificate");
+    }
+    w.end_element("ds:X509Data");
+    w.end_element("ds:KeyInfo");
+    w.into_string()
+}
+
+/// Build a `<ds:KeyInfo>` XML fragment from DER-encoded certificate bytes.
+///
+/// The certificates are base64-encoded internally before embedding.
+pub fn build_x509_key_info_from_der(certs_der: &[impl AsRef<[u8]>]) -> String {
+    use base64::Engine;
+    let engine = base64::engine::general_purpose::STANDARD;
+    let b64_certs: Vec<String> = certs_der
+        .iter()
+        .map(|der| engine.encode(der.as_ref()))
+        .collect();
+    let refs: Vec<&str> = b64_certs.iter().map(|s| s.as_str()).collect();
+    build_x509_key_info(&refs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_x509_key_info_single_cert() {
+        let cert = "MIIBojCCAUmgAwIBAgIJAL==";
+        let xml = build_x509_key_info(&[cert]);
+        assert_eq!(
+            xml,
+            concat!(
+                r#"<ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#">"#,
+                "<ds:X509Data>",
+                "<ds:X509Certificate>MIIBojCCAUmgAwIBAgIJAL==</ds:X509Certificate>",
+                "</ds:X509Data>",
+                "</ds:KeyInfo>",
+            )
+        );
+    }
+
+    #[test]
+    fn test_build_x509_key_info_multiple_certs() {
+        let xml = build_x509_key_info(&["AAAA", "BBBB"]);
+        assert!(xml.contains("<ds:X509Certificate>AAAA</ds:X509Certificate>"));
+        assert!(xml.contains("<ds:X509Certificate>BBBB</ds:X509Certificate>"));
+        // Single X509Data wrapping both certs
+        assert_eq!(xml.matches("<ds:X509Data>").count(), 1);
+    }
+
+    #[test]
+    fn test_build_x509_key_info_from_der() {
+        let der_bytes = b"\x30\x82\x01\x22"; // dummy DER
+        let xml = build_x509_key_info_from_der(&[der_bytes.as_slice()]);
+        assert!(xml.starts_with(r#"<ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#">"#));
+        assert!(xml.contains("<ds:X509Certificate>"));
+        assert!(xml.ends_with("</ds:KeyInfo>"));
+    }
+
+    #[test]
+    fn test_build_x509_key_info_namespace_uses_constant() {
+        let xml = build_x509_key_info(&["AAAA"]);
+        assert!(xml.contains(ns::DSIG));
     }
 }

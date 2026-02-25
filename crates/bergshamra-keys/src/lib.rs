@@ -13,4 +13,5 @@ pub mod manager;
 pub mod x509;
 
 pub use key::{Key, KeyData, KeyUsage};
+pub use keyinfo::{build_x509_key_info, build_x509_key_info_from_der};
 pub use manager::KeysManager;

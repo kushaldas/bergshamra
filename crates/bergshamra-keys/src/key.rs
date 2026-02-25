@@ -197,43 +197,56 @@ impl KeyData {
     /// inside a `<KeyValue>` element. Returns `None` for symmetric keys.
     pub fn to_key_value_xml(&self, dsig_prefix: &str) -> Option<String> {
         use base64::Engine;
+        use bergshamra_core::ns;
+        use uppsala::XmlWriter;
+
         let engine = base64::engine::general_purpose::STANDARD;
+
+        // Helper: build a prefixed element name like "ds:Foo" or just "Foo".
+        let pname = |local: &str| -> String {
+            if dsig_prefix.is_empty() {
+                local.to_string()
+            } else {
+                format!("{dsig_prefix}:{local}")
+            }
+        };
 
         match self {
             Self::Rsa { public, .. } => {
                 use rsa::traits::PublicKeyParts;
                 let modulus_b64 = engine.encode(public.n().to_bytes_be());
                 let exponent_b64 = engine.encode(public.e().to_bytes_be());
-                if dsig_prefix.is_empty() {
-                    Some(format!(
-                        "<RSAKeyValue><Modulus>{modulus_b64}</Modulus><Exponent>{exponent_b64}</Exponent></RSAKeyValue>"
-                    ))
-                } else {
-                    Some(format!(
-                        "<{dsig_prefix}:RSAKeyValue><{dsig_prefix}:Modulus>{modulus_b64}</{dsig_prefix}:Modulus><{dsig_prefix}:Exponent>{exponent_b64}</{dsig_prefix}:Exponent></{dsig_prefix}:RSAKeyValue>"
-                    ))
-                }
+                let mut w = XmlWriter::new();
+                let tag = pname(ns::node::RSA_KEY_VALUE);
+                let mod_tag = pname(ns::node::RSA_MODULUS);
+                let exp_tag = pname(ns::node::RSA_EXPONENT);
+                w.start_element(&tag, &[]);
+                w.start_element(&mod_tag, &[]);
+                w.text(&modulus_b64);
+                w.end_element(&mod_tag);
+                w.start_element(&exp_tag, &[]);
+                w.text(&exponent_b64);
+                w.end_element(&exp_tag);
+                w.end_element(&tag);
+                Some(w.into_string())
             }
             Self::EcP256 { public, .. } => {
                 let point = public.to_encoded_point(false);
                 let pub_b64 = engine.encode(point.as_bytes());
-                Some(format!(
-                    "<ECKeyValue xmlns=\"http://www.w3.org/2009/xmldsig11#\"><NamedCurve URI=\"urn:oid:1.2.840.10045.3.1.7\"/><PublicKey>{pub_b64}</PublicKey></ECKeyValue>"
+                Some(build_ec_key_value_xml(
+                    &pub_b64,
+                    "urn:oid:1.2.840.10045.3.1.7",
                 ))
             }
             Self::EcP384 { public, .. } => {
                 let point = public.to_encoded_point(false);
                 let pub_b64 = engine.encode(point.as_bytes());
-                Some(format!(
-                    "<ECKeyValue xmlns=\"http://www.w3.org/2009/xmldsig11#\"><NamedCurve URI=\"urn:oid:1.3.132.0.34\"/><PublicKey>{pub_b64}</PublicKey></ECKeyValue>"
-                ))
+                Some(build_ec_key_value_xml(&pub_b64, "urn:oid:1.3.132.0.34"))
             }
             Self::EcP521 { public, .. } => {
                 let point = public.to_encoded_point(false);
                 let pub_b64 = engine.encode(point.as_bytes());
-                Some(format!(
-                    "<ECKeyValue xmlns=\"http://www.w3.org/2009/xmldsig11#\"><NamedCurve URI=\"urn:oid:1.3.132.0.35\"/><PublicKey>{pub_b64}</PublicKey></ECKeyValue>"
-                ))
+                Some(build_ec_key_value_xml(&pub_b64, "urn:oid:1.3.132.0.35"))
             }
             Self::Dsa { public, .. } => {
                 let components = public.components();
@@ -241,15 +254,27 @@ impl KeyData {
                 let q_b64 = engine.encode(components.q().to_bytes_be());
                 let g_b64 = engine.encode(components.g().to_bytes_be());
                 let y_b64 = engine.encode(public.y().to_bytes_be());
-                if dsig_prefix.is_empty() {
-                    Some(format!(
-                        "<DSAKeyValue><P>{p_b64}</P><Q>{q_b64}</Q><G>{g_b64}</G><Y>{y_b64}</Y></DSAKeyValue>"
-                    ))
-                } else {
-                    Some(format!(
-                        "<{dsig_prefix}:DSAKeyValue><{dsig_prefix}:P>{p_b64}</{dsig_prefix}:P><{dsig_prefix}:Q>{q_b64}</{dsig_prefix}:Q><{dsig_prefix}:G>{g_b64}</{dsig_prefix}:G><{dsig_prefix}:Y>{y_b64}</{dsig_prefix}:Y></{dsig_prefix}:DSAKeyValue>"
-                    ))
-                }
+                let mut w = XmlWriter::new();
+                let tag = pname(ns::node::DSA_KEY_VALUE);
+                let p_tag = pname(ns::node::DSA_P);
+                let q_tag = pname(ns::node::DSA_Q);
+                let g_tag = pname(ns::node::DSA_G);
+                let y_tag = pname(ns::node::DSA_Y);
+                w.start_element(&tag, &[]);
+                w.start_element(&p_tag, &[]);
+                w.text(&p_b64);
+                w.end_element(&p_tag);
+                w.start_element(&q_tag, &[]);
+                w.text(&q_b64);
+                w.end_element(&q_tag);
+                w.start_element(&g_tag, &[]);
+                w.text(&g_b64);
+                w.end_element(&g_tag);
+                w.start_element(&y_tag, &[]);
+                w.text(&y_b64);
+                w.end_element(&y_tag);
+                w.end_element(&tag);
+                Some(w.into_string())
             }
             Self::Dh {
                 p,
@@ -258,30 +283,57 @@ impl KeyData {
                 public_key,
                 ..
             } => {
-                let enc_ns = "http://www.w3.org/2001/04/xmlenc#";
                 let p_b64 = engine.encode(p);
                 let g_b64 = engine.encode(g);
                 let pub_b64 = engine.encode(public_key);
-                let mut xml =
-                    format!("<xenc:DHKeyValue xmlns:xenc=\"{enc_ns}\"><xenc:P>{p_b64}</xenc:P>");
+                let mut w = XmlWriter::new();
+                w.start_element("xenc:DHKeyValue", &[("xmlns:xenc", ns::ENC)]);
+                w.start_element("xenc:P", &[]);
+                w.text(&p_b64);
+                w.end_element("xenc:P");
                 if let Some(q_bytes) = q {
                     let q_b64 = engine.encode(q_bytes);
-                    xml.push_str(&format!("<xenc:Q>{q_b64}</xenc:Q>"));
+                    w.start_element("xenc:Q", &[]);
+                    w.text(&q_b64);
+                    w.end_element("xenc:Q");
                 }
-                xml.push_str(&format!(
-                    "<xenc:Generator>{g_b64}</xenc:Generator><xenc:Public>{pub_b64}</xenc:Public></xenc:DHKeyValue>"
-                ));
-                Some(xml)
+                w.start_element("xenc:Generator", &[]);
+                w.text(&g_b64);
+                w.end_element("xenc:Generator");
+                w.start_element("xenc:Public", &[]);
+                w.text(&pub_b64);
+                w.end_element("xenc:Public");
+                w.end_element("xenc:DHKeyValue");
+                Some(w.into_string())
             }
             Self::X25519 { public, .. } => {
                 let pub_b64 = engine.encode(public);
-                Some(format!(
-                    "<ECKeyValue xmlns=\"http://www.w3.org/2009/xmldsig11#\"><NamedCurve URI=\"urn:ietf:params:xml:ns:keyprov:curve:x25519\"/><PublicKey>{pub_b64}</PublicKey></ECKeyValue>"
+                Some(build_ec_key_value_xml(
+                    &pub_b64,
+                    "urn:ietf:params:xml:ns:keyprov:curve:x25519",
                 ))
             }
             _ => None,
         }
     }
+}
+
+/// Build an `<ECKeyValue>` XML fragment using XmlWriter.
+///
+/// Used for EC (P-256, P-384, P-521) and X25519 keys. The `ECKeyValue` element
+/// lives in the DSig 1.1 namespace.
+fn build_ec_key_value_xml(pub_b64: &str, curve_uri: &str) -> String {
+    use bergshamra_core::ns;
+    use uppsala::XmlWriter;
+
+    let mut w = XmlWriter::new();
+    w.start_element(ns::node::EC_KEY_VALUE, &[("xmlns", ns::DSIG11)]);
+    w.empty_element(ns::node::NAMED_CURVE, &[("URI", curve_uri)]);
+    w.start_element(ns::node::PUBLIC_KEY, &[]);
+    w.text(pub_b64);
+    w.end_element(ns::node::PUBLIC_KEY);
+    w.end_element(ns::node::EC_KEY_VALUE);
+    w.into_string()
 }
 
 /// A named key with associated data.
