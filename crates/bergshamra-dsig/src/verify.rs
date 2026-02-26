@@ -28,8 +28,19 @@ pub struct VerifiedReference {
     pub resolved_node: Option<NodeId>,
 }
 
+/// Information about the key that was used to verify the signature.
+#[derive(Debug, Clone)]
+pub struct VerifiedKeyInfo {
+    /// Algorithm name (e.g., "RSA", "EC-P256", "HMAC").
+    pub algorithm: String,
+    /// Key name if resolved from KeysManager by name.
+    pub key_name: Option<String>,
+    /// DER-encoded X.509 certificate chain (leaf first), if present.
+    pub x509_chain: Vec<Vec<u8>>,
+}
+
 /// Result of signature verification.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum VerifyResult {
     /// Signature is valid.
     Valid {
@@ -37,6 +48,8 @@ pub enum VerifyResult {
         signature_node: NodeId,
         /// The verified references and their resolved targets.
         references: Vec<VerifiedReference>,
+        /// Information about the signing key used for verification.
+        key_info: VerifiedKeyInfo,
     },
     /// Signature is invalid.
     Invalid { reason: String },
@@ -366,6 +379,11 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
         Ok(VerifyResult::Valid {
             signature_node: sig_node,
             references: verified_refs,
+            key_info: VerifiedKeyInfo {
+                algorithm: key.data.algorithm_name().to_owned(),
+                key_name: key.name.clone(),
+                x509_chain: key.x509_chain.clone(),
+            },
         })
     } else {
         Ok(VerifyResult::Invalid {
@@ -399,7 +417,13 @@ fn verify_reference(
     // (common in WS-Security). The caller must verify attachment digests separately.
     // See docs/adr/0002-cid-uri-scheme-skip.md
     if uri.starts_with("cid:") {
-        return Ok((None, VerifiedReference { uri: uri.to_owned(), resolved_node: None }));
+        return Ok((
+            None,
+            VerifiedReference {
+                uri: uri.to_owned(),
+                resolved_node: None,
+            },
+        ));
     }
 
     // Read DigestMethod
@@ -431,12 +455,20 @@ fn verify_reference(
     // Read and apply transforms
     let transforms_node = find_child_element(doc, reference, ns::DSIG, ns::node::TRANSFORMS);
     let (mut data, resolved_node) = match resolved {
-        ResolvedUri::Xml { xml_text, node_set, resolved_node } => {
-            (bergshamra_transforms::TransformData::Xml { xml_text, node_set }, resolved_node)
-        }
+        ResolvedUri::Xml {
+            xml_text,
+            node_set,
+            resolved_node,
+        } => (
+            bergshamra_transforms::TransformData::Xml { xml_text, node_set },
+            resolved_node,
+        ),
         ResolvedUri::Binary(bytes) => (bergshamra_transforms::TransformData::Binary(bytes), None),
     };
-    let vref = VerifiedReference { uri: uri.to_owned(), resolved_node };
+    let vref = VerifiedReference {
+        uri: uri.to_owned(),
+        resolved_node,
+    };
 
     if let Some(transforms) = transforms_node {
         for transform_node in doc.children(transforms) {
@@ -471,7 +503,12 @@ fn verify_reference(
     if computed == expected_digest {
         Ok((None, vref))
     } else {
-        Ok((Some(format!("URI={uri}: expected digest does not match computed digest")), vref))
+        Ok((
+            Some(format!(
+                "URI={uri}: expected digest does not match computed digest"
+            )),
+            vref,
+        ))
     }
 }
 
@@ -698,10 +735,7 @@ fn apply_relationship_transform(
     let mut w = XmlWriter::new();
     w.start_element("Relationships", &[("xmlns", REL_NS)]);
     for rel in &rels {
-        let mut attrs: Vec<(&str, &str)> = vec![
-            ("Id", &rel.id),
-            ("Target", &rel.target),
-        ];
+        let mut attrs: Vec<(&str, &str)> = vec![("Id", &rel.id), ("Target", &rel.target)];
         if let Some(ref tm) = rel.target_mode {
             attrs.push(("TargetMode", tm));
         }
@@ -710,11 +744,8 @@ fn apply_relationship_transform(
     }
     w.end_element("Relationships");
 
-    Ok(bergshamra_transforms::TransformData::Binary(
-        w.into_bytes(),
-    ))
+    Ok(bergshamra_transforms::TransformData::Binary(w.into_bytes()))
 }
-
 
 /// Apply an XSLT transform.
 ///
@@ -3337,7 +3368,8 @@ mod tests {
             <saml:AttributeStatement/>
         </saml:Assertion>"#;
         let doc = uppsala::parse(xml).expect("parse XML");
-        let id_map = build_id_map(&doc, &["Id", "ID", "id", "AssertionID"]).expect("no duplicate IDs");
+        let id_map =
+            build_id_map(&doc, &["Id", "ID", "id", "AssertionID"]).expect("no duplicate IDs");
         assert!(
             id_map.contains_key("abc123"),
             "AssertionID should be in the ID map"
@@ -3352,7 +3384,8 @@ mod tests {
             <Elem3 id="e3"/>
         </Root>"#;
         let doc = uppsala::parse(xml).expect("parse XML");
-        let id_map = build_id_map(&doc, &["Id", "ID", "id", "AssertionID"]).expect("no duplicate IDs");
+        let id_map =
+            build_id_map(&doc, &["Id", "ID", "id", "AssertionID"]).expect("no duplicate IDs");
         assert!(id_map.contains_key("e1"), "Id should be in map");
         assert!(id_map.contains_key("e2"), "ID should be in map");
         assert!(id_map.contains_key("e3"), "id should be in map");
@@ -3379,8 +3412,9 @@ mod tests {
         assert_eq!(refs.len(), 1);
 
         let id_map = HashMap::new();
-        let (mismatch, vref) = verify_reference(refs[0], &doc, &id_map, xml, sig_node, &[], false, None)
-            .expect("verify_reference failed");
+        let (mismatch, vref) =
+            verify_reference(refs[0], &doc, &id_map, xml, sig_node, &[], false, None)
+                .expect("verify_reference failed");
         assert!(
             mismatch.is_none(),
             "cid: reference should be skipped and reported as Valid"
@@ -3411,8 +3445,9 @@ mod tests {
         assert_eq!(refs.len(), 1);
 
         let id_map = build_id_map(&doc, &["Id", "ID", "id"]).expect("no duplicate IDs");
-        let (mismatch, _vref) = verify_reference(refs[0], &doc, &id_map, xml, sig_node, &[], false, None)
-            .expect("verify_reference failed");
+        let (mismatch, _vref) =
+            verify_reference(refs[0], &doc, &id_map, xml, sig_node, &[], false, None)
+                .expect("verify_reference failed");
         // The digest will not match since AAAA is bogus, so we expect Some(reason).
         assert!(
             mismatch.is_some(),
@@ -3430,7 +3465,10 @@ mod tests {
         let result = build_id_map(&doc, &["Id", "ID", "id"]);
         assert!(result.is_err(), "duplicate ID should be rejected");
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("duplicate ID: dup"), "error should name the duplicate ID, got: {err}");
+        assert!(
+            err.contains("duplicate ID: dup"),
+            "error should name the duplicate ID, got: {err}"
+        );
     }
 
     #[test]
@@ -3454,7 +3492,10 @@ mod tests {
         </Root>"#;
         let doc = uppsala::parse(xml).expect("parse XML");
         let result = build_id_map(&doc, &["Id", "ID", "id"]);
-        assert!(result.is_err(), "cross-attr-type duplicate should be rejected");
+        assert!(
+            result.is_err(),
+            "cross-attr-type duplicate should be rejected"
+        );
     }
 
     #[test]
@@ -3463,9 +3504,14 @@ mod tests {
         let xml = r#"<Root Id="root"><Signature/></Root>"#;
         let doc = uppsala::parse(xml).expect("parse");
         let root = doc.document_element().unwrap();
-        let sig = doc.children(root).into_iter().find(|&id| {
-            doc.element(id).is_some_and(|e| &*e.name.local_name == "Signature")
-        }).unwrap();
+        let sig = doc
+            .children(root)
+            .into_iter()
+            .find(|&id| {
+                doc.element(id)
+                    .is_some_and(|e| &*e.name.local_name == "Signature")
+            })
+            .unwrap();
         assert!(validate_reference_position(&doc, sig, root).is_ok());
     }
 
@@ -3475,7 +3521,9 @@ mod tests {
         let xml = r#"<Root><Data Id="d1"/><Signature/></Root>"#;
         let doc = uppsala::parse(xml).expect("parse");
         let root = doc.document_element().unwrap();
-        let children: Vec<_> = doc.children(root).into_iter()
+        let children: Vec<_> = doc
+            .children(root)
+            .into_iter()
             .filter(|&id| doc.element(id).is_some())
             .collect();
         let data_node = children[0];
@@ -3489,12 +3537,22 @@ mod tests {
         let xml = r#"<Root Id="root"><Child><Signature/></Child></Root>"#;
         let doc = uppsala::parse(xml).expect("parse");
         let root = doc.document_element().unwrap();
-        let child = doc.children(root).into_iter().find(|&id| {
-            doc.element(id).is_some_and(|e| &*e.name.local_name == "Child")
-        }).unwrap();
-        let sig = doc.children(child).into_iter().find(|&id| {
-            doc.element(id).is_some_and(|e| &*e.name.local_name == "Signature")
-        }).unwrap();
+        let child = doc
+            .children(root)
+            .into_iter()
+            .find(|&id| {
+                doc.element(id)
+                    .is_some_and(|e| &*e.name.local_name == "Child")
+            })
+            .unwrap();
+        let sig = doc
+            .children(child)
+            .into_iter()
+            .find(|&id| {
+                doc.element(id)
+                    .is_some_and(|e| &*e.name.local_name == "Signature")
+            })
+            .unwrap();
         assert!(validate_reference_position(&doc, sig, root).is_ok());
     }
 
@@ -3504,20 +3562,37 @@ mod tests {
         let xml = r#"<Root><A><Target Id="t1"/></A><B><Signature/></B></Root>"#;
         let doc = uppsala::parse(xml).expect("parse");
         let root = doc.document_element().unwrap();
-        let a = doc.children(root).into_iter().find(|&id| {
-            doc.element(id).is_some_and(|e| &*e.name.local_name == "A")
-        }).unwrap();
-        let b = doc.children(root).into_iter().find(|&id| {
-            doc.element(id).is_some_and(|e| &*e.name.local_name == "B")
-        }).unwrap();
-        let target = doc.children(a).into_iter().find(|&id| {
-            doc.element(id).is_some_and(|e| &*e.name.local_name == "Target")
-        }).unwrap();
-        let sig = doc.children(b).into_iter().find(|&id| {
-            doc.element(id).is_some_and(|e| &*e.name.local_name == "Signature")
-        }).unwrap();
+        let a = doc
+            .children(root)
+            .into_iter()
+            .find(|&id| doc.element(id).is_some_and(|e| &*e.name.local_name == "A"))
+            .unwrap();
+        let b = doc
+            .children(root)
+            .into_iter()
+            .find(|&id| doc.element(id).is_some_and(|e| &*e.name.local_name == "B"))
+            .unwrap();
+        let target = doc
+            .children(a)
+            .into_iter()
+            .find(|&id| {
+                doc.element(id)
+                    .is_some_and(|e| &*e.name.local_name == "Target")
+            })
+            .unwrap();
+        let sig = doc
+            .children(b)
+            .into_iter()
+            .find(|&id| {
+                doc.element(id)
+                    .is_some_and(|e| &*e.name.local_name == "Signature")
+            })
+            .unwrap();
         let result = validate_reference_position(&doc, sig, target);
-        assert!(result.is_err(), "unrelated target should be rejected in strict mode");
+        assert!(
+            result.is_err(),
+            "unrelated target should be rejected in strict mode"
+        );
     }
 
     // --- Tests ported from Go signedxml library ---

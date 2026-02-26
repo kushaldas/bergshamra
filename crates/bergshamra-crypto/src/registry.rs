@@ -2,12 +2,12 @@
 
 //! Algorithm registry mapping URIs to factory functions.
 
-use bergshamra_core::Error;
-use crate::digest::DigestAlgorithm;
-use crate::sign::SignatureAlgorithm;
 use crate::cipher::CipherAlgorithm;
-use crate::keywrap::KeyWrapAlgorithm;
+use crate::digest::DigestAlgorithm;
 use crate::keytransport::KeyTransportAlgorithm;
+use crate::keywrap::KeyWrapAlgorithm;
+use crate::sign::SignatureAlgorithm;
+use bergshamra_core::Error;
 
 /// Central registry for all cryptographic algorithms.
 pub struct AlgorithmRegistry;

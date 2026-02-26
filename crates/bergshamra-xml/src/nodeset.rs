@@ -227,7 +227,10 @@ impl NodeSet {
     pub fn is_ns_visible(&self, element_id: usize, prefix: &str) -> bool {
         match &self.ns_visible {
             None => true,
-            Some(map) => map.get(&(element_id, prefix.to_string())).copied().unwrap_or(false),
+            Some(map) => map
+                .get(&(element_id, prefix.to_string()))
+                .copied()
+                .unwrap_or(false),
         }
     }
 

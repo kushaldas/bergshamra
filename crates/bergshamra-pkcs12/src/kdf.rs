@@ -180,7 +180,12 @@ pub fn decrypt_pbes2_aes256cbc(
     aes_iv: &[u8],
 ) -> Result<Vec<u8>, Error> {
     let mut key = [0u8; 32];
-    pbkdf2::pbkdf2_hmac::<Sha256>(password.as_bytes(), pbkdf2_salt, pbkdf2_iterations, &mut key);
+    pbkdf2::pbkdf2_hmac::<Sha256>(
+        password.as_bytes(),
+        pbkdf2_salt,
+        pbkdf2_iterations,
+        &mut key,
+    );
 
     let decryptor = Aes256CbcDec::new_from_slices(&key, aes_iv)
         .map_err(|e| Error::Key(format!("AES-256-CBC init failed: {e}")))?;
@@ -202,7 +207,12 @@ pub fn decrypt_pbes2_aes256cbc_sha1(
     aes_iv: &[u8],
 ) -> Result<Vec<u8>, Error> {
     let mut key = [0u8; 32];
-    pbkdf2::pbkdf2_hmac::<Sha1>(password.as_bytes(), pbkdf2_salt, pbkdf2_iterations, &mut key);
+    pbkdf2::pbkdf2_hmac::<Sha1>(
+        password.as_bytes(),
+        pbkdf2_salt,
+        pbkdf2_iterations,
+        &mut key,
+    );
 
     let decryptor = Aes256CbcDec::new_from_slices(&key, aes_iv)
         .map_err(|e| Error::Key(format!("AES-256-CBC init failed: {e}")))?;

@@ -40,11 +40,9 @@ impl Transform for Base64DecodeTransform {
         let engine = base64::engine::general_purpose::STANDARD;
 
         let text = match &input {
-            TransformData::Binary(data) => {
-                std::str::from_utf8(data)
-                    .map_err(|e| Error::Transform(format!("base64 input not UTF-8: {e}")))?
-                    .to_owned()
-            }
+            TransformData::Binary(data) => std::str::from_utf8(data)
+                .map_err(|e| Error::Transform(format!("base64 input not UTF-8: {e}")))?
+                .to_owned(),
             TransformData::Xml { xml_text, node_set } => {
                 // Extract text content from the node set, not the full XML.
                 // Per W3C: "removes the tags and extracts the content".
@@ -52,10 +50,7 @@ impl Transform for Base64DecodeTransform {
             }
         };
 
-        let cleaned: String = text
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect();
+        let cleaned: String = text.chars().filter(|c| !c.is_whitespace()).collect();
 
         let decoded = engine
             .decode(&cleaned)

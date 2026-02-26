@@ -24,21 +24,13 @@ impl XmlWriter {
     }
 
     /// Start an element with the given name and optional attributes.
-    pub fn start_element(
-        &mut self,
-        name: &str,
-        attrs: &[(&str, &str)],
-    ) -> Result<(), Error> {
+    pub fn start_element(&mut self, name: &str, attrs: &[(&str, &str)]) -> Result<(), Error> {
         self.writer.start_element(name, attrs);
         Ok(())
     }
 
     /// Write an empty element (self-closing).
-    pub fn empty_element(
-        &mut self,
-        name: &str,
-        attrs: &[(&str, &str)],
-    ) -> Result<(), Error> {
+    pub fn empty_element(&mut self, name: &str, attrs: &[(&str, &str)]) -> Result<(), Error> {
         self.writer.empty_element(name, attrs);
         Ok(())
     }

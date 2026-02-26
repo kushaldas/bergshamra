@@ -55,10 +55,7 @@ impl XmlDocument {
     }
 
     /// Build the ID → NodeId mapping for a parsed document.
-    pub fn build_id_map(
-        &self,
-        doc: &Document<'_>,
-    ) -> HashMap<String, NodeId> {
+    pub fn build_id_map(&self, doc: &Document<'_>) -> HashMap<String, NodeId> {
         let default_attrs = ["Id", "ID", "id"];
         let mut map = HashMap::new();
         for id in doc.descendants(doc.root()) {
@@ -88,21 +85,13 @@ impl XmlDocument {
     }
 
     /// Find the first descendant element with the given local name and namespace.
-    pub fn find_element(
-        doc: &Document<'_>,
-        ns: &str,
-        local_name: &str,
-    ) -> Option<NodeId> {
+    pub fn find_element(doc: &Document<'_>, ns: &str, local_name: &str) -> Option<NodeId> {
         let results = doc.get_elements_by_tag_name_ns(ns, local_name);
         results.into_iter().next()
     }
 
     /// Find all descendant elements with the given local name and namespace.
-    pub fn find_elements(
-        doc: &Document<'_>,
-        ns: &str,
-        local_name: &str,
-    ) -> Vec<NodeId> {
+    pub fn find_elements(doc: &Document<'_>, ns: &str, local_name: &str) -> Vec<NodeId> {
         doc.get_elements_by_tag_name_ns(ns, local_name)
     }
 }

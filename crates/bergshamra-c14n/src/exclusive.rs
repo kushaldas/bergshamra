@@ -20,13 +20,16 @@ use std::collections::{BTreeMap, HashSet};
 use uppsala::{Document, NodeId, NodeKind};
 
 /// Canonicalize using Exclusive C14N 1.0.
-pub fn canonicalize(
+pub fn canonicalize<S: AsRef<str>>(
     doc: &Document<'_>,
     with_comments: bool,
     node_set: Option<&NodeSet>,
-    inclusive_prefixes: &[String],
+    inclusive_prefixes: &[S],
 ) -> Result<Vec<u8>, Error> {
-    let prefix_set: HashSet<String> = inclusive_prefixes.iter().cloned().collect();
+    let prefix_set: HashSet<String> = inclusive_prefixes
+        .iter()
+        .map(|s| s.as_ref().to_owned())
+        .collect();
     let mut output = Vec::new();
     let mut ctx = ExcC14nContext {
         doc,
@@ -451,7 +454,7 @@ mod tests {
             <!-- Comment 2 -->\n\n\
             <!-- Comment 3 -->";
         let doc = uppsala::parse(input).unwrap();
-        let result = canonicalize(&doc, false, None, &[]).unwrap();
+        let result = canonicalize(&doc, false, None, &[] as &[&str]).unwrap();
         let output = String::from_utf8(result).unwrap();
         let expected = "<?xml-stylesheet href=\"doc.xsl\" type=\"text/xsl\"   ?>\n\
             <doc>Hello, world!</doc>\n\
@@ -468,7 +471,7 @@ mod tests {
             <!-- Comment 2 -->\n\n\
             <!-- Comment 3 -->";
         let doc = uppsala::parse(input).unwrap();
-        let result = canonicalize(&doc, true, None, &[]).unwrap();
+        let result = canonicalize(&doc, true, None, &[] as &[&str]).unwrap();
         let output = String::from_utf8(result).unwrap();
         let expected = "<?xml-stylesheet href=\"doc.xsl\" type=\"text/xsl\"   ?>\n\
             <doc>Hello, world!<!-- Comment 1 --></doc>\n\
@@ -493,7 +496,7 @@ mod tests {
             \x20\x20\x20</mixed>\n\
             </doc>";
         let doc = uppsala::parse(input).unwrap();
-        let result = canonicalize(&doc, false, None, &[]).unwrap();
+        let result = canonicalize(&doc, false, None, &[] as &[&str]).unwrap();
         let output = String::from_utf8(result).unwrap();
         assert_eq!(output, input);
     }
@@ -511,7 +514,7 @@ mod tests {
             \x20\x20\x20<normNames attr='   A   &#x20;&#13;&#xa;&#9;   B   '/>\n\
             </doc>";
         let doc = uppsala::parse(input).unwrap();
-        let result = canonicalize(&doc, false, None, &[]).unwrap();
+        let result = canonicalize(&doc, false, None, &[] as &[&str]).unwrap();
         let output = String::from_utf8(result).unwrap();
         let expected = "<doc>\n\
             \x20\x20\x20<text>First line&#xD;\n\
@@ -530,7 +533,7 @@ mod tests {
         // W3C Example 3.6: UTF-8 Encoding (copyright sign U+00A9)
         let input = "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>\n<doc>\u{00A9}</doc>";
         let doc = uppsala::parse(input).unwrap();
-        let result = canonicalize(&doc, false, None, &[]).unwrap();
+        let result = canonicalize(&doc, false, None, &[] as &[&str]).unwrap();
         let output = String::from_utf8(result).unwrap();
         assert_eq!(output, "<doc>\u{00A9}</doc>");
     }
@@ -540,7 +543,7 @@ mod tests {
         // GitHub Issue #50 from Go signedxml: multiple adjacent comments stripped.
         let input = "<a><!-- comment0 --><!-- comment1 --><!-- comment2 --></a>";
         let doc = uppsala::parse(input).unwrap();
-        let result = canonicalize(&doc, false, None, &[]).unwrap();
+        let result = canonicalize(&doc, false, None, &[] as &[&str]).unwrap();
         let output = String::from_utf8(result).unwrap();
         assert_eq!(output, "<a></a>");
     }
@@ -552,7 +555,7 @@ mod tests {
         // ancestors should NOT appear.
         let input = r#"<root xmlns:a="http://a" xmlns:b="http://b"><a:child/></root>"#;
         let doc = uppsala::parse(input).unwrap();
-        let result = canonicalize(&doc, false, None, &[]).unwrap();
+        let result = canonicalize(&doc, false, None, &[] as &[&str]).unwrap();
         let output = String::from_utf8(result).unwrap();
         // In exclusive C14N, xmlns:b should NOT appear on <a:child> since
         // only xmlns:a is visibly utilized. But at the root level, both are

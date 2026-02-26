@@ -17,8 +17,7 @@ use uppsala::{Document, NodeId, XmlWriter};
 ///
 /// Returns the XML document with `<EncryptedData>` populated.
 pub fn encrypt(ctx: &EncContext, template_xml: &str, data: &[u8]) -> Result<String, Error> {
-    let doc =
-        uppsala::parse(template_xml).map_err(|e| Error::XmlParse(e.to_string()))?;
+    let doc = uppsala::parse(template_xml).map_err(|e| Error::XmlParse(e.to_string()))?;
 
     // Find EncryptedData element
     let enc_data_id = find_element(&doc, ns::ENC, ns::node::ENCRYPTED_DATA)
@@ -47,16 +46,19 @@ pub fn encrypt(ctx: &EncContext, template_xml: &str, data: &[u8]) -> Result<Stri
     // Replace empty CipherValue in EncryptedData using node range
     let cipher_data_id = find_child_element(&doc, enc_data_id, ns::ENC, ns::node::CIPHER_DATA)
         .ok_or_else(|| Error::MissingElement("CipherData".into()))?;
-    let cipher_value_id =
-        find_child_element(&doc, cipher_data_id, ns::ENC, ns::node::CIPHER_VALUE)
-            .ok_or_else(|| Error::MissingElement("CipherValue".into()))?;
+    let cipher_value_id = find_child_element(&doc, cipher_data_id, ns::ENC, ns::node::CIPHER_VALUE)
+        .ok_or_else(|| Error::MissingElement("CipherValue".into()))?;
 
     let cv_range = doc.node_range(cipher_value_id).unwrap();
     let cv_xml = &template_xml[cv_range.start..cv_range.end];
     let prefix = extract_prefix(cv_xml, "CipherValue");
     let effective_prefix = if !prefix.is_empty() {
         let ns_decl = format!("xmlns:{prefix}=");
-        if cv_xml.contains(&ns_decl) { "" } else { prefix }
+        if cv_xml.contains(&ns_decl) {
+            ""
+        } else {
+            prefix
+        }
     } else {
         ""
     };
@@ -194,11 +196,11 @@ fn encrypt_session_key(
         };
 
         // Check if CipherValue is empty
-        let cipher_data_id =
-            match find_child_element(&doc, node_id, ns::ENC, ns::node::CIPHER_DATA) {
-                Some(cd) => cd,
-                None => continue,
-            };
+        let cipher_data_id = match find_child_element(&doc, node_id, ns::ENC, ns::node::CIPHER_DATA)
+        {
+            Some(cd) => cd,
+            None => continue,
+        };
         let cipher_value_id =
             match find_child_element(&doc, cipher_data_id, ns::ENC, ns::node::CIPHER_VALUE) {
                 Some(cv) => cv,
@@ -297,7 +299,11 @@ fn encrypt_session_key(
         let prefix = extract_prefix(cv_xml, "CipherValue");
         let effective_prefix = if !prefix.is_empty() {
             let ns_decl = format!("xmlns:{prefix}=");
-            if cv_xml.contains(&ns_decl) { "" } else { prefix }
+            if cv_xml.contains(&ns_decl) {
+                ""
+            } else {
+                prefix
+            }
         } else {
             ""
         };
@@ -476,8 +482,12 @@ fn resolve_agreement_method_encrypt(
     };
 
     // Apply KDF to derive KEK
-    let kdf_method_id =
-        find_child_element(doc, agreement_id, ns::ENC11, ns::node::KEY_DERIVATION_METHOD);
+    let kdf_method_id = find_child_element(
+        doc,
+        agreement_id,
+        ns::ENC11,
+        ns::node::KEY_DERIVATION_METHOD,
+    );
     let kek = match kdf_method_id {
         Some(kdm_id) => {
             let kdf_uri = doc

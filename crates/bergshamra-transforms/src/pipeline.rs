@@ -24,7 +24,7 @@ impl TransformData {
             TransformData::Xml { xml_text, node_set } => {
                 // Default: inclusive C14N without comments
                 let mode = bergshamra_c14n::C14nMode::Inclusive;
-                bergshamra_c14n::canonicalize(xml_text, mode, node_set.as_ref(), &[])
+                bergshamra_c14n::canonicalize(xml_text, mode, node_set.as_ref(), &[] as &[String])
             }
         }
     }

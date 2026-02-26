@@ -19,7 +19,9 @@ pub struct EnvelopedSignatureTransform {
 impl EnvelopedSignatureTransform {
     /// Create with the node index of the Signature element to remove.
     pub fn new(signature_node_index: usize) -> Self {
-        Self { signature_node_index }
+        Self {
+            signature_node_index,
+        }
     }
 
     /// Create from a NodeId.
@@ -38,8 +40,7 @@ impl Transform for EnvelopedSignatureTransform {
     fn execute(&self, input: TransformData) -> Result<TransformData, Error> {
         match input {
             TransformData::Xml { xml_text, node_set } => {
-                let doc = uppsala::parse(&xml_text)
-                    .map_err(|e| Error::XmlParse(e.to_string()))?;
+                let doc = uppsala::parse(&xml_text).map_err(|e| Error::XmlParse(e.to_string()))?;
 
                 // Build a node set that excludes the Signature subtree
                 let mut ns = node_set.unwrap_or_else(|| NodeSet::all(&doc));
@@ -53,11 +54,9 @@ impl Transform for EnvelopedSignatureTransform {
                     node_set: Some(ns),
                 })
             }
-            TransformData::Binary(_) => {
-                Err(Error::Transform(
-                    "enveloped-signature transform requires XML input".into(),
-                ))
-            }
+            TransformData::Binary(_) => Err(Error::Transform(
+                "enveloped-signature transform requires XML input".into(),
+            )),
         }
     }
 }

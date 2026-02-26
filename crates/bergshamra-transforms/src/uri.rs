@@ -8,8 +8,8 @@
 //! - External references (not supported initially)
 
 use bergshamra_core::Error;
-use bergshamra_xml::NodeSet;
 use bergshamra_xml::xpath;
+use bergshamra_xml::NodeSet;
 use std::collections::HashMap;
 use uppsala::{Document, NodeId};
 
@@ -31,7 +31,9 @@ pub fn resolve_uri(
         Ok((xml_text.to_owned(), Some(ns)))
     } else {
         // External URI — not supported yet
-        Err(Error::InvalidUri(format!("external URI not supported: {uri}")))
+        Err(Error::InvalidUri(format!(
+            "external URI not supported: {uri}"
+        )))
     }
 }
 

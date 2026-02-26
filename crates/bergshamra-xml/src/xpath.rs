@@ -42,11 +42,7 @@ pub fn parse_xpointer_id(expr: &str) -> Option<&str> {
 }
 
 /// Check if `ancestor_id` is an ancestor-or-self of `node_id`.
-pub fn is_ancestor_or_self(
-    doc: &Document<'_>,
-    ancestor_id: NodeId,
-    node_id: NodeId,
-) -> bool {
+pub fn is_ancestor_or_self(doc: &Document<'_>, ancestor_id: NodeId, node_id: NodeId) -> bool {
     let mut current = Some(node_id);
     while let Some(n) = current {
         if n == ancestor_id {

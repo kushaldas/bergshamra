@@ -5,6 +5,7 @@
 use bergshamra_keys::KeysManager;
 
 /// Context for XML-Enc operations.
+#[derive(Debug)]
 pub struct EncContext {
     /// Keys manager for key lookup.
     pub keys_manager: KeysManager,
@@ -25,5 +26,11 @@ impl EncContext {
 
     pub fn add_id_attr(&mut self, name: &str) {
         self.id_attrs.push(name.to_owned());
+    }
+
+    /// Set disable cipher reference (builder style).
+    pub fn with_disable_cipher_reference(mut self, disable: bool) -> Self {
+        self.disable_cipher_reference = disable;
+        self
     }
 }

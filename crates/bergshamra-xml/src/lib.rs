@@ -7,9 +7,9 @@
 
 pub mod document;
 pub mod nodeset;
-pub mod xpath;
 pub mod writer;
+pub mod xpath;
 
 pub use document::XmlDocument;
 pub use nodeset::NodeSet;
-pub use uppsala::{self, Document, NodeId, NodeKind, Element, QName, Attribute};
+pub use uppsala::{self, Attribute, Document, Element, NodeId, NodeKind, QName};

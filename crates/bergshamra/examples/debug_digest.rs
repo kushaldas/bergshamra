@@ -1,12 +1,14 @@
 #![forbid(unsafe_code)]
 
-use bergshamra::xml as bergshamra_xml;
 use bergshamra::c14n as bergshamra_c14n;
 use bergshamra::crypto as bergshamra_crypto;
-use uppsala::{NodeKind, NodeId};
+use bergshamra::xml as bergshamra_xml;
+use uppsala::{NodeId, NodeKind};
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: debug_digest <xml_file>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: debug_digest <xml_file>");
     let xml = std::fs::read_to_string(&path).unwrap();
     let xdoc = bergshamra_xml::XmlDocument::parse(xml.clone()).unwrap();
     let doc = xdoc.parse_doc().unwrap();
@@ -24,28 +26,35 @@ fn main() {
     }
 
     // Find Signature -> SignedInfo -> Reference elements
-    let sig_node = doc.descendants(doc.root())
+    let sig_node = doc
+        .descendants(doc.root())
         .into_iter()
         .find(|&id| {
-            doc.element(id).map_or(false, |e| e.name.local_name == "Signature")
+            doc.element(id)
+                .map_or(false, |e| e.name.local_name == "Signature")
         })
         .expect("no Signature");
-    let signed_info = doc.children(sig_node)
+    let signed_info = doc
+        .children(sig_node)
         .into_iter()
         .find(|&id| {
-            doc.element(id).map_or(false, |e| e.name.local_name == "SignedInfo")
+            doc.element(id)
+                .map_or(false, |e| e.name.local_name == "SignedInfo")
         })
         .expect("no SignedInfo");
 
-    let references: Vec<NodeId> = doc.children(signed_info)
+    let references: Vec<NodeId> = doc
+        .children(signed_info)
         .into_iter()
         .filter(|&id| {
-            doc.element(id).map_or(false, |e| e.name.local_name == "Reference")
+            doc.element(id)
+                .map_or(false, |e| e.name.local_name == "Reference")
         })
         .collect();
 
     for reference in references {
-        let uri = doc.element(reference)
+        let uri = doc
+            .element(reference)
             .and_then(|e| e.get_attribute("URI"))
             .unwrap_or("");
         eprintln!("=== Reference URI: {}", uri);
@@ -59,18 +68,21 @@ fn main() {
                     &xml,
                     bergshamra_c14n::C14nMode::Inclusive,
                     Some(&ns),
-                    &[],
-                ).unwrap();
+                    &[] as &[String],
+                )
+                .unwrap();
 
                 eprintln!("PreDigest data ({} bytes):", result.len());
                 eprintln!("{}", String::from_utf8_lossy(&result));
                 eprintln!("--- END PreDigest ---");
 
                 // Compute digest
-                let digest_uri = doc.children(reference)
+                let digest_uri = doc
+                    .children(reference)
                     .into_iter()
                     .find(|&id| {
-                        doc.element(id).map_or(false, |e| e.name.local_name == "DigestMethod")
+                        doc.element(id)
+                            .map_or(false, |e| e.name.local_name == "DigestMethod")
                     })
                     .and_then(|id| doc.element(id).and_then(|e| e.get_attribute("Algorithm")))
                     .unwrap_or("http://www.w3.org/2000/09/xmldsig#sha1");
@@ -80,18 +92,21 @@ fn main() {
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&digest);
                 eprintln!("Computed digest: {}", b64);
 
-                let expected_text: String = doc.children(reference)
+                let expected_text: String = doc
+                    .children(reference)
                     .into_iter()
                     .find(|&id| {
-                        doc.element(id).map_or(false, |e| e.name.local_name == "DigestValue")
+                        doc.element(id)
+                            .map_or(false, |e| e.name.local_name == "DigestValue")
                     })
                     .map(|id| {
-                        doc.children(id).into_iter().filter_map(|c| {
-                            match doc.node_kind(c) {
+                        doc.children(id)
+                            .into_iter()
+                            .filter_map(|c| match doc.node_kind(c) {
                                 Some(NodeKind::Text(t)) => Some(t.as_ref().to_owned()),
                                 _ => None,
-                            }
-                        }).collect::<String>()
+                            })
+                            .collect::<String>()
                     })
                     .unwrap_or_default();
                 eprintln!("Expected digest: {}", expected_text.trim());

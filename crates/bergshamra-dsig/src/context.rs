@@ -5,6 +5,7 @@
 use bergshamra_keys::KeysManager;
 
 /// Context for XML-DSig operations.
+#[derive(Debug)]
 pub struct DsigContext {
     /// Keys manager for key lookup.
     pub keys_manager: KeysManager,
@@ -68,5 +69,65 @@ impl DsigContext {
     /// Map an external URI to a local file path.
     pub fn add_url_map(&mut self, url: &str, file_path: &str) {
         self.url_maps.push((url.to_owned(), file_path.to_owned()));
+    }
+
+    /// Set debug mode (builder style).
+    pub fn with_debug(mut self, debug: bool) -> Self {
+        self.debug = debug;
+        self
+    }
+
+    /// Set insecure mode (builder style).
+    pub fn with_insecure(mut self, insecure: bool) -> Self {
+        self.insecure = insecure;
+        self
+    }
+
+    /// Set verify keys (builder style).
+    pub fn with_verify_keys(mut self, verify_keys: bool) -> Self {
+        self.verify_keys = verify_keys;
+        self
+    }
+
+    /// Set verification time override (builder style).
+    pub fn with_verification_time(mut self, time: impl Into<String>) -> Self {
+        self.verification_time = Some(time.into());
+        self
+    }
+
+    /// Set skip time checks (builder style).
+    pub fn with_skip_time_checks(mut self, skip: bool) -> Self {
+        self.skip_time_checks = skip;
+        self
+    }
+
+    /// Set enabled key data x509 (builder style).
+    pub fn with_enabled_key_data_x509(mut self, enabled: bool) -> Self {
+        self.enabled_key_data_x509 = enabled;
+        self
+    }
+
+    /// Set trusted keys only (builder style).
+    pub fn with_trusted_keys_only(mut self, trusted: bool) -> Self {
+        self.trusted_keys_only = trusted;
+        self
+    }
+
+    /// Set strict verification (builder style).
+    pub fn with_strict_verification(mut self, strict: bool) -> Self {
+        self.strict_verification = strict;
+        self
+    }
+
+    /// Set minimum HMAC output length in bits (builder style).
+    pub fn with_hmac_min_out_len(mut self, bits: usize) -> Self {
+        self.hmac_min_out_len = bits;
+        self
+    }
+
+    /// Set base directory for resolving relative URIs (builder style).
+    pub fn with_base_dir(mut self, dir: impl Into<String>) -> Self {
+        self.base_dir = Some(dir.into());
+        self
     }
 }

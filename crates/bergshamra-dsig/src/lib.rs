@@ -113,8 +113,8 @@
 //! ```
 
 pub mod context;
-pub mod verify;
 pub mod sign;
+pub mod verify;
 
 pub use context::DsigContext;
-pub use verify::{VerifiedReference, VerifyResult};
+pub use verify::{VerifiedKeyInfo, VerifiedReference, VerifyResult};

@@ -135,9 +135,10 @@ pub fn parse_pfx(data: &[u8], password: &str) -> Result<Pkcs12Contents, Error> {
     for ci in content_infos {
         let bags_data = match ci {
             ContentInfoInner::Data(data) => data,
-            ContentInfoInner::EncryptedData { algorithm, ciphertext } => {
-                decrypt_data(&algorithm, &ciphertext, password, &bmp_password)?
-            }
+            ContentInfoInner::EncryptedData {
+                algorithm,
+                ciphertext,
+            } => decrypt_data(&algorithm, &ciphertext, password, &bmp_password)?,
         };
 
         // Parse SafeBags from the decrypted data
@@ -149,9 +150,11 @@ pub fn parse_pfx(data: &[u8], password: &str) -> Result<Pkcs12Contents, Error> {
                 SafeBag::KeyBag { pkcs8_der } => {
                     private_keys.push(pkcs8_der);
                 }
-                SafeBag::ShroudedKeyBag { algorithm, ciphertext } => {
-                    let pkcs8_der =
-                        decrypt_data(&algorithm, &ciphertext, password, &bmp_password)?;
+                SafeBag::ShroudedKeyBag {
+                    algorithm,
+                    ciphertext,
+                } => {
+                    let pkcs8_der = decrypt_data(&algorithm, &ciphertext, password, &bmp_password)?;
                     private_keys.push(pkcs8_der);
                 }
                 SafeBag::CertBag { cert_der } => {
@@ -179,9 +182,7 @@ fn parse_content_info_data(r: BERReader) -> Result<Vec<u8>, ASN1Error> {
             return Err(ASN1Error::new(ASN1ErrorKind::Invalid));
         }
         // [0] EXPLICIT OCTET STRING
-        let data = r
-            .next()
-            .read_tagged(Tag::context(0), |r| r.read_bytes())?;
+        let data = r.next().read_tagged(Tag::context(0), |r| r.read_bytes())?;
         Ok(data)
     })
 }
@@ -200,9 +201,7 @@ fn parse_content_info_inner(r: BERReader) -> Result<ContentInfoInner, ASN1Error>
         let content_type = r.next().read_oid()?;
 
         if content_type == oid(OID_DATA) {
-            let data = r
-                .next()
-                .read_tagged(Tag::context(0), |r| r.read_bytes())?;
+            let data = r.next().read_tagged(Tag::context(0), |r| r.read_bytes())?;
             Ok(ContentInfoInner::Data(data))
         } else if content_type == oid(OID_ENCRYPTED_DATA) {
             // [0] EXPLICIT EncryptedData
@@ -241,15 +240,16 @@ fn parse_safe_bag(r: BERReader) -> Result<SafeBag, ASN1Error> {
 
         if bag_type == oid(OID_KEY_BAG) {
             // [0] EXPLICIT PrivateKeyInfo (PKCS#8 DER, unencrypted)
-            let pkcs8_der = r
-                .next()
-                .read_tagged(Tag::context(0), |r| r.read_der())?;
+            let pkcs8_der = r.next().read_tagged(Tag::context(0), |r| r.read_der())?;
             // Skip optional attributes
             let _attrs = r.read_optional(|r| {
                 r.read_set_of(|r| {
                     r.read_sequence(|r| {
                         let _oid = r.next().read_oid()?;
-                        r.next().read_set_of(|r| { let _ = r.read_der()?; Ok(()) })?;
+                        r.next().read_set_of(|r| {
+                            let _ = r.read_der()?;
+                            Ok(())
+                        })?;
                         Ok(())
                     })
                 })
@@ -270,7 +270,10 @@ fn parse_safe_bag(r: BERReader) -> Result<SafeBag, ASN1Error> {
                     // Read and discard each attribute SEQUENCE
                     r.read_sequence(|r| {
                         let _oid = r.next().read_oid()?;
-                        r.next().read_set_of(|r| { let _ = r.read_der()?; Ok(()) })?;
+                        r.next().read_set_of(|r| {
+                            let _ = r.read_der()?;
+                            Ok(())
+                        })?;
                         Ok(())
                     })
                 })
@@ -288,9 +291,7 @@ fn parse_safe_bag(r: BERReader) -> Result<SafeBag, ASN1Error> {
                         return Err(ASN1Error::new(ASN1ErrorKind::Invalid));
                     }
                     // [0] EXPLICIT OCTET STRING containing DER-encoded certificate
-                    let cert_data = r
-                        .next()
-                        .read_tagged(Tag::context(0), |r| r.read_bytes())?;
+                    let cert_data = r.next().read_tagged(Tag::context(0), |r| r.read_bytes())?;
                     Ok(cert_data)
                 })
             })?;
@@ -299,7 +300,10 @@ fn parse_safe_bag(r: BERReader) -> Result<SafeBag, ASN1Error> {
                 r.read_set_of(|r| {
                     r.read_sequence(|r| {
                         let _oid = r.next().read_oid()?;
-                        r.next().read_set_of(|r| { let _ = r.read_der()?; Ok(()) })?;
+                        r.next().read_set_of(|r| {
+                            let _ = r.read_der()?;
+                            Ok(())
+                        })?;
                         Ok(())
                     })
                 })
@@ -312,7 +316,10 @@ fn parse_safe_bag(r: BERReader) -> Result<SafeBag, ASN1Error> {
                 r.read_set_of(|r| {
                     r.read_sequence(|r| {
                         let _oid = r.next().read_oid()?;
-                        r.next().read_set_of(|r| { let _ = r.read_der()?; Ok(()) })?;
+                        r.next().read_set_of(|r| {
+                            let _ = r.read_der()?;
+                            Ok(())
+                        })?;
                         Ok(())
                     })
                 })
@@ -339,45 +346,44 @@ fn parse_algorithm_identifier(r: BERReader) -> Result<EncryptionAlgorithm, ASN1E
             // PBES2-params: SEQUENCE { keyDerivationFunc AlgId, encryptionScheme AlgId }
             r.next().read_sequence(|r| {
                 // keyDerivationFunc (must be PBKDF2)
-                let (pbkdf2_salt, pbkdf2_iterations, pbkdf2_prf) =
+                let (pbkdf2_salt, pbkdf2_iterations, pbkdf2_prf) = r.next().read_sequence(|r| {
+                    let kdf_oid = r.next().read_oid()?;
+                    if kdf_oid != oid(OID_PBKDF2) {
+                        return Err(ASN1Error::new(ASN1ErrorKind::Invalid));
+                    }
+                    // PBKDF2-params: SEQUENCE { salt, iterationCount, keyLength?, prf? }
                     r.next().read_sequence(|r| {
-                        let kdf_oid = r.next().read_oid()?;
-                        if kdf_oid != oid(OID_PBKDF2) {
-                            return Err(ASN1Error::new(ASN1ErrorKind::Invalid));
-                        }
-                        // PBKDF2-params: SEQUENCE { salt, iterationCount, keyLength?, prf? }
-                        r.next().read_sequence(|r| {
-                            let salt = r.next().read_bytes()?;
-                            let iterations = r.next().read_u32()?;
+                        let salt = r.next().read_bytes()?;
+                        let iterations = r.next().read_u32()?;
 
-                            // Optional keyLength (INTEGER) — skip if present
-                            // Then optional PRF AlgorithmIdentifier
-                            // We need to handle: [keyLength], [prf] — both optional
-                            let mut prf = PrfAlgorithm::HmacSha1; // default per RFC
+                        // Optional keyLength (INTEGER) — skip if present
+                        // Then optional PRF AlgorithmIdentifier
+                        // We need to handle: [keyLength], [prf] — both optional
+                        let mut prf = PrfAlgorithm::HmacSha1; // default per RFC
 
-                            // Try to read remaining optional fields
-                            // keyLength is an INTEGER, prf is a SEQUENCE
-                            let remaining = r.read_optional(|r| {
-                                // Could be keyLength (INTEGER) or prf (SEQUENCE)
-                                r.read_der()
-                            })?;
+                        // Try to read remaining optional fields
+                        // keyLength is an INTEGER, prf is a SEQUENCE
+                        let remaining = r.read_optional(|r| {
+                            // Could be keyLength (INTEGER) or prf (SEQUENCE)
+                            r.read_der()
+                        })?;
 
-                            if let Some(der_bytes) = remaining {
-                                // Check if this looks like an INTEGER (tag 0x02) or SEQUENCE (tag 0x30)
-                                if !der_bytes.is_empty() && der_bytes[0] == 0x30 {
-                                    // This is the PRF SEQUENCE
-                                    prf = parse_prf_from_der(&der_bytes)?;
-                                } else {
-                                    // This was keyLength, try to read PRF next
-                                    if let Some(prf_der) = r.read_optional(|r| r.read_der())? {
-                                        prf = parse_prf_from_der(&prf_der)?;
-                                    }
+                        if let Some(der_bytes) = remaining {
+                            // Check if this looks like an INTEGER (tag 0x02) or SEQUENCE (tag 0x30)
+                            if !der_bytes.is_empty() && der_bytes[0] == 0x30 {
+                                // This is the PRF SEQUENCE
+                                prf = parse_prf_from_der(&der_bytes)?;
+                            } else {
+                                // This was keyLength, try to read PRF next
+                                if let Some(prf_der) = r.read_optional(|r| r.read_der())? {
+                                    prf = parse_prf_from_der(&prf_der)?;
                                 }
                             }
+                        }
 
-                            Ok((salt, iterations, prf))
-                        })
-                    })?;
+                        Ok((salt, iterations, prf))
+                    })
+                })?;
 
                 // encryptionScheme
                 let aes_iv = r.next().read_sequence(|r| {
@@ -529,11 +535,7 @@ mod tests {
         let data = std::fs::read(p12_path).unwrap();
         let contents = parse_pfx(&data, "secret123").expect("parse_pfx should succeed");
 
-        assert_eq!(
-            contents.private_keys.len(),
-            1,
-            "expected 1 private key"
-        );
+        assert_eq!(contents.private_keys.len(), 1, "expected 1 private key");
         assert!(
             !contents.certificates.is_empty(),
             "expected at least 1 certificate"

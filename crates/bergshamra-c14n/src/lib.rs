@@ -8,9 +8,9 @@
 //! - Exclusive Canonical XML 1.0 (with and without comments)
 
 pub mod escape;
+pub mod exclusive;
 pub mod inclusive;
 pub mod inclusive11;
-pub mod exclusive;
 pub mod render;
 
 use bergshamra_core::{algorithm, Error};
@@ -74,17 +74,23 @@ impl C14nMode {
     }
 }
 
+impl std::fmt::Display for C14nMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.uri())
+    }
+}
+
 /// Canonicalize an XML document.
 ///
 /// - `xml`: the raw XML text
 /// - `mode`: which C14N variant to use
 /// - `node_set`: optional node set (for document-subset canonicalization)
 /// - `inclusive_prefixes`: for exclusive C14N, the InclusiveNamespaces PrefixList
-pub fn canonicalize(
+pub fn canonicalize<S: AsRef<str>>(
     xml: &str,
     mode: C14nMode,
     node_set: Option<&NodeSet>,
-    inclusive_prefixes: &[String],
+    inclusive_prefixes: &[S],
 ) -> Result<Vec<u8>, Error> {
     let doc = uppsala::parse(xml).map_err(|e| Error::XmlParse(e.to_string()))?;
 
@@ -102,11 +108,11 @@ pub fn canonicalize(
 }
 
 /// Convenience: canonicalize with a pre-parsed document.
-pub fn canonicalize_doc(
+pub fn canonicalize_doc<S: AsRef<str>>(
     doc: &Document<'_>,
     mode: C14nMode,
     node_set: Option<&NodeSet>,
-    inclusive_prefixes: &[String],
+    inclusive_prefixes: &[S],
 ) -> Result<Vec<u8>, Error> {
     match mode {
         C14nMode::Inclusive | C14nMode::InclusiveWithComments => {
