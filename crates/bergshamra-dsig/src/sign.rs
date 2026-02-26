@@ -10,7 +10,7 @@ use bergshamra_core::{ns, Error};
 use bergshamra_crypto::digest;
 use bergshamra_xml::nodeset::NodeSet;
 use std::collections::HashMap;
-use uppsala::{Document, NodeId};
+use uppsala::{Document, NodeId, XmlWriter};
 
 /// Sign an XML template document.
 ///
@@ -411,11 +411,12 @@ fn replace_first_empty_element(xml: &str, local_name: &str, new_content: &str) -
             let original = &xml[range.start..range.end];
             // Extract the tag prefix from the original XML
             let prefix = extract_tag_prefix(original, local_name);
-            let replacement = if prefix.is_empty() {
-                format!("<{local_name}>{new_content}</{local_name}>")
-            } else {
-                format!("<{prefix}:{local_name}>{new_content}</{prefix}:{local_name}>")
-            };
+            let tag = pname(prefix, local_name);
+            let mut w = XmlWriter::new();
+            w.start_element(&tag, &[]);
+            w.text(new_content);
+            w.end_element(&tag);
+            let replacement = w.into_string();
             let mut result = String::with_capacity(xml.len() + new_content.len());
             result.push_str(&xml[..range.start]);
             result.push_str(&replacement);
@@ -424,6 +425,15 @@ fn replace_first_empty_element(xml: &str, local_name: &str, new_content: &str) -
         }
     }
     xml.to_string()
+}
+
+/// Build a prefixed element name like `"ds:Foo"` or just `"Foo"`.
+fn pname(prefix: &str, local: &str) -> String {
+    if prefix.is_empty() {
+        local.to_string()
+    } else {
+        format!("{prefix}:{local}")
+    }
 }
 
 /// Extract namespace prefix from a raw XML tag fragment like `<ds:SignatureValue/>`.
@@ -484,31 +494,35 @@ fn populate_x509_data(xml: &str, x509_chain: &[Vec<u8>]) -> Result<String, Error
         .any(|&c| doc.element(c).is_some());
     if !has_children {
         // Build X509Certificate elements
-        let mut certs_xml = String::new();
         let x509_range = doc.node_range(x509_data_id).unwrap();
         let prefix = extract_tag_prefix(&xml[x509_range.start..x509_range.end], "X509Data");
+        let cert_tag = pname(prefix, "X509Certificate");
+
+        let mut cw = XmlWriter::new();
         for cert_der in x509_chain {
             let cert_b64 = engine.encode(cert_der);
-            if prefix.is_empty() {
-                certs_xml.push_str(&format!("<X509Certificate>{cert_b64}</X509Certificate>"));
-            } else {
-                certs_xml.push_str(&format!(
-                    "<{prefix}:X509Certificate>{cert_b64}</{prefix}:X509Certificate>"
-                ));
-            }
+            cw.start_element(&cert_tag, &[]);
+            cw.text(&cert_b64);
+            cw.end_element(&cert_tag);
         }
+        let certs_xml = cw.into_string();
 
-        let replacement = if prefix.is_empty() {
-            format!("<X509Data>{certs_xml}</X509Data>")
-        } else {
+        let data_tag = if !prefix.is_empty() {
             let orig = &xml[x509_range.start..x509_range.end];
             let ns_decl = format!("xmlns:{prefix}=");
             if orig.contains(&ns_decl) {
-                format!("<X509Data>{certs_xml}</X509Data>")
+                "X509Data".to_string()
             } else {
-                format!("<{prefix}:X509Data>{certs_xml}</{prefix}:X509Data>")
+                pname(prefix, "X509Data")
             }
+        } else {
+            "X509Data".to_string()
         };
+        let mut w = XmlWriter::new();
+        w.start_element(&data_tag, &[]);
+        w.raw(&certs_xml);
+        w.end_element(&data_tag);
+        let replacement = w.into_string();
 
         let mut result = String::with_capacity(xml.len() + certs_xml.len());
         result.push_str(&xml[..x509_range.start]);
@@ -555,19 +569,21 @@ fn populate_x509_data(xml: &str, x509_chain: &[Vec<u8>]) -> Result<String, Error
         let replacement = match name {
             "X509Certificate" => {
                 let cert_b64 = engine.encode(first_cert_der);
-                if prefix.is_empty() {
-                    format!("<X509Certificate>{cert_b64}</X509Certificate>")
-                } else {
-                    format!("<{prefix}:X509Certificate>{cert_b64}</{prefix}:X509Certificate>")
-                }
+                let tag = pname(prefix, "X509Certificate");
+                let mut w = XmlWriter::new();
+                w.start_element(&tag, &[]);
+                w.text(&cert_b64);
+                w.end_element(&tag);
+                w.into_string()
             }
             "X509SubjectName" => {
                 if let Some(ref subj) = cert_info.subject_name {
-                    if prefix.is_empty() {
-                        format!("<X509SubjectName>{subj}</X509SubjectName>")
-                    } else {
-                        format!("<{prefix}:X509SubjectName>{subj}</{prefix}:X509SubjectName>")
-                    }
+                    let tag = pname(prefix, "X509SubjectName");
+                    let mut w = XmlWriter::new();
+                    w.start_element(&tag, &[]);
+                    w.text(subj);
+                    w.end_element(&tag);
+                    w.into_string()
                 } else {
                     continue;
                 }
@@ -576,22 +592,31 @@ fn populate_x509_data(xml: &str, x509_chain: &[Vec<u8>]) -> Result<String, Error
                 if let (Some(ref issuer), Some(ref serial)) =
                     (&cert_info.issuer_name, &cert_info.serial_number)
                 {
-                    if prefix.is_empty() {
-                        format!("<X509IssuerSerial><X509IssuerName>{issuer}</X509IssuerName><X509SerialNumber>{serial}</X509SerialNumber></X509IssuerSerial>")
-                    } else {
-                        format!("<{prefix}:X509IssuerSerial><{prefix}:X509IssuerName>{issuer}</{prefix}:X509IssuerName><{prefix}:X509SerialNumber>{serial}</{prefix}:X509SerialNumber></{prefix}:X509IssuerSerial>")
-                    }
+                    let serial_tag = pname(prefix, "X509IssuerSerial");
+                    let issuer_tag = pname(prefix, "X509IssuerName");
+                    let num_tag = pname(prefix, "X509SerialNumber");
+                    let mut w = XmlWriter::new();
+                    w.start_element(&serial_tag, &[]);
+                    w.start_element(&issuer_tag, &[]);
+                    w.text(issuer);
+                    w.end_element(&issuer_tag);
+                    w.start_element(&num_tag, &[]);
+                    w.text(serial);
+                    w.end_element(&num_tag);
+                    w.end_element(&serial_tag);
+                    w.into_string()
                 } else {
                     continue;
                 }
             }
             "X509SKI" => {
                 if let Some(ref ski_b64) = cert_info.ski_b64 {
-                    if prefix.is_empty() {
-                        format!("<X509SKI>{ski_b64}</X509SKI>")
-                    } else {
-                        format!("<{prefix}:X509SKI>{ski_b64}</{prefix}:X509SKI>")
-                    }
+                    let tag = pname(prefix, "X509SKI");
+                    let mut w = XmlWriter::new();
+                    w.start_element(&tag, &[]);
+                    w.text(ski_b64);
+                    w.end_element(&tag);
+                    w.into_string()
                 } else {
                     continue;
                 }
@@ -850,11 +875,12 @@ fn populate_key_value(
         None => return Ok(xml.to_owned()),
     };
 
-    let replacement = if prefix.is_empty() {
-        format!("<KeyValue>{inner_xml}</KeyValue>")
-    } else {
-        format!("<{prefix}:KeyValue>{inner_xml}</{prefix}:KeyValue>")
-    };
+    let tag = pname(prefix, "KeyValue");
+    let mut w = XmlWriter::new();
+    w.start_element(&tag, &[]);
+    w.raw(&inner_xml);
+    w.end_element(&tag);
+    let replacement = w.into_string();
 
     let mut result = String::with_capacity(xml.len() + replacement.len());
     result.push_str(&xml[..kv_range.start]);

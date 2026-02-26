@@ -7,7 +7,7 @@
 
 use crate::context::EncContext;
 use bergshamra_core::{algorithm, ns, Error};
-use uppsala::{Document, NodeId};
+use uppsala::{Document, NodeId, XmlWriter};
 
 /// Encrypt XML data using a template.
 ///
@@ -54,21 +54,18 @@ pub fn encrypt(ctx: &EncContext, template_xml: &str, data: &[u8]) -> Result<Stri
     let cv_range = doc.node_range(cipher_value_id).unwrap();
     let cv_xml = &template_xml[cv_range.start..cv_range.end];
     let prefix = extract_prefix(cv_xml, "CipherValue");
-    let replacement = if prefix.is_empty() {
-        format!("<CipherValue>{cipher_b64}</CipherValue>")
-    } else {
-        // Check if the prefix's namespace declaration is on this element itself
-        // (e.g. <enc:CipherValue xmlns:enc="..."/>). If so, we need to include it
-        // in the replacement, or just use unprefixed since the default namespace
-        // (from EncryptedData) is already xmlenc.
+    let effective_prefix = if !prefix.is_empty() {
         let ns_decl = format!("xmlns:{prefix}=");
-        if cv_xml.contains(&ns_decl) {
-            // Namespace is declared on the element itself — use unprefixed instead
-            format!("<CipherValue>{cipher_b64}</CipherValue>")
-        } else {
-            format!("<{prefix}:CipherValue>{cipher_b64}</{prefix}:CipherValue>")
-        }
+        if cv_xml.contains(&ns_decl) { "" } else { prefix }
+    } else {
+        ""
     };
+    let tag = pname(effective_prefix, "CipherValue");
+    let mut w = XmlWriter::new();
+    w.start_element(&tag, &[]);
+    w.text(&cipher_b64);
+    w.end_element(&tag);
+    let replacement = w.into_string();
 
     let mut result = String::with_capacity(template_xml.len() + cipher_b64.len());
     result.push_str(&template_xml[..cv_range.start]);
@@ -298,16 +295,18 @@ fn encrypt_session_key(
         // The original is something like <xenc:CipherValue/> or <xenc:CipherValue></xenc:CipherValue>
         // We need to figure out the prefix used
         let prefix = extract_prefix(cv_xml, "CipherValue");
-        let replacement = if prefix.is_empty() {
-            format!("<CipherValue>{ek_b64}</CipherValue>")
-        } else {
+        let effective_prefix = if !prefix.is_empty() {
             let ns_decl = format!("xmlns:{prefix}=");
-            if cv_xml.contains(&ns_decl) {
-                format!("<CipherValue>{ek_b64}</CipherValue>")
-            } else {
-                format!("<{prefix}:CipherValue>{ek_b64}</{prefix}:CipherValue>")
-            }
+            if cv_xml.contains(&ns_decl) { "" } else { prefix }
+        } else {
+            ""
         };
+        let tag = pname(effective_prefix, "CipherValue");
+        let mut w = XmlWriter::new();
+        w.start_element(&tag, &[]);
+        w.text(&ek_b64);
+        w.end_element(&tag);
+        let replacement = w.into_string();
 
         result = result.replacen(cv_xml, &replacement, 1);
     }
@@ -636,13 +635,23 @@ fn fill_originator_key_value(
     let kv_xml = &xml[kv_range.start..kv_range.end];
     let prefix = extract_prefix(kv_xml, "KeyValue");
 
-    let replacement = if prefix.is_empty() {
-        format!("<KeyValue>{kv_xml_content}</KeyValue>")
-    } else {
-        format!("<{prefix}:KeyValue>{kv_xml_content}</{prefix}:KeyValue>")
-    };
+    let tag = pname(prefix, "KeyValue");
+    let mut w = XmlWriter::new();
+    w.start_element(&tag, &[]);
+    w.raw(&kv_xml_content);
+    w.end_element(&tag);
+    let replacement = w.into_string();
 
     Ok(xml.replacen(kv_xml, &replacement, 1))
+}
+
+/// Build a prefixed element name like `"xenc:Foo"` or just `"Foo"`.
+fn pname(prefix: &str, local: &str) -> String {
+    if prefix.is_empty() {
+        local.to_string()
+    } else {
+        format!("{prefix}:{local}")
+    }
 }
 
 /// Extract namespace prefix from an element tag like "<xenc:CipherValue...>"

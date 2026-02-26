@@ -17,7 +17,7 @@ use bergshamra_crypto::digest;
 use bergshamra_xml::nodeset::NodeSet;
 use bergshamra_xml::xpath;
 use std::collections::HashMap;
-use uppsala::{Document, NodeId, NodeKind};
+use uppsala::{Document, NodeId, NodeKind, XmlWriter};
 
 /// Metadata about a single verified `<Reference>`.
 #[derive(Debug, Clone)]
@@ -692,51 +692,29 @@ fn apply_relationship_transform(
     // Sort by Id
     rels.sort_by(|a, b| a.id.cmp(&b.id));
 
-    // Build the output XML.
+    // Build the output XML using XmlWriter.
     // C14N sorts attributes alphabetically (by namespace URI then local name).
     // For no-namespace attributes: Id < Target < TargetMode < Type (alphabetical).
-    let mut out = String::new();
-    out.push_str("<Relationships xmlns=\"");
-    out.push_str(REL_NS);
-    out.push_str("\">");
+    let mut w = XmlWriter::new();
+    w.start_element("Relationships", &[("xmlns", REL_NS)]);
     for rel in &rels {
-        out.push_str("<Relationship Id=\"");
-        xml_escape_attr(&rel.id, &mut out);
-        out.push('"');
-        out.push_str(" Target=\"");
-        xml_escape_attr(&rel.target, &mut out);
-        out.push('"');
+        let mut attrs: Vec<(&str, &str)> = vec![
+            ("Id", &rel.id),
+            ("Target", &rel.target),
+        ];
         if let Some(ref tm) = rel.target_mode {
-            out.push_str(" TargetMode=\"");
-            xml_escape_attr(tm, &mut out);
-            out.push('"');
+            attrs.push(("TargetMode", tm));
         }
-        out.push_str(" Type=\"");
-        xml_escape_attr(&rel.rel_type, &mut out);
-        out.push('"');
-        out.push_str("></Relationship>");
+        attrs.push(("Type", &rel.rel_type));
+        w.empty_element_expanded("Relationship", &attrs);
     }
-    out.push_str("</Relationships>");
+    w.end_element("Relationships");
 
     Ok(bergshamra_transforms::TransformData::Binary(
-        out.into_bytes(),
+        w.into_bytes(),
     ))
 }
 
-/// Escape a string for XML attribute value (C14N attribute escaping).
-fn xml_escape_attr(s: &str, out: &mut String) {
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '"' => out.push_str("&quot;"),
-            '\t' => out.push_str("&#x9;"),
-            '\n' => out.push_str("&#xA;"),
-            '\r' => out.push_str("&#xD;"),
-            _ => out.push(c),
-        }
-    }
-}
 
 /// Apply an XSLT transform.
 ///
@@ -1155,6 +1133,21 @@ fn find_matching_template(
         }
     }
     None
+}
+
+/// Escape a string for XML attribute value (C14N attribute escaping).
+fn xml_escape_attr(s: &str, out: &mut String) {
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '"' => out.push_str("&quot;"),
+            '\t' => out.push_str("&#x9;"),
+            '\n' => out.push_str("&#xA;"),
+            '\r' => out.push_str("&#xD;"),
+            _ => out.push(c),
+        }
+    }
 }
 
 /// Escape text for XML content.
