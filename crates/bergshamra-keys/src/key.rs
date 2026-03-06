@@ -419,6 +419,38 @@ impl Key {
         }
     }
 
+    /// Returns the algorithm name for this key (delegates to KeyData).
+    pub fn algorithm_name(&self) -> &'static str {
+        self.data.algorithm_name()
+    }
+
+    /// Returns the SPKI DER encoding if available (delegates to KeyData).
+    pub fn to_spki_der(&self) -> Option<Vec<u8>> {
+        self.data.to_spki_der()
+    }
+
+    /// Returns the KeyValue XML fragment if available (delegates to KeyData).
+    pub fn to_key_value_xml(&self, dsig_prefix: &str) -> Option<String> {
+        self.data.to_key_value_xml(dsig_prefix)
+    }
+
+    /// Returns true if this key contains private key material.
+    pub fn has_private_key(&self) -> bool {
+        match &self.data {
+            KeyData::Rsa { private, .. } => private.is_some(),
+            KeyData::EcP256 { private, .. } => private.is_some(),
+            KeyData::EcP384 { private, .. } => private.is_some(),
+            KeyData::EcP521 { private, .. } => private.is_some(),
+            KeyData::Dsa { private, .. } => private.is_some(),
+            KeyData::Dh { private_key, .. } => private_key.is_some(),
+            KeyData::Ed25519 { private, .. } => private.is_some(),
+            KeyData::X25519 { private, .. } => private.is_some(),
+            KeyData::PostQuantum { private_der, .. } => private_der.is_some(),
+            // Symmetric keys inherently contain secret material
+            KeyData::Hmac(_) | KeyData::Aes(_) | KeyData::Des3(_) => true,
+        }
+    }
+
     /// Get the raw symmetric key bytes (for AES, 3DES, HMAC).
     pub fn symmetric_key_bytes(&self) -> Option<&[u8]> {
         match &self.data {

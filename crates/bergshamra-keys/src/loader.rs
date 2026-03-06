@@ -679,7 +679,7 @@ pub fn load_spki_der(spki_der: &[u8]) -> Result<Key, Error> {
 // ── DH key loading helpers ───────────────────────────────────────────
 
 /// Load an Ed25519 private key from PKCS#8 DER bytes.
-fn load_ed25519_private_pkcs8_der(der: &[u8]) -> Result<Key, Error> {
+pub fn load_ed25519_private_pkcs8_der(der: &[u8]) -> Result<Key, Error> {
     use ed25519_dalek::pkcs8::DecodePrivateKey;
     let sk = ed25519_dalek::SigningKey::from_pkcs8_der(der)
         .map_err(|e| Error::Key(format!("failed to parse Ed25519 private key: {e}")))?;
@@ -694,7 +694,7 @@ fn load_ed25519_private_pkcs8_der(der: &[u8]) -> Result<Key, Error> {
 }
 
 /// Load an Ed25519 public key from SPKI DER bytes.
-fn load_ed25519_public_spki_der(spki_der: &[u8]) -> Result<Key, Error> {
+pub fn load_ed25519_public_spki_der(spki_der: &[u8]) -> Result<Key, Error> {
     use ed25519_dalek::pkcs8::spki::DecodePublicKey;
     let vk = ed25519_dalek::VerifyingKey::from_public_key_der(spki_der)
         .map_err(|e| Error::Key(format!("failed to parse Ed25519 public key: {e}")))?;
@@ -966,7 +966,7 @@ fn parse_asn1_integer(data: &[u8]) -> Result<(Vec<u8>, &[u8]), Error> {
 ///
 /// Handles both the RustCrypto format (seed in context-specific tag) and the
 /// OpenSSL format (seed in `SEQUENCE { OCTET STRING(seed), ... }`).
-fn try_load_pq_private_key(der: &[u8]) -> Option<Key> {
+pub fn try_load_pq_private_key(der: &[u8]) -> Option<Key> {
     use bergshamra_crypto::sign::PqAlgorithm;
     use ml_dsa::signature::Keypair;
     use pkcs8_pq::spki::EncodePublicKey;
@@ -1164,7 +1164,7 @@ fn parse_asn1_length(data: &[u8]) -> Option<(usize, &[u8])> {
 }
 
 /// Try to load a post-quantum public key from SPKI DER bytes.
-fn try_load_pq_public_key(spki_der: &[u8]) -> Option<Key> {
+pub fn try_load_pq_public_key(spki_der: &[u8]) -> Option<Key> {
     use bergshamra_crypto::sign::PqAlgorithm;
     use pkcs8_pq::spki::DecodePublicKey;
 
