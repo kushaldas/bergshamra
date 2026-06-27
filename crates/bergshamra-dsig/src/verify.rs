@@ -72,6 +72,17 @@ impl VerifyResult {
         matches!(self, VerifyResult::Valid { .. })
     }
 
+    /// Returns `true` if the signature is valid but at least one `<Reference>`
+    /// digest was **not** computed and verified locally.
+    ///
+    /// In practice this means the document contains a `cid:` reference (a
+    /// WS-Security MIME attachment): the reference's URI, transforms, and
+    /// declared digest are integrity-protected by the signed `<SignedInfo>`,
+    /// but Bergshamra did not hash the external attachment bytes. Such callers
+    /// **must** verify the attachment digest out-of-band.
+    ///
+    /// Always `false` for [`VerifyResult::Invalid`].
+    #[must_use]
     pub fn has_unverified_references(&self) -> bool {
         matches!(
             self,
@@ -80,6 +91,16 @@ impl VerifyResult {
         )
     }
 
+    /// Returns `true` only if the signature is valid, has at least one
+    /// `<Reference>`, and **every** reference digest was computed and verified
+    /// locally.
+    ///
+    /// Note the non-empty requirement: a `Valid` result with no references
+    /// provides no local digest coverage, so this returns `false` for it (as
+    /// well as for [`VerifyResult::Invalid`]). This is the inverse of
+    /// [`Self::has_unverified_references`] *except* for the zero-reference case,
+    /// where both methods return `false`.
+    #[must_use]
     pub fn all_reference_digests_verified(&self) -> bool {
         matches!(
             self,

@@ -1,7 +1,18 @@
 # Changelog
 
 
-## 0.6.0
+## 0.6.0 [2026-06-27]
+
+### Added
+
+- `VerifyResult::all_reference_digests_verified()` — check whether any
+  `<Reference>` digest was skipped, and whether all `<Reference>` digests were
+  computed and verified locally. A `cid:` (WS-Security attachment) reference
+  reports `digest_verified = false` because its bytes live outside the XML
+  document and must be verified out-of-band.
+- CLI `verify --require-reference-digests` — fail an otherwise-valid signature
+  when any `<Reference>` digest was not verified locally (e.g. `cid:`
+  attachments). Off by default to preserve the existing WS-Security workflow.
 
 ### Changed
 
