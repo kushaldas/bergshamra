@@ -13,11 +13,16 @@ env:
 # -----------------------------
 # The workspace resolves all dependencies from crates.io — including
 # kryptering (>=0.3) and tsp-ltv (>=0.2), which were previously local `path`
-# deps that blocked `cargo publish`. A single `cargo publish` from the virtual
-# workspace root packages and uploads every member crate in the correct
-# dependency order (core → xml → c14n → crypto → pkcs12 → keys → transforms →
-# dsig/enc → bergshamra), so no per-crate publish loop is needed. The job
-# chain is: verify → publish-crate → release.
+# deps that blocked `cargo publish`.
+#
+# We publish each member crate individually, in dependency order, rather than
+# with a single workspace `cargo publish`. The coordinated workspace publish
+# can deadlock in cargo's publish planner ("no packages ready to publish but N
+# packages remain in plan", flagged as an internal cargo error) when the index
+# hasn't propagated within its wait window — which left a 0.6.0 release half
+# published. The per-crate loop avoids that planner, and because it skips any
+# crate+version already on crates.io, a re-run cleanly resumes a partial
+# publish. The job chain is: verify → publish-crate → release.
 
 jobs:
   # Sanity: the workspace must compile & test from a fresh checkout of the
@@ -103,7 +108,36 @@ jobs:
         if: github.event_name == 'push'
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-        run: cargo publish
+        run: |
+          set -euo pipefail
+          version=$(grep -m 1 '^version' Cargo.toml | sed -E 's/version *= *"(.+)"/\1/')
+
+          # Member crates in dependency (topological) order. `cargo publish -p`
+          # waits for each crate to land in the index before returning, so the
+          # next crate's dependency is available when it builds.
+          crates=(
+            bergshamra-core
+            bergshamra-xml
+            bergshamra-crypto
+            bergshamra-pkcs12
+            bergshamra-c14n
+            bergshamra-keys
+            bergshamra-transforms
+            bergshamra-dsig
+            bergshamra-enc
+            bergshamra
+          )
+
+          for crate in "${crates[@]}"; do
+            # Sparse-index path: names >= 4 chars use the xx/yy/<name> layout.
+            index_url="https://index.crates.io/${crate:0:2}/${crate:2:2}/${crate}"
+            if curl -sf "$index_url" | grep -q "\"vers\":\"${version}\""; then
+              echo "== ${crate} ${version} already on crates.io, skipping"
+              continue
+            fi
+            echo "== Publishing ${crate} ${version}"
+            cargo publish --locked -p "${crate}"
+          done
 
   # GitHub Release with auto-generated notes — only after a successful
   # crates.io publish, and only on a real tag push.
