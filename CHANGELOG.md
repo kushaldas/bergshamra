@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 0.6.0
+
+### Changed
+
+- Updated shared dependencies to their latest releases: `kryptering` `0.3.0` →
+  `0.4.0`, `tsp-ltv` `0.2.0` → `0.3.0`, and `uppsala` `0.4.0` → `0.5.0`.
+
 ## 0.5.1
 
 ### Changed

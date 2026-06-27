@@ -143,7 +143,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "bergshamra"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "base64",
  "bergshamra-c14n",
@@ -161,7 +161,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-c14n"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "bergshamra-core",
  "bergshamra-xml",
@@ -170,14 +170,14 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-core"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "bergshamra-crypto"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -218,7 +218,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-dsig"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "base64",
  "bergshamra-c14n",
@@ -241,7 +241,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-enc"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "base64",
  "bergshamra-c14n",
@@ -260,7 +260,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-keys"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "base64",
  "bergshamra-core",
@@ -299,7 +299,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-pkcs12"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "aes",
  "bergshamra-core",
@@ -315,7 +315,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-transforms"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "base64",
  "bergshamra-c14n",
@@ -328,7 +328,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-xml"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "bergshamra-core",
  "uppsala",
@@ -1064,9 +1064,9 @@ dependencies = [
 
 [[package]]
 name = "kryptering"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a91a2f2be6c09c89d098b24ccfe26cec2e993d8588ea0d48b0e388ac99fc6b49"
+checksum = "4227630f1b13e9615f9a1b1675030a83be6694159be1bdc0dd94fe880e5e4b36"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1842,9 +1842,9 @@ dependencies = [
 
 [[package]]
 name = "tsp-ltv"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af6699c957eb2d3142aef0e5e1221dd4f307c314fefa5bcc48e5fc95c9b4309c"
+checksum = "2fc558cea51095c9c3a812e8703d2c577c5f69db66c04bdf9cec59282a3af086"
 dependencies = [
  "base64",
  "chrono",
@@ -1902,9 +1902,9 @@ dependencies = [
 
 [[package]]
 name = "uppsala"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d87ccb81b1e9ddc119871ecbd40a5e93f173f0777838db1e8c0dec223ae3c49"
+checksum = "c532e78092e468eb7e1f2d4ce5d76f26021bfd69277d460795666d574f391bbc"
 
 [[package]]
 name = "utf8parse"
