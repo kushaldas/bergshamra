@@ -83,6 +83,10 @@ enum Commands {
         #[arg(long)]
         insecure: bool,
 
+        /// Fail if any Reference digest was not verified locally (for example cid: attachments)
+        #[arg(long = "require-reference-digests")]
+        require_reference_digests: bool,
+
         /// Verify keys loaded from cert files (validate their certificates)
         #[arg(long = "verify-keys")]
         verify_keys: bool,
@@ -313,6 +317,7 @@ fn main() {
             debug,
             verbose,
             insecure,
+            require_reference_digests,
             verify_keys,
             verification_gmt_time,
             x509_skip_time_checks,
@@ -338,6 +343,7 @@ fn main() {
             debug,
             verbose,
             insecure,
+            require_reference_digests,
             verify_keys,
             verification_gmt_time,
             x509_skip_time_checks,
@@ -456,6 +462,7 @@ fn cmd_verify(
     debug: bool,
     verbose: bool,
     insecure: bool,
+    require_reference_digests: bool,
     verify_keys: bool,
     verification_gmt_time: Option<String>,
     x509_skip_time_checks: bool,
@@ -543,7 +550,20 @@ fn cmd_verify(
 
     let result = bergshamra_dsig::verify::verify(&ctx, &xml)?;
     match result {
-        bergshamra_dsig::verify::VerifyResult::Valid { .. } => {
+        bergshamra_dsig::verify::VerifyResult::Valid { references, .. } => {
+            let digest_verified_flags = references
+                .iter()
+                .map(|reference| reference.digest_verified)
+                .collect::<Vec<_>>();
+            if let Some(reason) =
+                reference_digest_policy_error(require_reference_digests, &digest_verified_flags)
+            {
+                eprintln!("INVALID: {reason}");
+                process::exit(1);
+            }
+            if verbose && digest_verified_flags.iter().any(|verified| !verified) {
+                eprintln!("Warning: one or more Reference digests were not verified locally");
+            }
             println!("OK");
             Ok(())
         }
@@ -552,6 +572,25 @@ fn cmd_verify(
             process::exit(1);
         }
     }
+}
+
+fn reference_digest_policy_error(
+    require_reference_digests: bool,
+    digest_verified_flags: &[bool],
+) -> Option<String> {
+    if !require_reference_digests {
+        return None;
+    }
+
+    if digest_verified_flags.is_empty() {
+        return Some("no Reference digests were verified locally".to_owned());
+    }
+
+    if digest_verified_flags.iter().any(|verified| !verified) {
+        return Some("one or more Reference digests were not verified locally".to_owned());
+    }
+
+    None
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1060,6 +1099,8 @@ fn build_keys_manager(
 
 #[cfg(test)]
 mod tests {
+    use super::reference_digest_policy_error;
+
     fn should_validate_inline_x509(
         has_trusted: bool,
         x509_skip_strict_checks: bool,
@@ -1088,5 +1129,25 @@ mod tests {
             true,
             Some("key-name,x509")
         ));
+    }
+
+    #[test]
+    fn require_reference_digests_allows_all_verified() {
+        assert_eq!(reference_digest_policy_error(true, &[true, true]), None);
+    }
+
+    #[test]
+    fn require_reference_digests_rejects_unverified() {
+        assert!(reference_digest_policy_error(true, &[true, false]).is_some());
+    }
+
+    #[test]
+    fn require_reference_digests_rejects_empty_reference_list() {
+        assert!(reference_digest_policy_error(true, &[]).is_some());
+    }
+
+    #[test]
+    fn default_policy_preserves_compatibility() {
+        assert_eq!(reference_digest_policy_error(false, &[false]), None);
     }
 }

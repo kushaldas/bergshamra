@@ -71,6 +71,22 @@ impl VerifyResult {
     pub fn is_valid(&self) -> bool {
         matches!(self, VerifyResult::Valid { .. })
     }
+
+    pub fn has_unverified_references(&self) -> bool {
+        matches!(
+            self,
+            VerifyResult::Valid { references, .. }
+                if references.iter().any(|r| !r.digest_verified)
+        )
+    }
+
+    pub fn all_reference_digests_verified(&self) -> bool {
+        matches!(
+            self,
+            VerifyResult::Valid { references, .. }
+                if !references.is_empty() && references.iter().all(|r| r.digest_verified)
+        )
+    }
 }
 
 /// Verify a signed XML document.
@@ -3486,6 +3502,7 @@ mod tests {
             "cid: reference should be skipped and reported as Valid"
         );
         assert!(vref.uri.starts_with("cid:"));
+        assert!(!vref.digest_verified);
     }
 
     #[test]
@@ -3511,7 +3528,7 @@ mod tests {
         assert_eq!(refs.len(), 1);
 
         let id_map = build_id_map(&doc, &["Id", "ID", "id"]).expect("no duplicate IDs");
-        let (mismatch, _vref) =
+        let (mismatch, vref) =
             verify_reference(refs[0], &doc, &id_map, xml, sig_node, &[], false, None)
                 .expect("verify_reference failed");
         // The digest will not match since AAAA is bogus, so we expect Some(reason).
@@ -3519,6 +3536,69 @@ mod tests {
             mismatch.is_some(),
             "non-cid reference should be processed normally, digest mismatch expected"
         );
+        assert!(vref.digest_verified);
+    }
+
+    fn verified_reference(digest_verified: bool) -> VerifiedReference {
+        VerifiedReference {
+            uri: "#body".to_owned(),
+            resolved_node: Some(NodeId::new(0)),
+            digest_verified,
+        }
+    }
+
+    fn verified_key_info() -> VerifiedKeyInfo {
+        VerifiedKeyInfo {
+            algorithm: "test".to_owned(),
+            key_name: None,
+            x509_chain: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn verify_result_helpers_report_all_verified_references() {
+        let result = VerifyResult::Valid {
+            signature_node: NodeId::new(0),
+            references: vec![verified_reference(true), verified_reference(true)],
+            key_info: verified_key_info(),
+        };
+
+        assert!(result.all_reference_digests_verified());
+        assert!(!result.has_unverified_references());
+    }
+
+    #[test]
+    fn verify_result_helpers_report_unverified_references() {
+        let result = VerifyResult::Valid {
+            signature_node: NodeId::new(0),
+            references: vec![verified_reference(true), verified_reference(false)],
+            key_info: verified_key_info(),
+        };
+
+        assert!(!result.all_reference_digests_verified());
+        assert!(result.has_unverified_references());
+    }
+
+    #[test]
+    fn verify_result_helpers_do_not_treat_zero_references_as_complete_coverage() {
+        let result = VerifyResult::Valid {
+            signature_node: NodeId::new(0),
+            references: Vec::new(),
+            key_info: verified_key_info(),
+        };
+
+        assert!(!result.all_reference_digests_verified());
+        assert!(!result.has_unverified_references());
+    }
+
+    #[test]
+    fn verify_result_helpers_are_false_for_invalid_result() {
+        let result = VerifyResult::Invalid {
+            reason: "bad signature".to_owned(),
+        };
+
+        assert!(!result.all_reference_digests_verified());
+        assert!(!result.has_unverified_references());
     }
 
     #[test]

@@ -151,8 +151,15 @@ A successful verification returns `VerifyResult::Valid` which carries:
 - **`signature_node`** — the `NodeId` of the `<Signature>` element that was
   verified.
 - **`references`** — a `Vec<VerifiedReference>`, one per `<Reference>` in
-  `<SignedInfo>`. Each entry contains the URI string and the resolved target
-  node.
+  `<SignedInfo>`. Each entry contains the URI string, the resolved target
+  node, and `digest_verified`.
+
+When `digest_verified` is `false`, the reference is currently a `cid:`
+attachment reference: its URI, transforms, and declared digest are still
+integrity-protected by the signed `<SignedInfo>`, but Bergshamra did not hash
+the external attachment bytes. Library consumers that require complete local
+digest coverage should use `VerifyResult::all_reference_digests_verified()` or
+`VerifyResult::has_unverified_references()`.
 
 You should always check that the signature covers the element you intend to
 consume. For example, a SAML Service Provider should verify that one of the

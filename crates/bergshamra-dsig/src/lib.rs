@@ -32,7 +32,17 @@
 //!   `<Signature>` element that was verified.
 //! - **`references`** — a `Vec<`[`VerifiedReference`]`>`, one per
 //!   `<Reference>` in `<SignedInfo>`. Each entry contains the `uri` string and
-//!   the `resolved_node` (an `Option<NodeId>`) that the URI resolved to.
+//!   the `resolved_node` (an `Option<NodeId>`) that the URI resolved to, plus
+//!   `digest_verified` to report whether Bergshamra locally computed and
+//!   checked that reference digest.
+//!
+//! If `digest_verified` is `false`, the reference is currently a `cid:`
+//! attachment reference: its URI, transforms, and declared digest are
+//! integrity-protected by the signed `<SignedInfo>`, but the external
+//! attachment bytes were not hashed by Bergshamra. Use
+//! [`VerifyResult::all_reference_digests_verified`] or
+//! [`VerifyResult::has_unverified_references`] when your application requires
+//! complete local digest coverage.
 //!
 //! **You should always check that the signature covers the element you intend
 //! to consume.** For example, a SAML Service Provider should verify that one

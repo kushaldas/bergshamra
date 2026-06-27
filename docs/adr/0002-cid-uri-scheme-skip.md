@@ -61,6 +61,9 @@ any reference whose `URI` attribute starts with `cid:`. The library
 verifies all in-document references normally. The caller is responsible for
 verifying attachment digests out-of-band.
 
+Modern `VerifyResult` metadata reports these skipped references with
+`VerifiedReference::digest_verified = false`.
+
 - **Pro:** Allows verification of the XML-internal portions of a signature
   without requiring access to MIME infrastructure. Matches the behavior of
   Go signedxml, which uses the same approach.
@@ -131,6 +134,9 @@ Applied in two locations:
 - The skip is silent (no warning/error). This is intentional: the `cid:`
   references are expected in WS-Security, and logging on every occurrence
   would be noisy.
+- The CLI provides `--require-reference-digests` for callers that want any
+  skipped reference, or an otherwise valid signature with no locally verified
+  references, to be fatal.
 - Option C (pluggable resolver) remains available as a future enhancement
   if callers need full `cid:` digest verification within the library.
 
