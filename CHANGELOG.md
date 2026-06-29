@@ -1,6 +1,23 @@
 # Changelog
 
 
+## 0.6.1 [2026-06-29]
+
+### Added
+
+- `bergshamra_dsig::verify::verify_all` (re-exported as `bergshamra::verify_all`)
+  — verify **every** `<Signature>` element in a document, returning one
+  `VerifyResult` per signature in document order. `verify` still reports only the
+  first signature; `verify_all` is for documents signed in more than one place
+  (e.g. a SAML Response signed at both the Response and Assertion levels), where
+  a caller must confirm that a *specific* object — such as the consumed Assertion
+  — is covered by a valid signature even when that signature is not first in
+  document order. Returns `Error::MissingElement` when no `<Signature>` is
+  present; a mix of valid and invalid signatures yields a mix of `Valid` and
+  `Invalid` entries, so callers must inspect each. See
+  `docs/adr/0005-verify-all-signatures.md`.
+
+
 ## 0.6.0 [2026-06-27]
 
 ### Added

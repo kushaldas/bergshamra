@@ -111,26 +111,101 @@ impl VerifyResult {
 }
 
 /// Verify a signed XML document.
+///
+/// Verifies the **first** `<Signature>` element in document order. Documents that
+/// carry more than one signature -- for example a SAML Response signed at both
+/// the Response and the Assertion level -- should use [`verify_all`], which
+/// verifies every signature and exposes the references each one covers. A caller
+/// that must confirm a *specific* object is signed (such as the consumed
+/// Assertion) cannot rely on [`verify`] alone, because the object's signature
+/// may not be the first in the document.
 pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
     let doc = uppsala::parse(xml).map_err(|e| Error::XmlParse(e.to_string()))?;
+    let id_map = build_verify_id_map(ctx, &doc)?;
 
-    // Build ID map
-    let mut id_attrs: Vec<&str> = vec!["Id", "ID", "id", "AssertionID"];
-    let extra: Vec<&str> = ctx.id_attrs.iter().map(|s| s.as_str()).collect();
-    id_attrs.extend(extra);
-    let id_map = build_id_map(&doc, &id_attrs)?;
-
-    // Find <Signature> element
+    // Find the first <Signature> element.
     let sig_node = find_element(&doc, ns::DSIG, ns::node::SIGNATURE)
         .ok_or_else(|| Error::MissingElement("Signature".into()))?;
 
+    verify_signature_node(ctx, &doc, xml, sig_node, &id_map)
+}
+
+/// Verify **every** `<Signature>` element in the document, returning one
+/// [`VerifyResult`] per signature in document order.
+///
+/// Enveloped SAML responses are commonly signed in more than one place (the
+/// Response element and each Assertion). [`verify`] reports only the first
+/// signature, so a caller that must confirm a particular object is covered could
+/// otherwise miss a perfectly valid signature that is not first in document
+/// order. This function verifies each signature independently and lets the
+/// caller decide which verified references it requires.
+///
+/// `Err` is returned only for *document-level* failures: a parse error, a
+/// duplicate-ID conflict while building the ID map, or no `<Signature>` element
+/// at all ([`Error::MissingElement`]). A *per-signature* structural or
+/// processing failure (missing `SignedInfo`, unsupported algorithm, malformed
+/// base64, a key that cannot be resolved, an XSW position violation, etc.) is
+/// **not** propagated — it is reported as a [`VerifyResult::Invalid`] entry for
+/// that signature so it cannot short-circuit and hide a valid signature
+/// elsewhere in the document. This is what makes "verify every signature"
+/// meaningful: one malformed signature among several must not blind the caller
+/// to the others. Callers must therefore inspect each entry rather than assume
+/// uniform success; the returned vector may mix [`VerifyResult::Valid`] and
+/// [`VerifyResult::Invalid`].
+pub fn verify_all(ctx: &DsigContext, xml: &str) -> Result<Vec<VerifyResult>, Error> {
+    let doc = uppsala::parse(xml).map_err(|e| Error::XmlParse(e.to_string()))?;
+    let id_map = build_verify_id_map(ctx, &doc)?;
+
+    let sig_nodes = find_all_elements(&doc, ns::DSIG, ns::node::SIGNATURE);
+    if sig_nodes.is_empty() {
+        return Err(Error::MissingElement("Signature".into()));
+    }
+
+    let mut results = Vec::with_capacity(sig_nodes.len());
+    for sig_node in sig_nodes {
+        // A per-signature error must not abort verification of the rest: report
+        // it as Invalid for this signature and continue. Document-level errors
+        // are handled above, before the loop.
+        let result = match verify_signature_node(ctx, &doc, xml, sig_node, &id_map) {
+            Ok(result) => result,
+            Err(e) => VerifyResult::Invalid {
+                reason: format!("signature could not be processed: {e}"),
+            },
+        };
+        results.push(result);
+    }
+    Ok(results)
+}
+
+/// Build the element-ID map used during verification, seeding the default SAML /
+/// XML id attribute names plus any extra names configured on the context.
+fn build_verify_id_map(
+    ctx: &DsigContext,
+    doc: &Document<'_>,
+) -> Result<std::collections::HashMap<String, NodeId>, Error> {
+    let mut id_attrs: Vec<&str> = vec!["Id", "ID", "id", "AssertionID"];
+    let extra: Vec<&str> = ctx.id_attrs.iter().map(|s| s.as_str()).collect();
+    id_attrs.extend(extra);
+    build_id_map(doc, &id_attrs)
+}
+
+/// Verify a single `<Signature>` element (`sig_node`) inside an already-parsed
+/// document. Shared by [`verify`] (first signature) and [`verify_all`] (each
+/// signature).
+fn verify_signature_node(
+    ctx: &DsigContext,
+    doc: &Document<'_>,
+    xml: &str,
+    sig_node: NodeId,
+    id_map: &std::collections::HashMap<String, NodeId>,
+) -> Result<VerifyResult, Error> {
     // Find <SignedInfo>
-    let signed_info = find_child_element(&doc, sig_node, ns::DSIG, ns::node::SIGNED_INFO)
+    let signed_info = find_child_element(doc, sig_node, ns::DSIG, ns::node::SIGNED_INFO)
         .ok_or_else(|| Error::MissingElement("SignedInfo".into()))?;
 
     // Read CanonicalizationMethod
     let c14n_method_node = find_child_element(
-        &doc,
+        doc,
         signed_info,
         ns::DSIG,
         ns::node::CANONICALIZATION_METHOD,
@@ -145,7 +220,7 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
 
     // Read SignatureMethod
     let sig_method_node =
-        find_child_element(&doc, signed_info, ns::DSIG, ns::node::SIGNATURE_METHOD)
+        find_child_element(doc, signed_info, ns::DSIG, ns::node::SIGNATURE_METHOD)
             .ok_or_else(|| Error::MissingElement("SignatureMethod".into()))?;
     let sig_method_uri = doc
         .element(sig_method_node)
@@ -155,13 +230,10 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
     // Parse HMACOutputLength for HMAC truncation (CVE-2009-0217)
     let hmac_output_length_bits: Option<usize> =
         if bergshamra_crypto::sign::is_hmac_algorithm(sig_method_uri) {
-            if let Some(len_node) = find_child_element(
-                &doc,
-                sig_method_node,
-                ns::DSIG,
-                ns::node::HMAC_OUTPUT_LENGTH,
-            ) {
-                let len_text = element_text(&doc, len_node).unwrap_or("").trim();
+            if let Some(len_node) =
+                find_child_element(doc, sig_method_node, ns::DSIG, ns::node::HMAC_OUTPUT_LENGTH)
+            {
+                let len_text = element_text(doc, len_node).unwrap_or("").trim();
                 let bits: usize = len_text
                     .parse()
                     .map_err(|_| Error::XmlStructure("invalid HMACOutputLength value".into()))?;
@@ -192,21 +264,21 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
     // Extract PQ context string from <MLDSAContextString> or <SLHDSAContextString>
     let pq_context: Option<Vec<u8>> = if bergshamra_crypto::sign::is_pq_algorithm(sig_method_uri) {
         let ctx_node = find_child_element(
-            &doc,
+            doc,
             sig_method_node,
             ns::XMLSEC_PQ,
             ns::node::MLDSA_CONTEXT_STRING,
         )
         .or_else(|| {
             find_child_element(
-                &doc,
+                doc,
                 sig_method_node,
                 ns::XMLSEC_PQ,
                 ns::node::SLHDSA_CONTEXT_STRING,
             )
         });
         if let Some(cn) = ctx_node {
-            let b64 = element_text(&doc, cn).unwrap_or("").trim();
+            let b64 = element_text(doc, cn).unwrap_or("").trim();
             if b64.is_empty() {
                 None
             } else {
@@ -225,16 +297,16 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
     };
 
     // Read exc-C14N PrefixList if applicable
-    let inclusive_prefixes = read_inclusive_prefixes(&doc, c14n_method_node);
+    let inclusive_prefixes = read_inclusive_prefixes(doc, c14n_method_node);
 
     // 3. Verify each Reference
-    let references = find_child_elements(&doc, signed_info, ns::DSIG, ns::node::REFERENCE);
+    let references = find_child_elements(doc, signed_info, ns::DSIG, ns::node::REFERENCE);
     let mut verified_refs = Vec::with_capacity(references.len());
     for reference in &references {
         let (mismatch, vref) = verify_reference(
             *reference,
-            &doc,
-            &id_map,
+            doc,
+            id_map,
             xml,
             sig_node,
             &ctx.url_maps,
@@ -253,16 +325,16 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
     if ctx.strict_verification {
         for vref in &verified_refs {
             if let Some(target) = vref.resolved_node {
-                validate_reference_position(&doc, sig_node, target)?;
+                validate_reference_position(doc, sig_node, target)?;
             }
         }
     }
 
     // 5. Canonicalize <SignedInfo>
     // We need to canonicalize the SignedInfo element as a document subset
-    let signed_info_ns = NodeSet::tree_without_comments(signed_info, &doc);
+    let signed_info_ns = NodeSet::tree_without_comments(signed_info, doc);
     let c14n_signed_info = bergshamra_c14n::canonicalize_doc(
-        &doc,
+        doc,
         c14n_mode,
         Some(&signed_info_ns),
         &inclusive_prefixes,
@@ -275,9 +347,9 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
     }
 
     // 6. Verify SignatureValue
-    let sig_value_node = find_child_element(&doc, sig_node, ns::DSIG, ns::node::SIGNATURE_VALUE)
+    let sig_value_node = find_child_element(doc, sig_node, ns::DSIG, ns::node::SIGNATURE_VALUE)
         .ok_or_else(|| Error::MissingElement("SignatureValue".into()))?;
-    let sig_value_b64 = element_text(&doc, sig_value_node).unwrap_or("").trim();
+    let sig_value_b64 = element_text(doc, sig_value_node).unwrap_or("").trim();
     let sig_value_clean: String = sig_value_b64
         .chars()
         .filter(|c| !c.is_whitespace())
@@ -349,7 +421,7 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
     // When trusted_keys_only is set, skip inline key extraction and only use
     // keys from the KeysManager. This is the secure mode for SAML: we only
     // trust pre-configured IdP keys, not whatever cert an attacker embeds.
-    let key_info_node = find_child_element(&doc, sig_node, ns::DSIG, ns::node::KEY_INFO);
+    let key_info_node = find_child_element(doc, sig_node, ns::DSIG, ns::node::KEY_INFO);
     let mut key_from_x509 = false;
     let mut key_from_manager = false;
     // extracted_key holds ownership when key is extracted from inline KeyInfo.
@@ -361,9 +433,9 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
     let key = if ctx.trusted_keys_only {
         // Secure mode: only use keys from the manager, never inline keys
         if let Some(ki) = key_info_node {
-            let effective_ki = resolve_key_info_reference(&doc, ki, &id_map).unwrap_or(ki);
+            let effective_ki = resolve_key_info_reference(doc, ki, id_map).unwrap_or(ki);
             let k =
-                bergshamra_keys::keyinfo::resolve_key_info(effective_ki, &doc, &ctx.keys_manager)
+                bergshamra_keys::keyinfo::resolve_key_info(effective_ki, doc, &ctx.keys_manager)
                     .or_else(|_| ctx.keys_manager.first_key())?;
             if ctx.debug {
                 eprintln!(
@@ -387,18 +459,18 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
     } else if let Some(ki) = key_info_node {
         // Standard mode: try inline KeyValue (RSA/EC public key embedded in XML),
         // then try EncryptedKey unwrap, then fall back to KeysManager lookup.
-        let effective_ki = resolve_key_info_reference(&doc, ki, &id_map).unwrap_or(ki);
-        extracted_key = bergshamra_keys::keyinfo::extract_key_value(effective_ki, &doc)
-            .or_else(|| try_unwrap_encrypted_key(&doc, effective_ki, &ctx.keys_manager).ok())
+        let effective_ki = resolve_key_info_reference(doc, ki, id_map).unwrap_or(ki);
+        extracted_key = bergshamra_keys::keyinfo::extract_key_value(effective_ki, doc)
+            .or_else(|| try_unwrap_encrypted_key(doc, effective_ki, &ctx.keys_manager).ok())
             .or_else(|| {
                 try_resolve_retrieval_method(
-                    &doc,
+                    doc,
                     effective_ki,
                     ctx.base_dir.as_deref(),
                     &ctx.url_maps,
                 )
             })
-            .or_else(|| try_resolve_retrieval_method_inline(&doc, effective_ki, &id_map));
+            .or_else(|| try_resolve_retrieval_method_inline(doc, effective_ki, id_map));
         if let Some(ref ek) = extracted_key {
             if ctx.debug {
                 eprintln!(
@@ -413,7 +485,7 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
             ek
         } else {
             let k =
-                bergshamra_keys::keyinfo::resolve_key_info(effective_ki, &doc, &ctx.keys_manager)?;
+                bergshamra_keys::keyinfo::resolve_key_info(effective_ki, doc, &ctx.keys_manager)?;
             if ctx.debug {
                 eprintln!(
                     "== Key: resolved from manager ({})",
@@ -2991,6 +3063,21 @@ fn find_element(doc: &Document<'_>, ns_uri: &str, local_name: &str) -> Option<No
     None
 }
 
+/// Find every element matching `ns_uri`/`local_name`, in document order.
+fn find_all_elements(doc: &Document<'_>, ns_uri: &str, local_name: &str) -> Vec<NodeId> {
+    let mut out = Vec::new();
+    for id in doc.descendants(doc.root()) {
+        if let Some(elem) = doc.element(id) {
+            if elem.name.local_name.as_ref() == local_name
+                && elem.name.namespace_uri.as_deref().unwrap_or("") == ns_uri
+            {
+                out.push(id);
+            }
+        }
+    }
+    out
+}
+
 fn find_child_element(
     doc: &Document<'_>,
     parent: NodeId,
@@ -3492,6 +3579,73 @@ mod tests {
         assert!(id_map.contains_key("e1"), "Id should be in map");
         assert!(id_map.contains_key("e2"), "ID should be in map");
         assert!(id_map.contains_key("e3"), "id should be in map");
+    }
+
+    #[test]
+    fn test_find_all_elements_returns_every_match_in_document_order() {
+        // verify_all relies on find_all_elements to discover every <Signature>,
+        // including nested ones (e.g. a Response signature plus an Assertion
+        // signature), in document order.
+        let xml = r##"<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+            xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+            xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+            <ds:Signature><ds:SignedInfo>resp</ds:SignedInfo></ds:Signature>
+            <saml:Assertion>
+                <ds:Signature><ds:SignedInfo>assert</ds:SignedInfo></ds:Signature>
+            </saml:Assertion>
+        </samlp:Response>"##;
+        let doc = uppsala::parse(xml).expect("parse");
+        let sigs = find_all_elements(&doc, ns::DSIG, ns::node::SIGNATURE);
+        assert_eq!(sigs.len(), 2, "both signatures must be discovered");
+        // Verify document order by the *content* of each returned signature, not
+        // by its position in the same traversal find_all_elements uses (which
+        // would be tautological). The Response signature (SignedInfo text
+        // "resp") must come before the nested Assertion signature ("assert").
+        let signed_info_text = |sig| {
+            let si = find_child_element(&doc, sig, ns::DSIG, ns::node::SIGNED_INFO)
+                .expect("each signature has a SignedInfo");
+            element_text(&doc, si).unwrap_or("").trim().to_owned()
+        };
+        assert_eq!(
+            signed_info_text(sigs[0]),
+            "resp",
+            "the first returned signature must be the Response signature"
+        );
+        assert_eq!(
+            signed_info_text(sigs[1]),
+            "assert",
+            "the second returned signature must be the nested Assertion signature"
+        );
+    }
+
+    #[test]
+    fn test_verify_all_errors_when_no_signature() {
+        // verify_all must report MissingElement (not an empty Vec) for a document
+        // with no <Signature>, mirroring verify's behaviour.
+        let ctx = DsigContext::new(bergshamra_keys::KeysManager::new());
+        let err = verify_all(&ctx, "<root><child/></root>")
+            .expect_err("a document with no Signature must error");
+        assert!(matches!(err, Error::MissingElement(_)));
+    }
+
+    #[test]
+    fn test_verify_all_reports_per_signature_errors_as_invalid() {
+        // A per-signature structural error (here: a <Signature> with no
+        // <SignedInfo>) must NOT short-circuit verify_all with Err — it must be
+        // reported as an Invalid entry so it cannot hide the other signatures.
+        let xml = r##"<root xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+            <ds:Signature><ds:SignedInfo></ds:SignedInfo></ds:Signature>
+            <ds:Signature></ds:Signature>
+        </root>"##;
+        let ctx = DsigContext::new(bergshamra_keys::KeysManager::new());
+        let results = verify_all(&ctx, xml).expect("document-level parse must succeed");
+        assert_eq!(results.len(), 2, "both signatures must be reported");
+        // The second signature has no <SignedInfo>; it must be Invalid, not an
+        // error that aborts the whole call.
+        assert!(
+            matches!(results[1], VerifyResult::Invalid { .. }),
+            "a signature missing SignedInfo must be reported as Invalid"
+        );
     }
 
     #[test]
