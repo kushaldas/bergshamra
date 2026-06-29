@@ -17,6 +17,6 @@ pub use bergshamra_keys::{Key, KeyData, KeyUsage, KeysManager};
 
 // Re-export entry-point functions.
 pub use bergshamra_dsig::sign::sign;
-pub use bergshamra_dsig::verify::verify;
+pub use bergshamra_dsig::verify::{verify, verify_all};
 pub use bergshamra_enc::decrypt::{decrypt, decrypt_to_bytes};
 pub use bergshamra_enc::encrypt::encrypt;
