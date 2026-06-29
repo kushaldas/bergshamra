@@ -140,10 +140,18 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
 /// order. This function verifies each signature independently and lets the
 /// caller decide which verified references it requires.
 ///
-/// Returns [`Error::MissingElement`] when the document contains no `<Signature>`.
-/// When one signature is valid and another is not, the returned vector mixes
-/// [`VerifyResult::Valid`] and [`VerifyResult::Invalid`] entries, so callers must
-/// inspect each result rather than assuming uniform success.
+/// `Err` is returned only for *document-level* failures: a parse error, a
+/// duplicate-ID conflict while building the ID map, or no `<Signature>` element
+/// at all ([`Error::MissingElement`]). A *per-signature* structural or
+/// processing failure (missing `SignedInfo`, unsupported algorithm, malformed
+/// base64, a key that cannot be resolved, an XSW position violation, etc.) is
+/// **not** propagated — it is reported as a [`VerifyResult::Invalid`] entry for
+/// that signature so it cannot short-circuit and hide a valid signature
+/// elsewhere in the document. This is what makes "verify every signature"
+/// meaningful: one malformed signature among several must not blind the caller
+/// to the others. Callers must therefore inspect each entry rather than assume
+/// uniform success; the returned vector may mix [`VerifyResult::Valid`] and
+/// [`VerifyResult::Invalid`].
 pub fn verify_all(ctx: &DsigContext, xml: &str) -> Result<Vec<VerifyResult>, Error> {
     let doc = uppsala::parse(xml).map_err(|e| Error::XmlParse(e.to_string()))?;
     let id_map = build_verify_id_map(ctx, &doc)?;
@@ -155,7 +163,16 @@ pub fn verify_all(ctx: &DsigContext, xml: &str) -> Result<Vec<VerifyResult>, Err
 
     let mut results = Vec::with_capacity(sig_nodes.len());
     for sig_node in sig_nodes {
-        results.push(verify_signature_node(ctx, &doc, xml, sig_node, &id_map)?);
+        // A per-signature error must not abort verification of the rest: report
+        // it as Invalid for this signature and continue. Document-level errors
+        // are handled above, before the loop.
+        let result = match verify_signature_node(ctx, &doc, xml, sig_node, &id_map) {
+            Ok(result) => result,
+            Err(e) => VerifyResult::Invalid {
+                reason: format!("signature could not be processed: {e}"),
+            },
+        };
+        results.push(result);
     }
     Ok(results)
 }
@@ -3580,19 +3597,25 @@ mod tests {
         let doc = uppsala::parse(xml).expect("parse");
         let sigs = find_all_elements(&doc, ns::DSIG, ns::node::SIGNATURE);
         assert_eq!(sigs.len(), 2, "both signatures must be discovered");
-        // Document order: Response signature first, Assertion signature second.
-        // Unwrap the positions so a missing node fails loudly here rather than
-        // silently passing the ordering check (None < Some(_) is true).
-        let order = doc.descendants(doc.root());
-        let first = order
-            .iter()
-            .position(|n| *n == sigs[0])
-            .expect("first signature node must be in the traversal");
-        let second = order
-            .iter()
-            .position(|n| *n == sigs[1])
-            .expect("second signature node must be in the traversal");
-        assert!(first < second, "signatures must be in document order");
+        // Verify document order by the *content* of each returned signature, not
+        // by its position in the same traversal find_all_elements uses (which
+        // would be tautological). The Response signature (SignedInfo text
+        // "resp") must come before the nested Assertion signature ("assert").
+        let signed_info_text = |sig| {
+            let si = find_child_element(&doc, sig, ns::DSIG, ns::node::SIGNED_INFO)
+                .expect("each signature has a SignedInfo");
+            element_text(&doc, si).unwrap_or("").trim().to_owned()
+        };
+        assert_eq!(
+            signed_info_text(sigs[0]),
+            "resp",
+            "the first returned signature must be the Response signature"
+        );
+        assert_eq!(
+            signed_info_text(sigs[1]),
+            "assert",
+            "the second returned signature must be the nested Assertion signature"
+        );
     }
 
     #[test]
@@ -3603,6 +3626,26 @@ mod tests {
         let err = verify_all(&ctx, "<root><child/></root>")
             .expect_err("a document with no Signature must error");
         assert!(matches!(err, Error::MissingElement(_)));
+    }
+
+    #[test]
+    fn test_verify_all_reports_per_signature_errors_as_invalid() {
+        // A per-signature structural error (here: a <Signature> with no
+        // <SignedInfo>) must NOT short-circuit verify_all with Err — it must be
+        // reported as an Invalid entry so it cannot hide the other signatures.
+        let xml = r##"<root xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+            <ds:Signature><ds:SignedInfo></ds:SignedInfo></ds:Signature>
+            <ds:Signature></ds:Signature>
+        </root>"##;
+        let ctx = DsigContext::new(bergshamra_keys::KeysManager::new());
+        let results = verify_all(&ctx, xml).expect("document-level parse must succeed");
+        assert_eq!(results.len(), 2, "both signatures must be reported");
+        // The second signature has no <SignedInfo>; it must be Invalid, not an
+        // error that aborts the whole call.
+        assert!(
+            matches!(results[1], VerifyResult::Invalid { .. }),
+            "a signature missing SignedInfo must be reported as Invalid"
+        );
     }
 
     #[test]

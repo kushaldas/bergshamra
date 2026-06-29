@@ -89,9 +89,19 @@ id_map)` helper, so the two paths cannot diverge in how a signature is checked.
 
 `verify_all`:
 
-- returns `Err(Error::MissingElement("Signature"))` when the document contains
-  no `<Signature>` (mirroring `verify()`), rather than an empty `Vec`;
 - returns one `VerifyResult` per signature, in document order;
+- returns `Err` **only** for document-level failures — a parse error, a
+  duplicate-ID conflict while building the ID map, or no `<Signature>` element
+  at all (`Error::MissingElement`, mirroring `verify()`) — rather than an empty
+  `Vec`;
+- maps a *per-signature* structural or processing failure (missing
+  `SignedInfo`, unsupported algorithm, malformed base64, unresolvable key, XSW
+  position violation, etc.) to a `VerifyResult::Invalid` entry for that
+  signature instead of propagating it. A `?` inside the loop would let one
+  malformed signature short-circuit the whole call and hide a valid signature
+  elsewhere, defeating the purpose of "verify every signature." Because errors
+  become `Invalid`, the result is fail-safe — a caller collecting references
+  only from `Valid` entries treats an unprocessable signature as not-verified;
 - reports a mix of `Valid` and `Invalid` entries when some signatures verify
   and others do not — the caller **must** inspect each entry rather than
   assume uniform success.
