@@ -3581,9 +3581,17 @@ mod tests {
         let sigs = find_all_elements(&doc, ns::DSIG, ns::node::SIGNATURE);
         assert_eq!(sigs.len(), 2, "both signatures must be discovered");
         // Document order: Response signature first, Assertion signature second.
+        // Unwrap the positions so a missing node fails loudly here rather than
+        // silently passing the ordering check (None < Some(_) is true).
         let order = doc.descendants(doc.root());
-        let first = order.iter().position(|n| *n == sigs[0]);
-        let second = order.iter().position(|n| *n == sigs[1]);
+        let first = order
+            .iter()
+            .position(|n| *n == sigs[0])
+            .expect("first signature node must be in the traversal");
+        let second = order
+            .iter()
+            .position(|n| *n == sigs[1])
+            .expect("second signature node must be in the traversal");
         assert!(first < second, "signatures must be in document order");
     }
 

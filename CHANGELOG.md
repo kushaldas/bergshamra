@@ -14,7 +14,8 @@
   — is covered by a valid signature even when that signature is not first in
   document order. Returns `Error::MissingElement` when no `<Signature>` is
   present; a mix of valid and invalid signatures yields a mix of `Valid` and
-  `Invalid` entries, so callers must inspect each.
+  `Invalid` entries, so callers must inspect each. See
+  `docs/adr/0005-verify-all-signatures.md`.
 
 
 ## 0.6.0 [2026-06-27]
