@@ -125,7 +125,16 @@ pub fn verify_all(ctx: &DsigContext, xml: &str) -> Result<Vec<VerifyResult>, Err
 
     let mut results = Vec::with_capacity(sig_nodes.len());
     for sig_node in sig_nodes {
-        results.push(verify_signature_node(ctx, &doc, xml, sig_node, &id_map)?);
+        // A per-signature error must not abort verification of the rest: report
+        // it as Invalid for this signature and continue. Document-level errors
+        // are handled above, before the loop.
+        let result = match verify_signature_node(ctx, &doc, xml, sig_node, &id_map) {
+            Ok(result) => result,
+            Err(e) => VerifyResult::Invalid {
+                reason: format!("signature could not be processed: {e}"),
+            },
+        };
+        results.push(result);
     }
     Ok(results)
 }
