@@ -68,7 +68,7 @@ impl Transform for Base64DecodeTransform {
             engine.decode(&cleaned)
         } else {
             let cleaned: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-            engine.decode(cleaned)
+            engine.decode(&cleaned)
         }
         .map_err(|e| Error::Base64(format!("decode error: {e}")))?;
 
