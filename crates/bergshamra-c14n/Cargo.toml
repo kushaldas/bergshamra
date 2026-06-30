@@ -12,3 +12,11 @@ description = "XML Canonicalization (C14N) for Bergshamra XML Security library"
 bergshamra-core.workspace = true
 bergshamra-xml.workspace = true
 uppsala.workspace = true
+memchr.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "c14n"
+harness = false

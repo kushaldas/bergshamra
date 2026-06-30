@@ -50,11 +50,31 @@ impl Transform for Base64DecodeTransform {
             }
         };
 
-        let cleaned: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-
-        let decoded = engine
-            .decode(&cleaned)
-            .map_err(|e| Error::Base64(format!("decode error: {e}")))?;
+        // Strip whitespace before decoding. The Base64 alphabet is ASCII, so
+        // for ASCII input (the overwhelmingly common case) we filter at the byte
+        // level with no UTF-8 decoding. The ASCII bytes stripped here (TAB, LF,
+        // VT, FF, CR, SPACE) are exactly the ASCII characters for which
+        // `char::is_whitespace()` returns true, so behavior is identical.
+        //
+        // For the rare input containing non-ASCII bytes we fall back to the
+        // original `char::is_whitespace()` filter, which also strips non-ASCII
+        // Unicode whitespace (e.g. NBSP, U+2028). This preserves the prior
+        // accept/reject behavior instead of silently rejecting such input.
+        let is_ascii_ws = |b: u8| matches!(b, b'\t' | b'\n' | 0x0B | 0x0C | b'\r' | b' ');
+        let decoded = if text.is_ascii() {
+            let bytes = text.as_bytes();
+            if bytes.iter().any(|&b| is_ascii_ws(b)) {
+                let cleaned: Vec<u8> = bytes.iter().copied().filter(|&b| !is_ascii_ws(b)).collect();
+                engine.decode(&cleaned)
+            } else {
+                // No whitespace to strip: decode in place, no allocation/copy.
+                engine.decode(bytes)
+            }
+        } else {
+            let cleaned: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+            engine.decode(&cleaned)
+        }
+        .map_err(|e| Error::Base64(format!("decode error: {e}")))?;
 
         Ok(TransformData::Binary(decoded))
     }

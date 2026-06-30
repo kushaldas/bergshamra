@@ -69,7 +69,7 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
     ) -> Result<(), Error> {
         match self.doc.node_kind(id) {
             Some(NodeKind::Document) => {
-                for child in self.doc.children(id) {
+                for child in self.doc.children_iter(id) {
                     self.process_node(child, output, inherited_ns)?;
                 }
             }
@@ -77,8 +77,7 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
                 self.process_element(id, output, inherited_ns)?;
             }
             Some(NodeKind::Text(text)) | Some(NodeKind::CData(text)) if self.is_visible(id) => {
-                let text = text.clone();
-                output.extend_from_slice(escape::escape_text(&text).as_bytes());
+                escape::escape_text_into(output, text);
             }
             Some(NodeKind::Comment(text)) if self.with_comments && self.is_visible(id) => {
                 let text = text.clone();
@@ -129,7 +128,7 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
                 if let Some(value) = &data {
                     if !value.is_empty() {
                         output.push(b' ');
-                        output.extend_from_slice(escape::escape_pi(value).as_bytes());
+                        escape::escape_pi_into(output, value);
                     }
                 }
                 output.extend_from_slice(b"?>");
@@ -327,7 +326,7 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
                 cn
             };
 
-            for child in self.doc.children(id) {
+            for child in self.doc.children_iter(id) {
                 self.process_node(child, output, &child_ns)?;
             }
 
@@ -391,7 +390,7 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
             // element in the node-set" check is based on visible ancestors
             // only. Invisible element ns output does not affect what
             // visible descendants render.
-            for child in self.doc.children(id) {
+            for child in self.doc.children_iter(id) {
                 self.process_node(child, output, inherited_ns)?;
             }
         }
