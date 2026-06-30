@@ -50,7 +50,19 @@ impl Transform for Base64DecodeTransform {
             }
         };
 
-        let cleaned: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+        // The Base64 alphabet is ASCII, so strip whitespace at the byte level
+        // (no UTF-8 decoding) and feed the cleaned bytes straight to the decoder.
+        // We strip the ASCII whitespace bytes that `char::is_whitespace` matched
+        // (TAB, LF, VT, FF, CR, SPACE); any other byte is left for the decoder
+        // to accept or reject.
+        let bytes = text.as_bytes();
+        let mut cleaned = Vec::with_capacity(bytes.len());
+        cleaned.extend(
+            bytes
+                .iter()
+                .copied()
+                .filter(|b| !matches!(b, b'\t' | b'\n' | 0x0B | 0x0C | b'\r' | b' ')),
+        );
 
         let decoded = engine
             .decode(&cleaned)

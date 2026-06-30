@@ -64,7 +64,7 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
     ) -> Result<(), Error> {
         match self.doc.node_kind(id) {
             Some(NodeKind::Document) => {
-                for child in self.doc.children(id) {
+                for child in self.doc.children_iter(id) {
                     self.process_node(child, output, rendered_ns)?;
                 }
             }
@@ -73,7 +73,7 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
             }
             Some(NodeKind::Text(text)) | Some(NodeKind::CData(text)) if self.is_visible(id) => {
                 let text = text.clone();
-                output.extend_from_slice(escape::escape_text(&text).as_bytes());
+                escape::escape_text_into(output, &text);
             }
             Some(NodeKind::Comment(text)) if self.with_comments && self.is_visible(id) => {
                 let text = text.clone();
@@ -121,7 +121,7 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
                 if let Some(value) = &data {
                     if !value.is_empty() {
                         output.push(b' ');
-                        output.extend_from_slice(escape::escape_pi(value).as_bytes());
+                        escape::escape_pi_into(output, value);
                     }
                 }
                 output.extend_from_slice(b"?>");
@@ -288,7 +288,7 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
             }
 
             // Process children
-            for child in self.doc.children(id) {
+            for child in self.doc.children_iter(id) {
                 self.process_node(child, output, &child_rendered_ns)?;
             }
 
@@ -339,7 +339,7 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
 
             // Children inherit same rendered_ns (invisible element
             // doesn't affect the visible ancestor tracking).
-            for child in self.doc.children(id) {
+            for child in self.doc.children_iter(id) {
                 self.process_node(child, output, rendered_ns)?;
             }
         }
