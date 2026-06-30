@@ -63,7 +63,7 @@ impl Transform for Base64DecodeTransform {
         let decoded = if text.is_ascii() {
             let cleaned: Vec<u8> = text
                 .bytes()
-                .filter(|b| !matches!(b, b'\t' | b'\n' | 0x0B | 0x0C | b'\r' | b' '))
+                .filter(|&b| !matches!(b, b'\t' | b'\n' | 0x0B | 0x0C | b'\r' | b' '))
                 .collect();
             engine.decode(&cleaned)
         } else {
