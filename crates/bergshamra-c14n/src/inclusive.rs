@@ -77,8 +77,7 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
                 self.process_element(id, output, inherited_ns)?;
             }
             Some(NodeKind::Text(text)) | Some(NodeKind::CData(text)) if self.is_visible(id) => {
-                let text = text.clone();
-                escape::escape_text_into(output, &text);
+                escape::escape_text_into(output, text);
             }
             Some(NodeKind::Comment(text)) if self.with_comments && self.is_visible(id) => {
                 let text = text.clone();

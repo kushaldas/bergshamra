@@ -60,12 +60,16 @@ impl Transform for Base64DecodeTransform {
         // original `char::is_whitespace()` filter, which also strips non-ASCII
         // Unicode whitespace (e.g. NBSP, U+2028). This preserves the prior
         // accept/reject behavior instead of silently rejecting such input.
+        let is_ascii_ws = |b: u8| matches!(b, b'\t' | b'\n' | 0x0B | 0x0C | b'\r' | b' ');
         let decoded = if text.is_ascii() {
-            let cleaned: Vec<u8> = text
-                .bytes()
-                .filter(|&b| !matches!(b, b'\t' | b'\n' | 0x0B | 0x0C | b'\r' | b' '))
-                .collect();
-            engine.decode(&cleaned)
+            let bytes = text.as_bytes();
+            if bytes.iter().any(|&b| is_ascii_ws(b)) {
+                let cleaned: Vec<u8> = bytes.iter().copied().filter(|&b| !is_ascii_ws(b)).collect();
+                engine.decode(&cleaned)
+            } else {
+                // No whitespace to strip: decode in place, no allocation/copy.
+                engine.decode(bytes)
+            }
         } else {
             let cleaned: String = text.chars().filter(|c| !c.is_whitespace()).collect();
             engine.decode(&cleaned)
