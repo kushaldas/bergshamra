@@ -12,6 +12,14 @@
   a signature could verify against an attacker-embedded certificate while the
   configured anchors were silently ignored. Requires `tsp-ltv` `0.3.1`, which
   adds DSA (DSS) certificate-signature verification.
+- Bind the validated X.509 leaf to the signature-verification key. Inline
+  `<X509Data>` now places the selected end-entity certificate at
+  `x509_chain[0]`, so the certificate validated against the trust anchors is the
+  same certificate whose public key verifies the signature. Previously a crafted
+  multi-certificate `<X509Data>` could get one (anchor-chaining) certificate
+  validated while the signature was checked with a different, attacker-supplied
+  certificate — a key/leaf confusion trust bypass. See
+  `docs/adr/0006-x509-leaf-binding.md`.
 
 ### Fixed
 

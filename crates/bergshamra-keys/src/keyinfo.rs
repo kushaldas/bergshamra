@@ -418,8 +418,25 @@ fn extract_x509_certificate(x509_data_node: NodeId, doc: &Document<'_>) -> Optio
     let leaf_idx = find_leaf_cert(&parsed_certs);
     let leaf = &parsed_certs[leaf_idx];
     let mut key = crate::loader::load_x509_cert_der(&leaf.der).ok()?;
-    // Populate x509_chain with ALL certs from the XML (not just the leaf)
-    key.x509_chain = parsed_certs.iter().map(|c| c.der.clone()).collect();
+    // Populate x509_chain with ALL certs from the XML, but place the selected
+    // leaf FIRST. Downstream chain validation (bergshamra-dsig verify.rs) treats
+    // `x509_chain[0]` as the leaf and validates *it* against the trust anchors,
+    // while the signature itself is verified with this key's public key — which
+    // is the leaf's key (`load_x509_cert_der(&leaf.der)` above). If `x509_chain[0]`
+    // were merely the first cert in document order, those two could be different
+    // certificates: an attacker could place a legitimately-anchored cert at
+    // index 0 (which passes chain validation) while `find_leaf_cert` selected a
+    // *different*, attacker-controlled cert as the signature key — a key/leaf
+    // confusion trust bypass. Anchoring `x509_chain[0]` to the signature key
+    // closes that gap. See docs/adr/0006-x509-leaf-binding.md.
+    let mut chain: Vec<Vec<u8>> = Vec::with_capacity(parsed_certs.len());
+    chain.push(leaf.der.clone());
+    for (i, c) in parsed_certs.iter().enumerate() {
+        if i != leaf_idx {
+            chain.push(c.der.clone());
+        }
+    }
+    key.x509_chain = chain;
     Some(key)
 }
 
@@ -757,5 +774,77 @@ mod tests {
     fn test_build_x509_key_info_namespace_uses_constant() {
         let xml = build_x509_key_info(&["AAAA"]);
         assert!(xml.contains(ns::DSIG));
+    }
+
+    // Aleksey xmlsec interop chain (from keys/rsa/rsa-2048-key.p12): the
+    // end-entity leaf "Test Key rsa-2048" and the self-signed "Aleksey Sanin /
+    // Root CA". Used to lock the leaf-binding invariant (see
+    // docs/adr/0006-x509-leaf-binding.md).
+    const LEAF_B64: &str = "MIIEJDCCA86gAwIBAgIJAK+ii7kzrdrVMA0GCSqGSIb3DQEBBQUAMIGcMQswCQYDVQQGEwJVUzETMBEGA1UECBMKQ2FsaWZvcm5pYTE9MDsGA1UEChM0WE1MIFNlY3VyaXR5IExpYnJhcnkgKGh0dHA6Ly93d3cuYWxla3NleS5jb20veG1sc2VjKTEWMBQGA1UEAxMNQWxla3NleSBTYW5pbjEhMB8GCSqGSIb3DQEJARYSeG1sc2VjQGFsZWtzZXkuY29tMCAXDTI1MTIyMTE1MjgzMFoYDzIxMjUxMTI3MTUyODMwWjB9MQswCQYDVQQGEwJVUzETMBEGA1UECBMKQ2FsaWZvcm5pYTE9MDsGA1UEChM0WE1MIFNlY3VyaXR5IExpYnJhcnkgKGh0dHA6Ly93d3cuYWxla3NleS5jb20veG1sc2VjKTEaMBgGA1UEAxMRVGVzdCBLZXkgcnNhLTIwNDgwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCxgGODQPffOmBsNcqYlo0wP8BmEqWjmw2qkfdzZn0SOv/fBXKBaZSvsXfr1JfyIPQYkedQ0X7b4Ch7PHe4ut1Q/x14A14PpHKXWDiAKRTrme2bILdRmyKRt6IIlwEyNzH3Zq8eN4U5THkdR1rTuYOzoNmF0xVeJ5xbK8Kv9CJof2y6gJGPimESvlcYGEyQZssWplj5s7AiwT/liBbhSN+ljmxVBFIiu6E+FdBYfI0yu1iZTe0qg7TAyk9xbD6+b7RQeOR7NmhA7gqg4HqzzrMfMou7fAeeaOv3LZP0zIRiyuy3ZUtCnwBHp2PgVyC8lHsezSxQ9VAO6efNc4cZCC/hAgMBAAGjggFFMIIBQTAMBgNVHRMEBTADAQH/MCwGCWCGSAGG+EIBDQQfFh1PcGVuU1NMIEdlbmVyYXRlZCBDZXJ0aWZpY2F0ZTAdBgNVHQ4EFgQUfLcVH/BQDOsKB+e4exlYAtcz44MwgeMGA1UdIwSB2zCB2IAU/uTsUyTwlZXHELXhRLVdOWVa436hgbSkgbEwga4xCzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpDYWxpZm9ybmlhMT0wOwYDVQQKEzRYTUwgU2VjdXJpdHkgTGlicmFyeSAoaHR0cDovL3d3dy5hbGVrc2V5LmNvbS94bWxzZWMpMRAwDgYDVQQLEwdSb290IENBMRYwFAYDVQQDEw1BbGVrc2V5IFNhbmluMSEwHwYJKoZIhvcNAQkBFhJ4bWxzZWNAYWxla3NleS5jb22CCQCvoou5M63arTANBgkqhkiG9w0BAQUFAANBAAOsjTIFAqagx0xAd+zha/Enk/4Qe6ZiQ4MYPi7U11mxnGLry5PHUjk6fzLfF4VRPSyqBZY70Ypzm246fauuHZw=";
+    const ROOT_B64: &str = "MIID9zCCA2CgAwIBAgIJAK+ii7kzrdqsMA0GCSqGSIb3DQEBBQUAMIGuMQswCQYDVQQGEwJVUzETMBEGA1UECBMKQ2FsaWZvcm5pYTE9MDsGA1UEChM0WE1MIFNlY3VyaXR5IExpYnJhcnkgKGh0dHA6Ly93d3cuYWxla3NleS5jb20veG1sc2VjKTEQMA4GA1UECxMHUm9vdCBDQTEWMBQGA1UEAxMNQWxla3NleSBTYW5pbjEhMB8GCSqGSIb3DQEJARYSeG1sc2VjQGFsZWtzZXkuY29tMCAXDTE0MDUyMzE3NTA1OVoYDzIxMTQwNDI5MTc1MDU5WjCBrjELMAkGA1UEBhMCVVMxEzARBgNVBAgTCkNhbGlmb3JuaWExPTA7BgNVBAoTNFhNTCBTZWN1cml0eSBMaWJyYXJ5IChodHRwOi8vd3d3LmFsZWtzZXkuY29tL3htbHNlYykxEDAOBgNVBAsTB1Jvb3QgQ0ExFjAUBgNVBAMTDUFsZWtzZXkgU2FuaW4xITAfBgkqhkiG9w0BCQEWEnhtbHNlY0BhbGVrc2V5LmNvbTCBnzANBgkqhkiG9w0BAQEFAAOBjQAwgYkCgYEAtY4MCNj/qrOzVuex1BD/PuCYTDDOLLVjtpKXQteQPqy0kgMwuQgRwdNnICIHQbnFKL40XoyACJVWKM7b0LkvWJNeyVzXPqEE9ZPmNxWGUjVcr7powT7v8V7S2QflUnr8ZvR4XWwkZJ9EYKNhenijgJ5yYDrXCWdvC+fnjBjv2LcCAwEAAaOCARcwggETMB0GA1UdDgQWBBQGtaSsp6p1ROoVnE/fBYNPah7+CzCB4wYDVR0jBIHbMIHYgBQGtaSsp6p1ROoVnE/fBYNPah7+C6GBtKSBsTCBrjELMAkGA1UEBhMCVVMxEzARBgNVBAgTCkNhbGlmb3JuaWExPTA7BgNVBAoTNFhNTCBTZWN1cml0eSBMaWJyYXJ5IChodHRwOi8vd3d3LmFsZWtzZXkuY29tL3htbHNlYykxEDAOBgNVBAsTB1Jvb3QgQ0ExFjAUBgNVBAMTDUFsZWtzZXkgU2FuaW4xITAfBgkqhkiG9w0BCQEWEnhtbHNlY0BhbGVrc2V5LmNvbYIJAK+ii7kzrdqsMAwGA1UdEwQFMAMBAf8wDQYJKoZIhvcNAQEFBQADgYEARpb86RP/ck55X+NunXeIX81i763bj7Z1VJwFbA/QfupzxnqJ2IP/lxC8YxJ3Bp2IJMI7rC9r0poa41ZxI5rGHip97DpgsxPF9lkRUmKBBQjkICOq1w/4d2DRInBoqXttD+0WsqDfNDVK+7kSE07ytn3RzHCjj0gv0PdxmuCsR/E=";
+
+    fn find_key_info(doc: &Document<'_>) -> NodeId {
+        doc.descendants(doc.root())
+            .into_iter()
+            .find(|&id| {
+                doc.element(id)
+                    .is_some_and(|e| &*e.name.local_name == ns::node::KEY_INFO)
+            })
+            .expect("KeyInfo element present")
+    }
+
+    /// Regression test for the X.509 leaf-binding trust bypass
+    /// (docs/adr/0006-x509-leaf-binding.md): even when the end-entity leaf is
+    /// NOT the first `<X509Certificate>` in document order, the extracted
+    /// `x509_chain[0]` must be the leaf whose public key becomes the signing
+    /// key. Downstream chain validation uses `x509_chain[0]`; if it were merely
+    /// the document-order-first cert, an attacker could get one cert validated
+    /// against the anchors while the signature was checked with a different one.
+    #[test]
+    fn test_x509data_places_selected_leaf_first() {
+        use base64::Engine;
+        let engine = base64::engine::general_purpose::STANDARD;
+        let leaf_der = engine.decode(LEAF_B64).unwrap();
+
+        // Adversarial ordering: CA/root FIRST, end-entity leaf SECOND.
+        let xml = format!(
+            concat!(
+                r#"<ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#">"#,
+                "<ds:X509Data>",
+                "<ds:X509Certificate>{root}</ds:X509Certificate>",
+                "<ds:X509Certificate>{leaf}</ds:X509Certificate>",
+                "</ds:X509Data></ds:KeyInfo>"
+            ),
+            root = ROOT_B64,
+            leaf = LEAF_B64
+        );
+        let doc = uppsala::parse(&xml).unwrap();
+        let key = extract_key_value(find_key_info(&doc), &doc).expect("extract X509 key");
+
+        assert_eq!(key.x509_chain.len(), 2, "all certs preserved in the chain");
+        assert_eq!(
+            key.x509_chain[0], leaf_der,
+            "selected leaf must be x509_chain[0] regardless of document order"
+        );
+    }
+
+    /// Sanity: the honest single-cert case is unchanged — the sole cert is the
+    /// leaf and remains at index 0.
+    #[test]
+    fn test_x509data_single_cert_is_leaf() {
+        use base64::Engine;
+        let engine = base64::engine::general_purpose::STANDARD;
+        let leaf_der = engine.decode(LEAF_B64).unwrap();
+        let xml = format!(
+            concat!(
+                r#"<ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#">"#,
+                "<ds:X509Data><ds:X509Certificate>{leaf}</ds:X509Certificate></ds:X509Data>",
+                "</ds:KeyInfo>"
+            ),
+            leaf = LEAF_B64
+        );
+        let doc = uppsala::parse(&xml).unwrap();
+        let key = extract_key_value(find_key_info(&doc), &doc).expect("extract X509 key");
+        assert_eq!(key.x509_chain, vec![leaf_der]);
     }
 }
