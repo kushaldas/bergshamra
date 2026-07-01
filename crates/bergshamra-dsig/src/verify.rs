@@ -509,8 +509,16 @@ fn verify_signature_node(
 
     // 4b. X.509 certificate chain validation
     if !ctx.insecure {
+        // When the caller has configured trust anchors, any key that carries an
+        // X.509 chain — including an inline <X509Certificate> an attacker may
+        // have embedded — must chain to one of those anchors, even if neither
+        // `enabled_key_data_x509` nor `verify_keys` is set. Without this clause a
+        // signature could verify against an attacker-supplied cert while the
+        // configured anchors are silently ignored (CVE-class trust bypass).
+        let has_trusted_anchors = ctx.keys_manager.has_trusted_certs();
         let needs_x509_validation = (ctx.enabled_key_data_x509 && key_from_x509)
-            || (ctx.verify_keys && key_from_manager && !key.x509_chain.is_empty());
+            || (ctx.verify_keys && key_from_manager && !key.x509_chain.is_empty())
+            || (has_trusted_anchors && !key.x509_chain.is_empty());
 
         if needs_x509_validation && !key.x509_chain.is_empty() {
             let config = bergshamra_keys::x509::CertValidationConfig {
@@ -4230,6 +4238,104 @@ mod tests {
         assert!(
             err_msg.contains("Algorithm") || err_msg.contains("CanonicalizationMethod"),
             "error should mention Algorithm, got: {err_msg}"
+        );
+    }
+
+    // ── Trust-anchor enforcement (docs/adr/0004, 0006) ──────────────────────
+    //
+    // The document `x509data-test.xml` is signed (RSA-SHA1) and carries its
+    // signer certificate chain inline in `<X509Data>`, chaining to the Aleksey
+    // test root `cacert.pem`. These tests exercise the enforcement clause added
+    // to `needs_x509_validation`: when trust anchors are configured, an inline
+    // certificate must chain to one of them even in permissive mode
+    // (`enabled_key_data_x509` and `verify_keys` both false).
+
+    /// The signed document with its inline signer chain.
+    const X509DATA_TEST_XML: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../test-data/aleksey-xmldsig-01/x509data-test.xml"
+    ));
+    /// The correct anchor (Aleksey test root) the inline chain terminates at.
+    /// Only used by the `legacy-algorithms`-gated positive test below.
+    #[cfg(feature = "legacy-algorithms")]
+    const CACERT_PEM: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../test-data/keys/cacert.pem"
+    ));
+    /// An unrelated CA (Merlin) the inline chain does NOT terminate at.
+    const WRONG_CA_PEM: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../test-data/merlin-xmldsig-twenty-three/certs/ca.pem"
+    ));
+
+    /// Decode a single-certificate PEM to DER.
+    fn pem_cert_to_der(pem: &str) -> Vec<u8> {
+        use base64::Engine;
+        let body: String = pem
+            .lines()
+            .filter(|l| !l.starts_with("-----"))
+            .flat_map(|l| l.chars())
+            .collect();
+        base64::engine::general_purpose::STANDARD
+            .decode(body.trim())
+            .expect("valid base64 PEM body")
+    }
+
+    fn permissive_ctx_with_anchor(anchor_pem: Option<&str>) -> DsigContext {
+        let mut mgr = bergshamra_keys::KeysManager::new();
+        if let Some(pem) = anchor_pem {
+            mgr.add_trusted_cert(pem_cert_to_der(pem));
+        }
+        // Permissive: inline keys accepted, no X509-data / verify-keys flags set.
+        let ctx = DsigContext::new_permissive(mgr);
+        assert!(!ctx.enabled_key_data_x509 && !ctx.verify_keys && !ctx.trusted_keys_only);
+        ctx
+    }
+
+    /// Baseline: with NO trust anchors, the inline-certificate signature
+    /// verifies (permissive W3C behavior). This is the behavior the enforcement
+    /// clause tightens.
+    #[test]
+    fn test_inline_x509_verifies_without_anchors() {
+        let ctx = permissive_ctx_with_anchor(None);
+        let result = verify(&ctx, X509DATA_TEST_XML).expect("verify should not error");
+        assert!(
+            result.is_valid(),
+            "inline-cert signature should verify when no anchors are configured"
+        );
+    }
+
+    /// Enforcement: with a trust anchor configured that the inline chain does
+    /// NOT chain to, the same signature is now REJECTED — even though
+    /// `enabled_key_data_x509` and `verify_keys` are false. Before the
+    /// `has_trusted_anchors` clause this verified successfully.
+    #[test]
+    fn test_inline_x509_rejected_when_chain_misses_anchor() {
+        let ctx = permissive_ctx_with_anchor(Some(WRONG_CA_PEM));
+        let result = verify(&ctx, X509DATA_TEST_XML);
+        assert!(
+            result.is_err(),
+            "inline cert must be rejected when it does not chain to a configured anchor"
+        );
+        let msg = result.unwrap_err().to_string().to_lowercase();
+        assert!(
+            msg.contains("cert") || msg.contains("chain") || msg.contains("trust"),
+            "error should be a certificate/chain failure, got: {msg}"
+        );
+    }
+
+    /// Enforcement, positive side: with the CORRECT anchor configured, the
+    /// inline chain validates and the signature verifies. The certificates are
+    /// SHA-1 era, so chain validation only accepts them under the
+    /// `legacy-algorithms` policy; gate the assertion on that feature.
+    #[cfg(feature = "legacy-algorithms")]
+    #[test]
+    fn test_inline_x509_accepted_when_chain_reaches_anchor() {
+        let ctx = permissive_ctx_with_anchor(Some(CACERT_PEM));
+        let result = verify(&ctx, X509DATA_TEST_XML).expect("verify should not error");
+        assert!(
+            result.is_valid(),
+            "inline cert should verify when it chains to the configured anchor"
         );
     }
 }

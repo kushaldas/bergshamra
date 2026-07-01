@@ -1,6 +1,47 @@
 # Changelog
 
 
+## 0.6.2 [2026-07-01]
+
+### Security
+
+- Enforce trust-anchor chaining for inline certificates. When the caller has
+  configured trust anchors, any key carrying an X.509 chain — including a cert
+  embedded in the signed document's `<KeyInfo>` — must now chain to a configured
+  anchor, even when `enabled_key_data_x509`/`verify_keys` are not set. Previously
+  a signature could verify against an attacker-embedded certificate while the
+  configured anchors were silently ignored. Requires `tsp-ltv` `0.3.1`, which
+  adds DSA (DSS) certificate-signature verification.
+- Bind the validated X.509 leaf to the signature-verification key. Inline
+  `<X509Data>` now places the selected end-entity certificate at
+  `x509_chain[0]`, so the certificate validated against the trust anchors is the
+  same certificate whose public key verifies the signature. Previously a crafted
+  multi-certificate `<X509Data>` could get one (anchor-chaining) certificate
+  validated while the signature was checked with a different, attacker-supplied
+  certificate — a key/leaf confusion trust bypass. See
+  `docs/adr/0006-x509-leaf-binding.md`.
+
+### Fixed
+
+- Signing now emits the full certificate chain from the signing key into
+  `<X509Data>` (one `<X509Certificate>` per cert) instead of only the leaf, so a
+  verifier configured with just the root anchor can build the path.
+
+### Changed
+
+- Performance: faster XML canonicalization (C14N) on the common path, plus
+  transform-pipeline fixes (base64 whitespace filtering and Unicode-whitespace
+  stripping).
+- Updated shared dependencies: `uppsala` `0.5.2` → `0.7.0` and `kryptering`
+  `0.4.0` → `0.4.1`.
+- Aligned the AES/3DES cipher primitives with the RustCrypto **cipher 0.5** wave
+  used by `kryptering` 0.4.1 — `aes` `0.9`, `cbc` `0.2`, `aes-gcm` `0.11`, `des`
+  `0.9`, `aes-kw` `0.3`. `bergshamra-pkcs12`'s PKCS#12 decryption paths were
+  ported to the cipher 0.5 `BlockModeDecrypt` API, and `bergshamra-crypto`
+  dropped five unused cipher-primitive dependencies (all cipher operations
+  delegate to `kryptering`). No public API changes.
+
+
 ## 0.6.1 [2026-06-29]
 
 ### Added

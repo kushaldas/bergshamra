@@ -18,4 +18,4 @@ hmac.workspace = true
 pbkdf2.workspace = true
 sha1.workspace = true
 sha2.workspace = true
-cipher = "0.4"
+cipher = { version = "0.5", features = ["block-padding", "alloc"] }

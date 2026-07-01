@@ -8,7 +8,7 @@
 //! 3. PBES2: PBKDF2 + AES-256-CBC (modern OpenSSL 3.x default)
 
 use bergshamra_core::Error;
-use cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
+use cipher::{block_padding::Pkcs7, BlockModeDecrypt, KeyIvInit};
 use hmac::Hmac;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
@@ -163,12 +163,11 @@ pub fn decrypt_pbe_sha1_3des(
     let decryptor = Des3CbcDec::new_from_slices(&key, &iv)
         .map_err(|e| Error::Key(format!("3DES-CBC init failed: {e}")))?;
 
-    let mut buf = ciphertext.to_vec();
     let plaintext = decryptor
-        .decrypt_padded_mut::<Pkcs7>(&mut buf)
+        .decrypt_padded_vec::<Pkcs7>(ciphertext)
         .map_err(|e| Error::Key(format!("3DES-CBC decrypt/unpad failed: {e}")))?;
 
-    Ok(plaintext.to_vec())
+    Ok(plaintext)
 }
 
 /// Decrypt ciphertext using PBES2: PBKDF2-HMAC-SHA256 + AES-256-CBC.
@@ -190,12 +189,11 @@ pub fn decrypt_pbes2_aes256cbc(
     let decryptor = Aes256CbcDec::new_from_slices(&key, aes_iv)
         .map_err(|e| Error::Key(format!("AES-256-CBC init failed: {e}")))?;
 
-    let mut buf = ciphertext.to_vec();
     let plaintext = decryptor
-        .decrypt_padded_mut::<Pkcs7>(&mut buf)
+        .decrypt_padded_vec::<Pkcs7>(ciphertext)
         .map_err(|e| Error::Key(format!("AES-256-CBC decrypt/unpad failed: {e}")))?;
 
-    Ok(plaintext.to_vec())
+    Ok(plaintext)
 }
 
 /// Decrypt ciphertext using PBES2: PBKDF2-HMAC-SHA1 + AES-256-CBC.
@@ -217,12 +215,11 @@ pub fn decrypt_pbes2_aes256cbc_sha1(
     let decryptor = Aes256CbcDec::new_from_slices(&key, aes_iv)
         .map_err(|e| Error::Key(format!("AES-256-CBC init failed: {e}")))?;
 
-    let mut buf = ciphertext.to_vec();
     let plaintext = decryptor
-        .decrypt_padded_mut::<Pkcs7>(&mut buf)
+        .decrypt_padded_vec::<Pkcs7>(ciphertext)
         .map_err(|e| Error::Key(format!("AES-256-CBC decrypt/unpad failed: {e}")))?;
 
-    Ok(plaintext.to_vec())
+    Ok(plaintext)
 }
 
 /// Compute HMAC for MAC verification.
