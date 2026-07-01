@@ -515,7 +515,7 @@ fn verify_signature_node(
         // `enabled_key_data_x509` nor `verify_keys` is set. Without this clause a
         // signature could verify against an attacker-supplied cert while the
         // configured anchors are silently ignored (CVE-class trust bypass).
-        let has_trusted_anchors = !ctx.keys_manager.trusted_certs().is_empty();
+        let has_trusted_anchors = ctx.keys_manager.has_trusted_certs();
         let needs_x509_validation = (ctx.enabled_key_data_x509 && key_from_x509)
             || (ctx.verify_keys && key_from_manager && !key.x509_chain.is_empty())
             || (has_trusted_anchors && !key.x509_chain.is_empty());
@@ -4256,6 +4256,8 @@ mod tests {
         "/../../test-data/aleksey-xmldsig-01/x509data-test.xml"
     ));
     /// The correct anchor (Aleksey test root) the inline chain terminates at.
+    /// Only used by the `legacy-algorithms`-gated positive test below.
+    #[cfg(feature = "legacy-algorithms")]
     const CACERT_PEM: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../test-data/keys/cacert.pem"
