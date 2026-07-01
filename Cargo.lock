@@ -2080,9 +2080,9 @@ dependencies = [
 
 [[package]]
 name = "tsp-ltv"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fc558cea51095c9c3a812e8703d2c577c5f69db66c04bdf9cec59282a3af086"
+checksum = "aac44d2540b70e2dfed4db52494941a96d6d37deec7af280d37446171741d3ba"
 dependencies = [
  "base64",
  "chrono",
@@ -2090,6 +2090,7 @@ dependencies = [
  "const-oid 0.9.6",
  "der 0.7.10",
  "digest 0.10.7",
+ "dsa",
  "ecdsa",
  "ed25519-dalek",
  "getrandom 0.2.17",

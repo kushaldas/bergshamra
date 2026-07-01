@@ -599,12 +599,19 @@ fn populate_x509_data(xml: &str, x509_chain: &[Vec<u8>]) -> Result<String, Error
 
         let replacement = match name {
             "X509Certificate" => {
-                let cert_b64 = engine.encode(first_cert_der);
+                // Emit the full certificate chain (leaf + any intermediates +
+                // root present on the signing key), one <X509Certificate> per
+                // cert, so a verifier configured with only the root anchor can
+                // still build the path. A single <X509Certificate/> placeholder
+                // is expanded into N sibling elements.
                 let tag = pname(prefix, "X509Certificate");
                 let mut w = XmlWriter::new();
-                w.start_element(&tag, &[]);
-                w.text(&cert_b64);
-                w.end_element(&tag);
+                for cert_der in x509_chain {
+                    let cert_b64 = engine.encode(cert_der);
+                    w.start_element(&tag, &[]);
+                    w.text(&cert_b64);
+                    w.end_element(&tag);
+                }
                 w.into_string()
             }
             "X509SubjectName" => {

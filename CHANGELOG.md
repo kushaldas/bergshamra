@@ -3,6 +3,22 @@
 
 ## 0.6.2 [2026-07-01]
 
+### Security
+
+- Enforce trust-anchor chaining for inline certificates. When the caller has
+  configured trust anchors, any key carrying an X.509 chain — including a cert
+  embedded in the signed document's `<KeyInfo>` — must now chain to a configured
+  anchor, even when `enabled_key_data_x509`/`verify_keys` are not set. Previously
+  a signature could verify against an attacker-embedded certificate while the
+  configured anchors were silently ignored. Requires `tsp-ltv` `0.3.1`, which
+  adds DSA (DSS) certificate-signature verification.
+
+### Fixed
+
+- Signing now emits the full certificate chain from the signing key into
+  `<X509Data>` (one `<X509Certificate>` per cert) instead of only the leaf, so a
+  verifier configured with just the root anchor can build the path.
+
 ### Changed
 
 - Performance: faster XML canonicalization (C14N) on the common path, plus

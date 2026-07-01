@@ -509,8 +509,16 @@ fn verify_signature_node(
 
     // 4b. X.509 certificate chain validation
     if !ctx.insecure {
+        // When the caller has configured trust anchors, any key that carries an
+        // X.509 chain — including an inline <X509Certificate> an attacker may
+        // have embedded — must chain to one of those anchors, even if neither
+        // `enabled_key_data_x509` nor `verify_keys` is set. Without this clause a
+        // signature could verify against an attacker-supplied cert while the
+        // configured anchors are silently ignored (CVE-class trust bypass).
+        let has_trusted_anchors = !ctx.keys_manager.trusted_certs().is_empty();
         let needs_x509_validation = (ctx.enabled_key_data_x509 && key_from_x509)
-            || (ctx.verify_keys && key_from_manager && !key.x509_chain.is_empty());
+            || (ctx.verify_keys && key_from_manager && !key.x509_chain.is_empty())
+            || (has_trusted_anchors && !key.x509_chain.is_empty());
 
         if needs_x509_validation && !key.x509_chain.is_empty() {
             let config = bergshamra_keys::x509::CertValidationConfig {

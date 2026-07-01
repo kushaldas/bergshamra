@@ -92,4 +92,4 @@ criterion = "0.5"
 kryptering = { version = "0.4.1", default-features = false, features = ["legacy", "post-quantum", "pkcs11"] }
 
 # Shared trust/validation infrastructure
-tsp-ltv = { version = "0.3.0", default-features = false }
+tsp-ltv = { version = "0.3.1", default-features = false }
