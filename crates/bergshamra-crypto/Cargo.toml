@@ -32,11 +32,6 @@ pkcs8-pq.workspace = true
 p256 = { workspace = true, features = ["ecdsa"] }
 p384 = { workspace = true, features = ["ecdsa"] }
 p521 = { workspace = true, features = ["ecdsa"] }
-aes.workspace = true
-cbc.workspace = true
-aes-gcm.workspace = true
-des.workspace = true
-aes-kw.workspace = true
 signature.workspace = true
 ed25519-dalek.workspace = true
 x25519-dalek.workspace = true

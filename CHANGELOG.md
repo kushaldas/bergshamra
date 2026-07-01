@@ -1,6 +1,23 @@
 # Changelog
 
 
+## 0.6.2 [2026-07-01]
+
+### Changed
+
+- Performance: faster XML canonicalization (C14N) on the common path, plus
+  transform-pipeline fixes (base64 whitespace filtering and Unicode-whitespace
+  stripping).
+- Updated shared dependencies: `uppsala` `0.5.2` → `0.7.0` and `kryptering`
+  `0.4.0` → `0.4.1`.
+- Aligned the AES/3DES cipher primitives with the RustCrypto **cipher 0.5** wave
+  used by `kryptering` 0.4.1 — `aes` `0.9`, `cbc` `0.2`, `aes-gcm` `0.11`, `des`
+  `0.9`, `aes-kw` `0.3`. `bergshamra-pkcs12`'s PKCS#12 decryption paths were
+  ported to the cipher 0.5 `BlockModeDecrypt` API, and `bergshamra-crypto`
+  dropped five unused cipher-primitive dependencies (all cipher operations
+  delegate to `kryptering`). No public API changes.
+
+
 ## 0.6.1 [2026-06-29]
 
 ### Added
