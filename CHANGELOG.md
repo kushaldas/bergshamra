@@ -1,6 +1,18 @@
 # Changelog
 
 
+## 0.6.3 [2026-07-02]
+
+### Changed
+
+- Updated `uppsala` `0.7.0` → `0.7.1`, a security-hardening release of the XML
+  parser: XSD validation now fails closed on unresolved element references,
+  invalid pattern facets, and malformed temporal values; namespace-sensitive
+  attribute declarations compare expanded names; DTD content-model parsing
+  observes the nesting-depth limit; and XSLT-generated comments/processing
+  instructions reject markup break-out content. No bergshamra API changes.
+
+
 ## 0.6.2 [2026-07-01]
 
 ### Security
