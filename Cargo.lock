@@ -164,7 +164,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "bergshamra"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "base64",
  "bergshamra-c14n",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-c14n"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "bergshamra-core",
  "bergshamra-xml",
@@ -193,14 +193,14 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-core"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "bergshamra-crypto"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "bergshamra-core",
  "digest 0.10.7",
@@ -236,7 +236,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-dsig"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "base64",
  "bergshamra-c14n",
@@ -259,7 +259,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-enc"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "base64",
  "bergshamra-c14n",
@@ -278,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-keys"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "base64",
  "bergshamra-core",
@@ -317,7 +317,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-pkcs12"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "aes 0.9.1",
  "bergshamra-core",
@@ -333,7 +333,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-transforms"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "base64",
  "bergshamra-c14n",
@@ -346,7 +346,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-xml"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "bergshamra-core",
  "uppsala",
@@ -2135,9 +2135,9 @@ dependencies = [
 
 [[package]]
 name = "uppsala"
-version = "0.7.1"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0303a5083e38ffea5a5a254b0942547f522e6fbc6a95a7d0da060013b9cfccf5"
+checksum = "c9eb84142190cfb1c6099f0285636be7149a6ffb343b4bedbb0f0ab050d2dc54"
 
 [[package]]
 name = "utf8parse"

@@ -1,6 +1,20 @@
 # Changelog
 
 
+## 0.6.4 [2026-07-03]
+
+### Changed
+
+- Updated `uppsala` `0.7.1` → `0.8.0`. The parser now enforces the reserved
+  namespace-binding rules of Namespaces in XML 1.0 §3 and rejects documents
+  that bind the `xml`/`xmlns` namespaces illegally (such documents were never
+  namespace-well-formed but were previously accepted). The release also brings
+  a coverage-guided fuzzing harness over the untrusted-input surfaces, faster
+  serialization, and fixes for `prepare_xpath()` node-arena growth and
+  attribute `NodeId` stability across re-preparation. No bergshamra API
+  changes; the full xmlsec DSig and Enc integration suites pass unchanged.
+
+
 ## 0.6.3 [2026-07-02]
 
 ### Changed
