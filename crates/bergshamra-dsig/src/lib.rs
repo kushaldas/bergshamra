@@ -43,9 +43,8 @@
 //! explicitly disabled for detached-content workflows, use
 //! [`VerifyResult::all_reference_digests_verified`] or
 //! [`VerifyResult::has_unverified_references`] to check whether any or all
-//! reference digests were verified locally. Match on
-//! [`VerifyResult::Valid`]` { references, .. }` when you need per-reference
-//! detail.
+//! reference digests were verified locally. Match on [`VerifyResult::Valid`] and inspect
+//! `references` when you need per-reference detail.
 //!
 //! By default, verification requires local digest coverage: an otherwise valid
 //! `SignatureValue` is reported invalid when `<SignedInfo>` has no
