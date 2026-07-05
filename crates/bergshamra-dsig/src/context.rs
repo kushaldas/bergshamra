@@ -103,8 +103,8 @@ impl DsigContext {
     ///   `<SignedInfo>` to contain at least one `<Reference>` and require every
     ///   `<Reference>` digest to be verified locally.
     ///
-    /// Use [`new_permissive()`](Self::new_permissive) if you need the W3C XML-DSig
-    /// default behavior (e.g., self-contained signatures with inline keys).
+    /// Use [`new_permissive()`](Self::new_permissive) if you need inline-key and
+    /// relaxed structural behavior for self-contained signatures.
     pub fn new(keys_manager: KeysManager) -> Self {
         Self {
             trusted_keys_only: true,
@@ -114,7 +114,7 @@ impl DsigContext {
         }
     }
 
-    /// Create a DSig context with permissive defaults (W3C XML-DSig standard behavior).
+    /// Create a DSig context with permissive key and structure defaults.
     ///
     /// This accepts inline keys from `<KeyInfo>`, does not enforce reference positions,
     /// and does not enforce a minimum HMAC output length. It still requires local

@@ -565,8 +565,10 @@ fn cmd_verify(
     let result = bergshamra_dsig::verify::verify(&ctx, &xml)?;
     match &result {
         bergshamra_dsig::verify::VerifyResult::Valid { references, .. } => {
-            if verbose && !result.all_reference_digests_verified() {
-                eprintln!("Warning: {}", reference_digest_warning_reason(references));
+            if verbose {
+                if let Some(reason) = reference_digest_warning_reason(references) {
+                    eprintln!("Warning: {reason}");
+                }
             }
             println!("OK");
             Ok(())
@@ -580,7 +582,7 @@ fn cmd_verify(
 
 fn reference_digest_warning_reason(
     references: &[bergshamra_dsig::verify::VerifiedReference],
-) -> &'static str {
+) -> Option<&'static str> {
     let verified_count = references
         .iter()
         .filter(|reference| reference.digest_verified)
@@ -591,11 +593,13 @@ fn reference_digest_warning_reason(
 fn reference_digest_warning_reason_from_counts(
     reference_count: usize,
     verified_count: usize,
-) -> &'static str {
+) -> Option<&'static str> {
     if reference_count == 0 || verified_count == 0 {
-        "no Reference digests were verified locally"
+        Some("no Reference digests were verified locally")
+    } else if verified_count < reference_count {
+        Some("one or more Reference digests were not verified locally")
     } else {
-        "one or more Reference digests were not verified locally"
+        None
     }
 }
 
@@ -1139,7 +1143,7 @@ mod tests {
     fn reference_warning_reports_no_digests_for_zero_references() {
         assert_eq!(
             super::reference_digest_warning_reason_from_counts(0, 0),
-            "no Reference digests were verified locally"
+            Some("no Reference digests were verified locally")
         );
     }
 
@@ -1147,7 +1151,7 @@ mod tests {
     fn reference_warning_reports_no_digests_for_all_unverified_references() {
         assert_eq!(
             super::reference_digest_warning_reason_from_counts(2, 0),
-            "no Reference digests were verified locally"
+            Some("no Reference digests were verified locally")
         );
     }
 
@@ -1155,7 +1159,15 @@ mod tests {
     fn reference_warning_reports_some_missing_digests_for_mixed_references() {
         assert_eq!(
             super::reference_digest_warning_reason_from_counts(2, 1),
-            "one or more Reference digests were not verified locally"
+            Some("one or more Reference digests were not verified locally")
+        );
+    }
+
+    #[test]
+    fn reference_warning_is_absent_when_all_digests_are_verified() {
+        assert_eq!(
+            super::reference_digest_warning_reason_from_counts(2, 2),
+            None
         );
     }
 }
