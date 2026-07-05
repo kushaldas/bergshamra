@@ -4,7 +4,7 @@
 //!
 //! Signs an XML document using a template with empty DigestValue/SignatureValue.
 
-use crate::context::DsigContext;
+use crate::context::{url_map_matches, DsigContext};
 use bergshamra_c14n::C14nMode;
 use bergshamra_core::{algorithm, ns, Error};
 use bergshamra_crypto::digest;
@@ -173,10 +173,11 @@ pub fn sign_owned(ctx: &DsigContext, mut result_xml: String) -> Result<String, E
                     bergshamra_transforms::TransformData::xml_borrowed(&result_xml, Some(ns))
                 }
             } else {
-                // Try url-map for external URIs
+                // Try url-map for external URIs. Mappings are exact except for
+                // a same-resource `#fragment` suffix.
                 let mut resolved = None;
                 for (map_url, file_path) in &ctx.url_maps {
-                    if uri == map_url || uri.starts_with(map_url) {
+                    if url_map_matches(uri, map_url) {
                         let bytes = std::fs::read(file_path)
                             .map_err(|e| Error::Other(format!("url-map {file_path}: {e}")))?;
                         resolved = Some(bergshamra_transforms::TransformData::Binary(bytes));

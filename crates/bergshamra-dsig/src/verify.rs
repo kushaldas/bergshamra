@@ -10,7 +10,7 @@
 //! 5. Canonicalize `<SignedInfo>`
 //! 6. Verify `<SignatureValue>`
 
-use crate::context::DsigContext;
+use crate::context::{url_map_matches, DsigContext};
 use bergshamra_c14n::C14nMode;
 use bergshamra_core::{algorithm, ns, Error};
 use bergshamra_crypto::digest;
@@ -1103,9 +1103,10 @@ fn resolve_reference_uri<'a>(
             resolved_node: Some(node),
         })
     } else {
-        // Try url-map for external URIs — read as raw bytes
+        // Try url-map for external URIs. Mappings are exact except for a
+        // same-resource `#fragment` suffix.
         for (map_url, file_path) in url_maps {
-            if uri == map_url || uri.starts_with(map_url) {
+            if url_map_matches(uri, map_url) {
                 let data = std::fs::read(file_path)
                     .map_err(|e| Error::Other(format!("url-map {file_path}: {e}")))?;
                 return Ok(ResolvedUri::Binary {
@@ -4518,6 +4519,60 @@ mod tests {
             }
             Ok(ResolvedUri::Xml { .. }) => panic!("url-map must resolve to detached bytes"),
             Err(err) => panic!("explicit url-map should resolve, got {err:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_reference_uri_rejects_url_map_prefix_lookalike() {
+        // URL maps must not treat an arbitrary starts_with match as authority to
+        // read the mapped local file. A host lookalike such as
+        // `example.test.evil` is a different URI even though it shares a prefix.
+        let mapped_file = TestFile::new(b"mapped external bytes");
+        let xml = r#"<Root Id="body"><Data>ok</Data></Root>"#;
+        let doc = uppsala::parse(xml).expect("parse");
+        let id_map = HashMap::new();
+        let map_url = "https://example.test/resource";
+        let attacker_uri = "https://example.test.evil/resource";
+        let url_maps = vec![(map_url.to_owned(), mapped_file.as_str().to_owned())];
+
+        match resolve_reference_uri(attacker_uri, &doc, &id_map, xml, &url_maps, None) {
+            Err(Error::InvalidUri(message)) => assert!(
+                message.contains("external URI not supported"),
+                "unexpected error message: {message}"
+            ),
+            Ok(_) => panic!("host-lookalike URL map prefix must not resolve"),
+            Err(err) => panic!("unexpected URL map prefix error: {err:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_reference_uri_allows_url_map_fragment_suffix() {
+        // Fragment suffixes still refer to the same mapped resource and are the
+        // only non-exact URL-map match accepted by the resolver.
+        let mapped_bytes = b"mapped external bytes";
+        let mapped_file = TestFile::new(mapped_bytes);
+        let xml = r#"<Root Id="body"><Data>ok</Data></Root>"#;
+        let doc = uppsala::parse(xml).expect("parse");
+        let id_map = HashMap::new();
+        let map_url = "https://example.test/resource";
+        let uri_with_fragment = "https://example.test/resource#body";
+        let url_maps = vec![(map_url.to_owned(), mapped_file.as_str().to_owned())];
+
+        match resolve_reference_uri(uri_with_fragment, &doc, &id_map, xml, &url_maps, None) {
+            Ok(ResolvedUri::Binary {
+                bytes,
+                debug_pre_digest_bytes,
+            }) => {
+                assert_eq!(bytes, mapped_bytes);
+                assert!(
+                    !debug_pre_digest_bytes,
+                    "mapped external bytes must be redacted in verifier debug output"
+                );
+            }
+            Ok(ResolvedUri::Xml { .. }) => {
+                panic!("fragment URL map must resolve to detached bytes")
+            }
+            Err(err) => panic!("fragment URL map should resolve, got {err:?}"),
         }
     }
 

@@ -165,6 +165,8 @@ impl DsigContext {
     ///
     /// Use this for detached `<Reference>` values that are external URIs or
     /// require a path outside the document-adjacent relative-file policy.
+    /// Resolution matches the URI exactly, or matches the same URI followed by
+    /// a `#fragment` suffix.
     pub fn add_url_map(&mut self, url: &str, file_path: &str) {
         self.url_maps.push((url.to_owned(), file_path.to_owned()));
     }
@@ -262,4 +264,18 @@ impl DsigContext {
         self.hsm_verifier = Some(verifier);
         self
     }
+}
+
+/// Return whether a configured URL map applies to a `<Reference URI>`.
+///
+/// URL maps are exact by default. The only non-exact match accepted here is a
+/// fragment suffix on the same mapped resource, such as mapping
+/// `https://example.test/doc.xml` for `https://example.test/doc.xml#payload`.
+/// This avoids treating lookalike prefixes such as
+/// `https://example.test.evil/...` as the mapped resource.
+pub(crate) fn url_map_matches(uri: &str, map_url: &str) -> bool {
+    uri == map_url
+        || uri
+            .strip_prefix(map_url)
+            .is_some_and(|suffix| suffix.starts_with('#'))
 }

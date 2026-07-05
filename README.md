@@ -184,6 +184,7 @@ profiles that verify attachment bytes out-of-band can opt out with
 
 Detached bytes that Bergshamra should hash locally must be mapped explicitly
 with `DsigContext::add_url_map("URI", "file")` or CLI `--url-map URI=FILE`.
+Mappings match the URI exactly, or the same URI with a `#fragment` suffix.
 For XML-DSig compatibility, simple relative local file references are also
 resolved against the input directory/current working directory. Absolute paths
 and parent-directory traversal are rejected, and detached bytes are redacted
