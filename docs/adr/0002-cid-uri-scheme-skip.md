@@ -125,12 +125,12 @@ Applied in two locations:
 
 ## Consequences
 
-- Documents containing `cid:` references alongside in-document references
-  can now be verified (the in-document references are checked, `cid:`
-  references are skipped).
-- Documents where **all** references are `cid:` will have their
-  `<SignedInfo>` signature verified but no individual reference digests
-  checked. This is a weaker guarantee — the caller should be aware.
+- The low-level reference resolver can process documents containing `cid:`
+  references alongside in-document references: in-document references are
+  checked, while `cid:` references are recorded as not locally verified.
+- Documents where **all** references are `cid:` can still have their
+  `<SignedInfo>` signature checked internally, but no individual reference
+  digests are checked by Bergshamra.
 - The low-level reference resolver still records skipped `cid:` references
   without hashing attachment bytes. High-level verification rejects missing
   local digest coverage by default so callers cannot confuse a valid

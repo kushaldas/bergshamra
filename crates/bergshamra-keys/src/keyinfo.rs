@@ -46,7 +46,7 @@ fn decode_crypto_binary(text: &str, engine: &impl base64::Engine) -> Result<Vec<
     }
 
     let preview: String = clean.chars().take(20).collect();
-    Err(format!("Invalid symbol at position 0 for {}", preview))
+    Err(format!("invalid CryptoBinary value near {}", preview))
 }
 
 /// Process a `<KeyInfo>` element and attempt to resolve a key from the manager.

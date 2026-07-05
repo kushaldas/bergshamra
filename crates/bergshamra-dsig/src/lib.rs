@@ -108,8 +108,9 @@
 //!   ancestors, siblings, or the document element (XSW protection).
 //! - **`hmac_min_out_len = 160`** — enforces a minimum HMAC output length of
 //!   160 bits to prevent truncation attacks (CVE-2009-0217).
-//! - **`require_reference_digests = true`** — requires at least one locally
-//!   verified `<Reference>` digest before returning [`VerifyResult::Valid`].
+//! - **`require_reference_digests = true`** — requires at least one
+//!   `<Reference>` and requires every `<Reference>` digest to be locally
+//!   verified before returning [`VerifyResult::Valid`].
 //!
 //! Use [`DsigContext::new_permissive()`] for W3C XML-DSig standard behavior
 //! (e.g., self-contained signatures with inline keys).

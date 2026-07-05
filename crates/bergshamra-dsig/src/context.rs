@@ -100,8 +100,8 @@ impl DsigContext {
     /// - **`hmac_min_out_len = 160`** — enforce minimum HMAC output length of 160 bits
     ///   to prevent truncation attacks (CVE-2009-0217).
     /// - **`require_reference_digests = true`** — require the signed
-    ///   `<SignedInfo>` to cover at least one locally verified `<Reference>`
-    ///   digest.
+    ///   `<SignedInfo>` to contain at least one `<Reference>` and require every
+    ///   `<Reference>` digest to be verified locally.
     ///
     /// Use [`new_permissive()`](Self::new_permissive) if you need the W3C XML-DSig
     /// default behavior (e.g., self-contained signatures with inline keys).
