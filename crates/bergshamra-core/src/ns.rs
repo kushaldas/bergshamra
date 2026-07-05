@@ -1,6 +1,13 @@
 #![forbid(unsafe_code)]
+#![allow(missing_docs)]
 
 //! XML namespace constants used across the library.
+//!
+//! Top-level constants are namespace URIs. The `node` module contains local
+//! element names, and the `attr` module contains attribute names. These
+//! constants are intentionally named after the XML tokens they represent so
+//! callers can avoid hard-coded strings in signature, encryption, and transform
+//! code.
 
 /// XML Digital Signature namespace
 pub const DSIG: &str = "http://www.w3.org/2000/09/xmldsig#";

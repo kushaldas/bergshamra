@@ -7,9 +7,16 @@ use kryptering::algorithm::{AesKeySize, KeyWrapAlgorithm as KKeyWrapAlgorithm};
 
 /// Trait for key wrap algorithms.
 pub trait KeyWrapAlgorithm: Send {
+    /// Return the XML Encryption key-wrap algorithm URI.
     fn uri(&self) -> &'static str;
+
+    /// Wrap `key_data` with the key-encryption key `kek`.
     fn wrap(&self, kek: &[u8], key_data: &[u8]) -> Result<Vec<u8>, Error>;
+
+    /// Unwrap `wrapped` key data with the key-encryption key `kek`.
     fn unwrap(&self, kek: &[u8], wrapped: &[u8]) -> Result<Vec<u8>, Error>;
+
+    /// Return the required key-encryption-key size in bytes.
     fn kek_size(&self) -> usize;
 }
 

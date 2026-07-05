@@ -1,10 +1,19 @@
 #![forbid(unsafe_code)]
 
 //! Shared rendering utilities for C14N output.
+//!
+//! The C14N algorithms collect namespace declarations and attributes, sort
+//! them according to the canonical XML rules, and then render each item with
+//! the required escaping. Most users should call the `canonicalize*` functions
+//! instead of using this module directly.
 
 use crate::escape;
 
-/// A namespace declaration to be rendered.
+/// A namespace declaration prepared for canonical XML output.
+///
+/// Declarations sort by canonical namespace order: the default namespace
+/// declaration (`xmlns="..."`) sorts before prefixed declarations, and prefixed
+/// declarations sort lexicographically by prefix.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NsDecl {
     /// The prefix ("" for default namespace).
@@ -14,7 +23,11 @@ pub struct NsDecl {
 }
 
 impl NsDecl {
-    /// Render this namespace declaration to a string.
+    /// Render this namespace declaration as canonical XML.
+    ///
+    /// The returned string includes the leading space before `xmlns`, so it can
+    /// be appended directly to an element start tag. Namespace URI characters
+    /// are escaped with canonical XML attribute escaping.
     pub fn render(&self) -> String {
         if self.prefix.is_empty() {
             format!(" xmlns=\"{}\"", escape::escape_attr(&self.uri))
@@ -46,7 +59,12 @@ impl PartialOrd for NsDecl {
     }
 }
 
-/// An attribute to be rendered.
+/// An attribute prepared for canonical XML output.
+///
+/// Attributes sort by canonical XML order: unqualified attributes first by
+/// local name, followed by namespaced attributes by namespace URI and local
+/// name. Namespace declaration attributes are represented separately as
+/// [`NsDecl`] values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attr {
     /// The namespace URI of the attribute ("" for no namespace).
@@ -60,7 +78,11 @@ pub struct Attr {
 }
 
 impl Attr {
-    /// Render this attribute to a string.
+    /// Render this attribute as canonical XML.
+    ///
+    /// The returned string includes the leading space before the attribute
+    /// name, so it can be appended directly to an element start tag. The
+    /// attribute value is escaped with canonical XML attribute escaping.
     pub fn render(&self) -> String {
         format!(
             " {}=\"{}\"",

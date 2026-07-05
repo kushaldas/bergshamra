@@ -7,24 +7,40 @@ use signature::SignatureEncoding;
 
 /// Key material for signature operations.
 pub enum SigningKey {
+    /// RSA private key, usable for signing and verification.
     Rsa(rsa::RsaPrivateKey),
+    /// RSA public key, usable for verification only.
     RsaPublic(rsa::RsaPublicKey),
+    /// ECDSA P-256 private signing key.
     EcP256(p256::ecdsa::SigningKey),
+    /// ECDSA P-256 public verification key.
     EcP256Public(p256::ecdsa::VerifyingKey),
+    /// ECDSA P-384 private signing key.
     EcP384(p384::ecdsa::SigningKey),
+    /// ECDSA P-384 public verification key.
     EcP384Public(p384::ecdsa::VerifyingKey),
+    /// ECDSA P-521 private signing key.
     EcP521(p521::ecdsa::SigningKey),
+    /// ECDSA P-521 public verification key.
     EcP521Public(p521::ecdsa::VerifyingKey),
+    /// DSA private signing key.
     Dsa(dsa::SigningKey),
+    /// DSA public verification key.
     DsaPublic(dsa::VerifyingKey),
+    /// Ed25519 private signing key.
     Ed25519(ed25519_dalek::SigningKey),
+    /// Ed25519 public verification key.
     Ed25519Public(ed25519_dalek::VerifyingKey),
+    /// HMAC shared secret bytes.
     Hmac(Vec<u8>),
     /// Post-quantum key stored as raw DER bytes.
     /// The algorithm variant determines how to parse them.
     PostQuantum {
+        /// Post-quantum signature algorithm for the DER blobs.
         algorithm: PqAlgorithm,
+        /// Optional private key DER, present when signing is supported.
         private_der: Option<Vec<u8>>,
+        /// Public key DER, always present for verification.
         public_der: Vec<u8>,
     },
 }
@@ -32,14 +48,23 @@ pub enum SigningKey {
 /// Post-quantum algorithm variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PqAlgorithm {
+    /// ML-DSA-44 signature algorithm.
     MlDsa44,
+    /// ML-DSA-65 signature algorithm.
     MlDsa65,
+    /// ML-DSA-87 signature algorithm.
     MlDsa87,
+    /// SLH-DSA SHA2-128f signature algorithm.
     SlhDsaSha2_128f,
+    /// SLH-DSA SHA2-128s signature algorithm.
     SlhDsaSha2_128s,
+    /// SLH-DSA SHA2-192f signature algorithm.
     SlhDsaSha2_192f,
+    /// SLH-DSA SHA2-192s signature algorithm.
     SlhDsaSha2_192s,
+    /// SLH-DSA SHA2-256f signature algorithm.
     SlhDsaSha2_256f,
+    /// SLH-DSA SHA2-256s signature algorithm.
     SlhDsaSha2_256s,
 }
 
@@ -62,8 +87,13 @@ impl PqAlgorithm {
 
 /// Trait for signature algorithms.
 pub trait SignatureAlgorithm: Send {
+    /// Return the XML Signature algorithm URI implemented by this algorithm.
     fn uri(&self) -> &'static str;
+
+    /// Sign `data` with `key` and return the XML Signature byte form.
     fn sign(&self, key: &SigningKey, data: &[u8]) -> Result<Vec<u8>, Error>;
+
+    /// Verify `signature` over `data` with `key`.
     fn verify(&self, key: &SigningKey, data: &[u8], signature: &[u8]) -> Result<bool, Error>;
 
     /// Verify a signature that the verifier has pre-declared to be

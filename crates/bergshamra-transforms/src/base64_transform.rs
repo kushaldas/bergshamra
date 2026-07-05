@@ -35,7 +35,7 @@ impl Transform for Base64DecodeTransform {
         algorithm::BASE64
     }
 
-    fn execute(&self, input: TransformData) -> Result<TransformData, Error> {
+    fn execute<'a>(&self, input: TransformData<'a>) -> Result<TransformData<'a>, Error> {
         use base64::Engine;
         let engine = base64::engine::general_purpose::STANDARD;
 
@@ -46,7 +46,7 @@ impl Transform for Base64DecodeTransform {
             TransformData::Xml { xml_text, node_set } => {
                 // Extract text content from the node set, not the full XML.
                 // Per W3C: "removes the tags and extracts the content".
-                extract_text_content(xml_text, node_set.as_ref())?
+                extract_text_content(xml_text.as_ref(), node_set.as_ref())?
             }
         };
 

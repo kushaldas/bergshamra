@@ -82,6 +82,11 @@ impl std::fmt::Debug for EncContext {
 }
 
 impl EncContext {
+    /// Create an XML Encryption context using the provided key manager.
+    ///
+    /// The context starts with no extra ID attributes, CipherReference support
+    /// enabled, and no HSM delegates configured. Use the builder methods to
+    /// bind HSM operations to explicit XML Encryption algorithm URIs.
     pub fn new(keys_manager: KeysManager) -> Self {
         Self {
             keys_manager,
@@ -98,6 +103,10 @@ impl EncContext {
         }
     }
 
+    /// Register an additional ID attribute name for XML Encryption processing.
+    ///
+    /// This is useful for protocol-specific ID attributes such as `wsu:Id`.
+    /// Registered names are considered when resolving same-document references.
     pub fn add_id_attr(&mut self, name: &str) {
         self.id_attrs.push(name.to_owned());
     }

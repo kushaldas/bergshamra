@@ -64,10 +64,21 @@ pub enum VerifyResult {
         key_info: VerifiedKeyInfo,
     },
     /// Signature is invalid.
-    Invalid { reason: String },
+    Invalid {
+        /// Human-readable reason describing the verification failure.
+        reason: String,
+    },
 }
 
 impl VerifyResult {
+    /// Returns `true` when signature verification completed successfully.
+    ///
+    /// This checks only the outer signature result. Call
+    /// [`VerifyResult::all_reference_digests_verified`] as well when your
+    /// protocol requires every `<Reference>` digest to have been computed from
+    /// local bytes, because valid signatures can contain external `cid:`
+    /// references that Bergshamra reports but does not hash itself.
+    #[must_use]
     pub fn is_valid(&self) -> bool {
         matches!(self, VerifyResult::Valid { .. })
     }
@@ -631,47 +642,74 @@ fn verify_reference(
         .decode(&expected_clean)
         .map_err(|e| Error::Base64(format!("DigestValue: {e}")))?;
 
-    // Resolve URI and get initial data
-    let resolved = resolve_reference_uri(uri, doc, id_map, xml, url_maps, base_dir)?;
-
-    // Read and apply transforms
+    // Read transforms once, then try the narrow same-document C14N fast path.
+    // In debug mode we deliberately skip the streaming digest fast path because
+    // callers asked to see the exact pre-digest bytes.
     let transforms_node = find_child_element(doc, reference, ns::DSIG, ns::node::TRANSFORMS);
-    let (mut data, resolved_node) = match resolved {
-        ResolvedUri::Xml {
-            xml_text,
-            node_set,
-            resolved_node,
-        } => (
-            bergshamra_transforms::TransformData::Xml { xml_text, node_set },
-            resolved_node,
-        ),
-        ResolvedUri::Binary(bytes) => (bergshamra_transforms::TransformData::Binary(bytes), None),
+    if !debug {
+        if let Some((computed, resolved_node)) =
+            try_fast_reference_digest(doc, id_map, uri, sig_node, transforms_node, digest_uri)?
+        {
+            let vref = VerifiedReference {
+                uri: uri.to_owned(),
+                resolved_node,
+                digest_verified: true,
+            };
+            return Ok(compare_reference_digest(
+                uri,
+                computed,
+                &expected_digest,
+                vref,
+            ));
+        }
+    }
+
+    let (bytes, resolved_node) = if let Some((bytes, resolved_node)) =
+        try_fast_reference_bytes(doc, id_map, uri, sig_node, transforms_node)?
+    {
+        (bytes, resolved_node)
+    } else {
+        // Resolve URI and get initial data for the generic transform pipeline.
+        let resolved = resolve_reference_uri(uri, doc, id_map, xml, url_maps, base_dir)?;
+        let (mut data, resolved_node) = match resolved {
+            ResolvedUri::Xml {
+                xml_text,
+                node_set,
+                resolved_node,
+            } => (
+                bergshamra_transforms::TransformData::xml_borrowed(xml_text, node_set),
+                resolved_node,
+            ),
+            ResolvedUri::Binary(bytes) => {
+                (bergshamra_transforms::TransformData::Binary(bytes), None)
+            }
+        };
+
+        if let Some(transforms) = transforms_node {
+            for transform_node in doc.children(transforms) {
+                let is_transform_elem = doc
+                    .element(transform_node)
+                    .is_some_and(|e| e.name.local_name.as_ref() == ns::node::TRANSFORM);
+                if !is_transform_elem {
+                    continue;
+                }
+                let transform_uri = doc
+                    .element(transform_node)
+                    .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
+                    .unwrap_or("");
+
+                data = apply_transform(transform_uri, data, transform_node, sig_node, doc)?;
+            }
+        }
+
+        (data.to_binary()?, resolved_node)
     };
+
     let vref = VerifiedReference {
         uri: uri.to_owned(),
         resolved_node,
         digest_verified: true,
     };
-
-    if let Some(transforms) = transforms_node {
-        for transform_node in doc.children(transforms) {
-            let is_transform_elem = doc
-                .element(transform_node)
-                .is_some_and(|e| e.name.local_name.as_ref() == ns::node::TRANSFORM);
-            if !is_transform_elem {
-                continue;
-            }
-            let transform_uri = doc
-                .element(transform_node)
-                .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
-                .unwrap_or("");
-
-            data = apply_transform(transform_uri, data, transform_node, sig_node, doc)?;
-        }
-    }
-
-    // Convert to binary for digesting
-    let bytes = data.to_binary()?;
 
     if debug {
         eprintln!("== PreDigest data - start buffer (URI={uri}):");
@@ -681,46 +719,305 @@ fn verify_reference(
 
     // Compute digest
     let computed = digest::digest(digest_uri, &bytes)?;
-
-    // Compare
-    if computed == expected_digest {
-        Ok((None, vref))
-    } else {
-        Ok((
-            Some(format!(
-                "URI={uri}: expected digest does not match computed digest"
-            )),
-            vref,
-        ))
-    }
+    Ok(compare_reference_digest(
+        uri,
+        computed,
+        &expected_digest,
+        vref,
+    ))
 }
 
 /// Resolved URI data — either XML (same-document) or raw binary (external).
-enum ResolvedUri {
+enum ResolvedUri<'a> {
+    /// Same-document XML data. The XML text borrows the original verifier input
+    /// instead of allocating a second full string for the transform pipeline.
     Xml {
-        xml_text: String,
+        /// Original XML input buffer.
+        xml_text: &'a str,
+        /// Optional node-set selected by URI resolution.
         node_set: Option<NodeSet>,
         /// The node that this reference resolved to (for same-document ID refs).
         resolved_node: Option<NodeId>,
     },
+    /// External or mapped URI bytes.
     Binary(Vec<u8>),
 }
 
-/// Resolve a reference URI.
-fn resolve_reference_uri(
+/// Compare a computed reference digest with the expected digest and return the
+/// verifier's per-reference result shape.
+///
+/// The `VerifiedReference` is returned in both success and failure cases so the
+/// caller can include coverage metadata in error reporting.
+fn compare_reference_digest(
+    uri: &str,
+    computed: Vec<u8>,
+    expected_digest: &[u8],
+    vref: VerifiedReference,
+) -> (Option<String>, VerifiedReference) {
+    if computed == expected_digest {
+        (None, vref)
+    } else {
+        (
+            Some(format!(
+                "URI={uri}: expected digest does not match computed digest"
+            )),
+            vref,
+        )
+    }
+}
+
+/// C14N sink that feeds canonical bytes into a digest stream.
+///
+/// Verification only needs the digest result on the fast path, so this avoids
+/// holding the full canonicalized reference bytes unless `--debug` requested
+/// them.
+struct ReferenceDigestSink {
+    inner: Box<dyn digest::DigestAlgorithm>,
+}
+
+impl ReferenceDigestSink {
+    /// Create a digest sink for an XML Security digest algorithm URI.
+    fn new(uri: &str) -> Result<Self, Error> {
+        Ok(Self {
+            inner: digest::from_uri(uri)?,
+        })
+    }
+
+    /// Finalize the digest stream and return the computed digest bytes.
+    fn finalize(self) -> Vec<u8> {
+        self.inner.finalize()
+    }
+}
+
+impl bergshamra_c14n::C14nSink for ReferenceDigestSink {
+    /// Feed canonicalized bytes into the underlying digest.
+    fn write(&mut self, bytes: &[u8]) {
+        self.inner.update(bytes);
+    }
+}
+
+/// Fast-path reference bytes plus the resolved same-document node, when known.
+type FastReferenceBytes = (Vec<u8>, Option<NodeId>);
+
+/// Fast-path selected node-set plus the resolved same-document node, when known.
+type FastReferenceNodeSet = (Option<NodeSet>, Option<NodeId>);
+
+/// Canonicalization mode, InclusiveNamespaces PrefixList, and selected node-set.
+type FastC14nParams = (C14nMode, Vec<String>, Option<NodeSet>);
+
+/// Compute a reference digest through the streaming fast C14N path.
+///
+/// Returns `Ok(None)` when the URI or transform list is not eligible for the
+/// fast path. The caller must then execute the generic XML-DSig transform
+/// pipeline.
+fn try_fast_reference_digest(
+    doc: &Document<'_>,
+    id_map: &HashMap<String, NodeId>,
+    uri: &str,
+    sig_node: NodeId,
+    transforms_node: Option<NodeId>,
+    digest_uri: &str,
+) -> Result<Option<FastReferenceBytes>, Error> {
+    let Some((node_set, resolved_node)) = fast_reference_node_set(doc, id_map, uri)? else {
+        return Ok(None);
+    };
+    let Some((c14n_mode, inclusive_prefixes, node_set)) =
+        fast_reference_c14n_params(doc, sig_node, node_set, transforms_node)?
+    else {
+        return Ok(None);
+    };
+
+    let mut sink = ReferenceDigestSink::new(digest_uri)?;
+    bergshamra_c14n::canonicalize_doc_to(
+        doc,
+        c14n_mode,
+        node_set.as_ref(),
+        &inclusive_prefixes,
+        &mut sink,
+    )?;
+    Ok(Some((sink.finalize(), resolved_node)))
+}
+
+/// Return canonicalized reference bytes through the fast path.
+///
+/// This is used when debug output is enabled, because the verifier must print
+/// the pre-digest buffer before hashing it. Non-debug verification uses
+/// [`try_fast_reference_digest`] to avoid allocating this buffer.
+fn try_fast_reference_bytes(
+    doc: &Document<'_>,
+    id_map: &HashMap<String, NodeId>,
+    uri: &str,
+    sig_node: NodeId,
+    transforms_node: Option<NodeId>,
+) -> Result<Option<FastReferenceBytes>, Error> {
+    let Some((node_set, resolved_node)) = fast_reference_node_set(doc, id_map, uri)? else {
+        return Ok(None);
+    };
+    let Some(bytes) = try_fast_reference_c14n_bytes(doc, sig_node, node_set, transforms_node)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some((bytes, resolved_node)))
+}
+
+/// Resolve a same-document URI into the node-set shape used by the fast path.
+///
+/// Returns:
+///
+/// - `Ok(None)` for external or unsupported URI forms.
+/// - `Ok(Some((None, None)))` for `#xpointer(/)`, meaning the whole parsed
+///   document is selected and there is no specific resolved element.
+/// - `Ok(Some((Some(node_set), resolved_node)))` for empty URI, bare `#id`, and
+///   `#xpointer(id(...))`.
+///
+/// The returned `resolved_node` is preserved for strict XSW position checks.
+fn fast_reference_node_set(
+    doc: &Document<'_>,
+    id_map: &HashMap<String, NodeId>,
+    uri: &str,
+) -> Result<Option<FastReferenceNodeSet>, Error> {
+    if uri.is_empty() {
+        return Ok(Some((Some(NodeSet::all_without_comments(doc)), None)));
+    }
+
+    let Some(fragment) = xpath::parse_same_document_ref(uri) else {
+        return Ok(None);
+    };
+
+    if fragment == "xpointer(/)" {
+        return Ok(Some((None, None)));
+    }
+
+    // Per W3C: bare `#id` excludes comments, `#xpointer(id('...'))` includes them.
+    let is_xpointer = xpath::parse_xpointer_id(fragment).is_some();
+    let id = xpath::parse_xpointer_id(fragment).unwrap_or(fragment);
+    let resolved_node = xpath::resolve_id(doc, id_map, id)?;
+    let node_set = if is_xpointer {
+        NodeSet::tree_with_comments(resolved_node, doc)
+    } else {
+        NodeSet::tree_without_comments(resolved_node, doc)
+    };
+    Ok(Some((Some(node_set), Some(resolved_node))))
+}
+
+/// Canonicalize a fast-path reference into a byte vector.
+///
+/// This helper keeps debug behavior simple: the same eligibility and transform
+/// handling are used as the streaming fast path, but the result is buffered.
+fn try_fast_reference_c14n_bytes(
+    doc: &Document<'_>,
+    sig_node: NodeId,
+    node_set: Option<NodeSet>,
+    transforms_node: Option<NodeId>,
+) -> Result<Option<Vec<u8>>, Error> {
+    let Some((c14n_mode, inclusive_prefixes, node_set)) =
+        fast_reference_c14n_params(doc, sig_node, node_set, transforms_node)?
+    else {
+        return Ok(None);
+    };
+
+    bergshamra_c14n::canonicalize_doc(doc, c14n_mode, node_set.as_ref(), &inclusive_prefixes)
+        .map(Some)
+}
+
+/// Parse the fast-path transform list and return canonicalization parameters.
+///
+/// The fast path accepts only:
+///
+/// - zero or one enveloped-signature transform before C14N
+/// - zero or one C14N transform
+///
+/// Any unsupported transform, missing algorithm URI, duplicate C14N transform,
+/// or enveloped-signature transform after C14N returns `Ok(None)` so the caller
+/// can fall back to the generic transform pipeline.
+fn fast_reference_c14n_params(
+    doc: &Document<'_>,
+    sig_node: NodeId,
+    mut node_set: Option<NodeSet>,
+    transforms_node: Option<NodeId>,
+) -> Result<Option<FastC14nParams>, Error> {
+    let mut c14n_mode = C14nMode::Inclusive;
+    let mut inclusive_prefixes = Vec::new();
+    let mut saw_c14n = false;
+
+    if let Some(transforms_id) = transforms_node {
+        for transform_node in doc.children(transforms_id) {
+            let is_transform = doc
+                .element(transform_node)
+                .is_some_and(|e| e.name.local_name.as_ref() == ns::node::TRANSFORM);
+            if !is_transform {
+                continue;
+            }
+
+            let Some(transform_uri) = doc
+                .element(transform_node)
+                .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
+            else {
+                return Ok(None);
+            };
+
+            match transform_uri {
+                algorithm::ENVELOPED_SIGNATURE => {
+                    if saw_c14n {
+                        return Ok(None);
+                    }
+                    let node_set = node_set.get_or_insert_with(|| NodeSet::all(doc));
+                    remove_subtree_from_node_set(sig_node, doc, node_set);
+                }
+                algorithm::C14N
+                | algorithm::C14N_WITH_COMMENTS
+                | algorithm::C14N11
+                | algorithm::C14N11_WITH_COMMENTS
+                | algorithm::EXC_C14N
+                | algorithm::EXC_C14N_WITH_COMMENTS => {
+                    if saw_c14n {
+                        return Ok(None);
+                    }
+                    c14n_mode = C14nMode::from_uri(transform_uri).ok_or_else(|| {
+                        Error::UnsupportedAlgorithm(format!("C14N: {transform_uri}"))
+                    })?;
+                    inclusive_prefixes = read_inclusive_prefixes(doc, transform_node);
+                    saw_c14n = true;
+                }
+                _ => return Ok(None),
+            }
+        }
+    }
+
+    Ok(Some((c14n_mode, inclusive_prefixes, node_set)))
+}
+
+/// Remove a node and all descendants from `node_set`.
+///
+/// This implements the enveloped-signature transform for the fast path. It uses
+/// [`NodeSet::remove_id`], so it works with both normal and inverted storage.
+fn remove_subtree_from_node_set(id: NodeId, doc: &Document<'_>, node_set: &mut NodeSet) {
+    node_set.remove_id(id);
+    for child in doc.children(id) {
+        remove_subtree_from_node_set(child, doc, node_set);
+    }
+}
+
+/// Resolve a reference URI into XML node-set data or binary bytes.
+///
+/// Same-document references borrow `xml` in the returned [`ResolvedUri::Xml`]
+/// variant so the generic transform pipeline does not clone large verifier
+/// inputs. External URL-map and file references are read into owned binary
+/// buffers because their bytes are independent of the source document.
+fn resolve_reference_uri<'a>(
     uri: &str,
     doc: &Document<'_>,
     id_map: &HashMap<String, NodeId>,
-    xml: &str,
+    xml: &'a str,
     url_maps: &[(String, String)],
     base_dir: Option<&str>,
-) -> Result<ResolvedUri, Error> {
+) -> Result<ResolvedUri<'a>, Error> {
     if uri.is_empty() {
         // Whole document, per W3C spec section 4.3.3.3:
         // "if the URI is not a full XPointer, then all comment nodes are excluded"
         let ns = NodeSet::all_without_comments(doc);
         Ok(ResolvedUri::Xml {
-            xml_text: xml.to_owned(),
+            xml_text: xml,
             node_set: Some(ns),
             resolved_node: None,
         })
@@ -728,7 +1025,7 @@ fn resolve_reference_uri(
         // Handle xpointer(/) — selects entire document
         if fragment == "xpointer(/)" {
             return Ok(ResolvedUri::Xml {
-                xml_text: xml.to_owned(),
+                xml_text: xml,
                 node_set: None,
                 resolved_node: None,
             });
@@ -744,7 +1041,7 @@ fn resolve_reference_uri(
             NodeSet::tree_without_comments(node, doc)
         };
         Ok(ResolvedUri::Xml {
-            xml_text: xml.to_owned(),
+            xml_text: xml,
             node_set: Some(ns),
             resolved_node: Some(node),
         })
@@ -781,13 +1078,13 @@ fn resolve_reference_uri(
 }
 
 /// Apply a single transform.
-pub(crate) fn apply_transform(
+pub(crate) fn apply_transform<'a>(
     uri: &str,
-    data: bergshamra_transforms::TransformData,
+    data: bergshamra_transforms::TransformData<'a>,
     transform_node: NodeId,
     sig_node: NodeId,
     doc: &Document<'_>,
-) -> Result<bergshamra_transforms::TransformData, Error> {
+) -> Result<bergshamra_transforms::TransformData<'a>, Error> {
     use bergshamra_transforms::pipeline::{C14nTransform, Transform};
 
     match uri {
@@ -828,11 +1125,11 @@ pub(crate) fn apply_transform(
 /// against `<mdssi:RelationshipReference SourceId="...">` children of the
 /// transform element. Selected relationships are sorted by `Id` and wrapped
 /// in a `<Relationships>` root with the OPC relationships namespace.
-fn apply_relationship_transform(
-    data: bergshamra_transforms::TransformData,
+fn apply_relationship_transform<'a>(
+    data: bergshamra_transforms::TransformData<'a>,
     transform_node: NodeId,
     outer_doc: &Document<'_>,
-) -> Result<bergshamra_transforms::TransformData, Error> {
+) -> Result<bergshamra_transforms::TransformData<'a>, Error> {
     const REL_NS: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
     const MDSSI_NS: &str = "http://schemas.openxmlformats.org/package/2006/digital-signature";
 
@@ -861,11 +1158,12 @@ fn apply_relationship_transform(
     let xml_text = match &data {
         bergshamra_transforms::TransformData::Xml { xml_text, .. } => xml_text.clone(),
         bergshamra_transforms::TransformData::Binary(bytes) => String::from_utf8(bytes.clone())
-            .map_err(|e| Error::Transform(format!("Relationship input not UTF-8: {e}")))?,
+            .map_err(|e| Error::Transform(format!("Relationship input not UTF-8: {e}")))?
+            .into(),
     };
 
     // Parse the input XML
-    let doc = uppsala::parse(&xml_text)
+    let doc = uppsala::parse(xml_text.as_ref())
         .map_err(|e| Error::Transform(format!("Relationship XML parse: {e}")))?;
 
     // Collect matching <Relationship> elements
@@ -937,11 +1235,11 @@ fn apply_relationship_transform(
 ///   <xsl:apply-templates select="@*|node()"/></xsl:copy></xsl:template>`)
 ///   — passes input through unchanged.
 /// - Simple template-based transforms for common patterns (player→HTML, etc.)
-fn apply_xslt_transform(
-    data: bergshamra_transforms::TransformData,
+fn apply_xslt_transform<'a>(
+    data: bergshamra_transforms::TransformData<'a>,
     transform_node: NodeId,
     outer_doc: &Document<'_>,
-) -> Result<bergshamra_transforms::TransformData, Error> {
+) -> Result<bergshamra_transforms::TransformData<'a>, Error> {
     const XSL_NS: &str = "http://www.w3.org/1999/XSL/Transform";
 
     // Find the <xsl:stylesheet> child element
@@ -1003,20 +1301,21 @@ fn apply_xslt_transform(
 /// - `<xsl:apply-templates/>` and `<xsl:apply-templates select="..."/>`
 /// - `<xsl:value-of select="..."/>` for simple child element selection
 /// - `<xsl:copy>` with `<xsl:apply-templates/>`
-fn apply_minimal_xslt(
-    data: bergshamra_transforms::TransformData,
+fn apply_minimal_xslt<'a>(
+    data: bergshamra_transforms::TransformData<'a>,
     stylesheet: NodeId,
     templates: &[NodeId],
     outer_doc: &Document<'_>,
-) -> Result<bergshamra_transforms::TransformData, Error> {
+) -> Result<bergshamra_transforms::TransformData<'a>, Error> {
     // Get the input XML
     let xml_text = match &data {
         bergshamra_transforms::TransformData::Xml { xml_text, .. } => xml_text.clone(),
         bergshamra_transforms::TransformData::Binary(bytes) => String::from_utf8(bytes.clone())
-            .map_err(|e| Error::Transform(format!("XSLT input not UTF-8: {e}")))?,
+            .map_err(|e| Error::Transform(format!("XSLT input not UTF-8: {e}")))?
+            .into(),
     };
 
-    let input_doc = uppsala::parse(&xml_text)
+    let input_doc = uppsala::parse(xml_text.as_ref())
         .map_err(|e| Error::Transform(format!("XSLT input XML parse: {e}")))?;
 
     // Check for xsl:strip-space
@@ -1388,12 +1687,12 @@ fn xml_escape_text(s: &str, out: &mut String) {
 /// - `not(expr)` — negation
 /// - `expr and expr` — conjunction
 /// - `self::text()` — true for text nodes
-fn apply_xpath_transform(
-    data: bergshamra_transforms::TransformData,
+fn apply_xpath_transform<'a>(
+    data: bergshamra_transforms::TransformData<'a>,
     transform_node: NodeId,
     sig_node: NodeId,
     outer_doc: &Document<'_>,
-) -> Result<bergshamra_transforms::TransformData, Error> {
+) -> Result<bergshamra_transforms::TransformData<'a>, Error> {
     // Extract the XPath expression from the <XPath> child element
     let xpath_node = outer_doc
         .children(transform_node)
@@ -1461,13 +1760,13 @@ fn apply_xpath_transform(
 ///       → true when node is NOT within the here() Reference
 ///   C = count(ancestor-or-self::node() | id('X')) = count(ancestor-or-self::node())
 ///       → true when node IS a descendant-or-self of id('X')
-fn try_compound_xpath_filter(
+fn try_compound_xpath_filter<'a>(
     expr: &str,
     xpath_node: NodeId,
     outer_doc: &Document<'_>,
-    data: bergshamra_transforms::TransformData,
+    data: bergshamra_transforms::TransformData<'a>,
     _sig_node: NodeId,
-) -> Result<Option<bergshamra_transforms::TransformData>, Error> {
+) -> Result<Option<bergshamra_transforms::TransformData<'a>>, Error> {
     use bergshamra_xml::nodeset::{NodeSet, NodeSetType};
     use std::collections::HashSet;
 
@@ -1521,11 +1820,12 @@ fn try_compound_xpath_filter(
         bergshamra_transforms::TransformData::Binary(bytes) => {
             let text = String::from_utf8(bytes)
                 .map_err(|e| Error::XmlParse(format!("XPath: invalid UTF-8: {e}")))?;
-            (text, None)
+            (text.into(), None)
         }
     };
 
-    let inner_doc = uppsala::parse(&xml_text).map_err(|e| Error::XmlParse(e.to_string()))?;
+    let inner_doc =
+        uppsala::parse(xml_text.as_ref()).map_err(|e| Error::XmlParse(e.to_string()))?;
 
     // Find the here() Reference/element: here() returns the <XPath> element itself.
     // Walk up from xpath_node (which IS the <XPath> element) to find its ancestor
@@ -2211,10 +2511,10 @@ fn collect_inscope_namespaces_raw(
 }
 
 /// Apply a parsed XPath boolean expression as a node filter.
-fn apply_parsed_xpath_filter(
-    data: bergshamra_transforms::TransformData,
+fn apply_parsed_xpath_filter<'a>(
+    data: bergshamra_transforms::TransformData<'a>,
     expr: &XPathBoolExpr,
-) -> Result<bergshamra_transforms::TransformData, Error> {
+) -> Result<bergshamra_transforms::TransformData<'a>, Error> {
     use bergshamra_xml::nodeset::{NodeSet, NodeSetType};
     use std::collections::HashSet;
 
@@ -2227,11 +2527,11 @@ fn apply_parsed_xpath_filter(
         bergshamra_transforms::TransformData::Binary(bytes) => {
             let text = String::from_utf8(bytes)
                 .map_err(|e| Error::XmlParse(format!("XPath transform: invalid UTF-8: {e}")))?;
-            (text, None)
+            (text.into(), None)
         }
     };
 
-    let doc = uppsala::parse(&xml_text).map_err(|e| Error::XmlParse(e.to_string()))?;
+    let doc = uppsala::parse(xml_text.as_ref()).map_err(|e| Error::XmlParse(e.to_string()))?;
 
     // Filter: include only nodes for which the expression evaluates to true
     let mut result_ids = HashSet::new();
@@ -2380,16 +2680,17 @@ fn is_enveloped_xpath_here(expr: &str, xpath_node: NodeId, doc: &Document<'_>) -
 /// 3. Output O = I ∩ F (input node-set intersected with filter node-set)
 ///
 /// An empty input node-set always produces an empty output node-set.
-fn apply_xpath_filter2_transform(
-    data: bergshamra_transforms::TransformData,
+fn apply_xpath_filter2_transform<'a>(
+    data: bergshamra_transforms::TransformData<'a>,
     transform_node: NodeId,
     outer_doc: &Document<'_>,
-) -> Result<bergshamra_transforms::TransformData, Error> {
+) -> Result<bergshamra_transforms::TransformData<'a>, Error> {
     use bergshamra_xml::nodeset::NodeSet;
 
     match data {
         bergshamra_transforms::TransformData::Xml { xml_text, node_set } => {
-            let doc = uppsala::parse(&xml_text).map_err(|e| Error::XmlParse(e.to_string()))?;
+            let doc =
+                uppsala::parse(xml_text.as_ref()).map_err(|e| Error::XmlParse(e.to_string()))?;
 
             // I = input node-set (from previous transform or URI resolution)
             let input_ns = node_set.unwrap_or_else(|| NodeSet::all(&doc));
@@ -2823,11 +3124,11 @@ fn collect_subtree_ids(
 ///
 /// Extracts `xpointer(id('...'))` from the `<XPointer>` child element
 /// and selects the subtree rooted at the element with the given ID.
-fn apply_xpointer_transform(
-    data: bergshamra_transforms::TransformData,
+fn apply_xpointer_transform<'a>(
+    data: bergshamra_transforms::TransformData<'a>,
     transform_node: NodeId,
     outer_doc: &Document<'_>,
-) -> Result<bergshamra_transforms::TransformData, Error> {
+) -> Result<bergshamra_transforms::TransformData<'a>, Error> {
     use bergshamra_xml::nodeset::NodeSet;
     use bergshamra_xml::xpath;
 
@@ -2854,7 +3155,7 @@ fn apply_xpointer_transform(
     match data {
         bergshamra_transforms::TransformData::Xml { xml_text, node_set } => {
             let inner_doc =
-                uppsala::parse(&xml_text).map_err(|e| Error::XmlParse(e.to_string()))?;
+                uppsala::parse(xml_text.as_ref()).map_err(|e| Error::XmlParse(e.to_string()))?;
 
             // Build ID map
             let id_map = build_id_map(&inner_doc, &["Id", "ID", "id", "AssertionID"])?;
