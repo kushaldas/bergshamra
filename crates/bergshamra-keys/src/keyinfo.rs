@@ -834,7 +834,7 @@ mod tests {
 
     /// A single hex digit is still an odd-length CryptoBinary value.
     ///
-    /// This keeps diagnostics consistent for all-hex odd lengths, including
+    /// This keeps diagnostics consistent for all all-hex odd lengths, including
     /// the length-one case that never reaches byte-pair decoding.
     #[test]
     fn test_decode_crypto_binary_rejects_single_hex_digit_as_odd_length() {

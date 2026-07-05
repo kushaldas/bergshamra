@@ -11,13 +11,22 @@ pub struct DsigContext {
     pub keys_manager: KeysManager,
     /// Additional ID attribute names to register.
     pub id_attrs: Vec<String>,
-    /// URL-to-file mappings for external URI resolution.
+    /// Explicit URL-to-file mappings for external URI resolution.
+    ///
+    /// Prefer these mappings for detached `<Reference>` bytes when the URI is
+    /// not a simple document-relative file. Verification rejects absolute paths
+    /// and parent-directory traversal, and redacts detached bytes from raw
+    /// debug output.
     pub url_maps: Vec<(String, String)>,
     /// Minimum HMAC output length in bits (0 = use spec default).
     pub hmac_min_out_len: usize,
     /// Debug mode: print pre-digest and pre-signature data to stderr.
     pub debug: bool,
-    /// Base directory for resolving relative external URI references.
+    /// Base directory for signing-time relative references, verifier
+    /// document-relative references, and retrieval-method key resolution.
+    ///
+    /// This is not an unrestricted filesystem root: verifier `<Reference>`
+    /// resolution rejects absolute paths and `..` traversal.
     pub base_dir: Option<String>,
     /// Insecure mode: skip all certificate validation.
     pub insecure: bool,
@@ -153,6 +162,9 @@ impl DsigContext {
     }
 
     /// Map an external URI to a local file path.
+    ///
+    /// Use this for detached `<Reference>` values that are external URIs or
+    /// require a path outside the document-adjacent relative-file policy.
     pub fn add_url_map(&mut self, url: &str, file_path: &str) {
         self.url_maps.push((url.to_owned(), file_path.to_owned()));
     }
@@ -221,7 +233,11 @@ impl DsigContext {
         self
     }
 
-    /// Set base directory for resolving relative URIs (builder style).
+    /// Set base directory for signing-time relative URIs, verifier
+    /// document-relative URIs, and key retrieval.
+    ///
+    /// Verifier `<Reference>` resolution only accepts simple relative paths
+    /// under this directory; absolute paths and parent traversal are rejected.
     pub fn with_base_dir(mut self, dir: impl Into<String>) -> Self {
         self.base_dir = Some(dir.into());
         self

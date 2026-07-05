@@ -124,9 +124,8 @@ impl VerifyResult {
 /// Return the reference-coverage policy failure for an otherwise valid signature.
 ///
 /// `SignatureValue` authenticates `<SignedInfo>`, but payload integrity depends
-/// on locally verifying at least one `<Reference>` digest and not skipping any
-/// listed `<Reference>` digest. This helper keeps the software and HSM verifier
-/// paths on the same fail-closed policy.
+/// on locally verifying at least one `<Reference>` digest. This helper keeps the
+/// software and HSM verifier paths on the same fail-closed policy.
 fn reference_digest_policy_failure(
     ctx: &DsigContext,
     references: &[VerifiedReference],
@@ -704,14 +703,14 @@ fn verify_reference(
         }
     }
 
-    let (bytes, resolved_node) = if let Some((bytes, resolved_node)) =
+    let (bytes, resolved_node, debug_pre_digest_bytes) = if let Some((bytes, resolved_node)) =
         try_fast_reference_bytes(doc, id_map, uri, sig_node, transforms_node)?
     {
-        (bytes, resolved_node)
+        (bytes, resolved_node, true)
     } else {
         // Resolve URI and get initial data for the generic transform pipeline.
         let resolved = resolve_reference_uri(uri, doc, id_map, xml, url_maps, base_dir)?;
-        let (mut data, resolved_node) = match resolved {
+        let (mut data, resolved_node, debug_pre_digest_bytes) = match resolved {
             ResolvedUri::Xml {
                 xml_text,
                 node_set,
@@ -719,10 +718,16 @@ fn verify_reference(
             } => (
                 bergshamra_transforms::TransformData::xml_borrowed(xml_text, node_set),
                 resolved_node,
+                true,
             ),
-            ResolvedUri::Binary(bytes) => {
-                (bergshamra_transforms::TransformData::Binary(bytes), None)
-            }
+            ResolvedUri::Binary {
+                bytes,
+                debug_pre_digest_bytes,
+            } => (
+                bergshamra_transforms::TransformData::Binary(bytes),
+                None,
+                debug_pre_digest_bytes,
+            ),
         };
 
         if let Some(transforms) = transforms_node {
@@ -742,7 +747,7 @@ fn verify_reference(
             }
         }
 
-        (data.to_binary()?, resolved_node)
+        (data.to_binary()?, resolved_node, debug_pre_digest_bytes)
     };
 
     let vref = VerifiedReference {
@@ -753,7 +758,11 @@ fn verify_reference(
 
     if debug {
         eprintln!("== PreDigest data - start buffer (URI={uri}):");
-        eprint!("{}", String::from_utf8_lossy(&bytes));
+        if debug_pre_digest_bytes {
+            eprint!("{}", String::from_utf8_lossy(&bytes));
+        } else {
+            eprintln!("[external reference bytes redacted: {} bytes]", bytes.len());
+        }
         eprintln!("\n== PreDigest data - end buffer");
     }
 
@@ -780,7 +789,13 @@ enum ResolvedUri<'a> {
         resolved_node: Option<NodeId>,
     },
     /// External or mapped URI bytes.
-    Binary(Vec<u8>),
+    Binary {
+        /// Detached bytes read from a caller-mapped or local relative source.
+        bytes: Vec<u8>,
+        /// Whether verifier debug output may print the bytes before the outer
+        /// signature is known to be valid.
+        debug_pre_digest_bytes: bool,
+    },
 }
 
 /// Compare a computed reference digest with the expected digest and return the
@@ -1042,8 +1057,9 @@ fn remove_subtree_from_node_set(id: NodeId, doc: &Document<'_>, node_set: &mut N
 ///
 /// Same-document references borrow `xml` in the returned [`ResolvedUri::Xml`]
 /// variant so the generic transform pipeline does not clone large verifier
-/// inputs. External URL-map and file references are read into owned binary
-/// buffers because their bytes are independent of the source document.
+/// inputs. Detached binary references are read only from explicit URL maps or
+/// simple relative paths, and are marked unsafe for raw pre-digest debug
+/// logging so an invalid signature cannot disclose those local bytes.
 fn resolve_reference_uri<'a>(
     uri: &str,
     doc: &Document<'_>,
@@ -1091,30 +1107,87 @@ fn resolve_reference_uri<'a>(
             if uri == map_url || uri.starts_with(map_url) {
                 let data = std::fs::read(file_path)
                     .map_err(|e| Error::Other(format!("url-map {file_path}: {e}")))?;
-                return Ok(ResolvedUri::Binary(data));
+                return Ok(ResolvedUri::Binary {
+                    bytes: data,
+                    debug_pre_digest_bytes: false,
+                });
             }
         }
-        // Try resolving as a relative file path (no scheme = local file)
-        if !uri.contains("://") {
-            if let Some(base) = base_dir {
-                let path = std::path::Path::new(base).join(uri);
-                if path.exists() {
-                    let data = std::fs::read(&path)
-                        .map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
-                    return Ok(ResolvedUri::Binary(data));
-                }
-            }
-            // Try relative to CWD
-            let path = std::path::Path::new(uri);
-            if path.exists() {
-                let data = std::fs::read(path).map_err(|e| Error::Other(format!("{uri}: {e}")))?;
-                return Ok(ResolvedUri::Binary(data));
-            }
+
+        if let Some(data) = read_relative_reference_uri(uri, base_dir)? {
+            return Ok(ResolvedUri::Binary {
+                bytes: data,
+                debug_pre_digest_bytes: false,
+            });
         }
+
         Err(Error::InvalidUri(format!(
             "external URI not supported: {uri}"
         )))
     }
+}
+
+/// Read a local detached `<Reference>` URI when it is a simple relative path.
+///
+/// XML Signature interop suites use document-adjacent detached files such as
+/// `document.xml`, so Bergshamra keeps that compatibility. Absolute paths and
+/// parent-directory traversal are rejected before any filesystem read, and the
+/// caller treats returned bytes as unsafe for raw debug logging.
+fn read_relative_reference_uri(
+    uri: &str,
+    base_dir: Option<&str>,
+) -> Result<Option<Vec<u8>>, Error> {
+    if uri_has_scheme(uri) {
+        return Ok(None);
+    }
+
+    let path = std::path::Path::new(uri);
+    if path.is_absolute() {
+        return Err(Error::InvalidUri(format!(
+            "absolute local file Reference URI not allowed: {uri}"
+        )));
+    }
+    if path.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        return Err(Error::InvalidUri(format!(
+            "parent-directory Reference URI not allowed: {uri}"
+        )));
+    }
+
+    if let Some(base) = base_dir {
+        let full = std::path::Path::new(base).join(path);
+        if full.exists() {
+            let data = std::fs::read(&full)
+                .map_err(|e| Error::Other(format!("{}: {e}", full.display())))?;
+            return Ok(Some(data));
+        }
+    }
+
+    if path.exists() {
+        let data = std::fs::read(path).map_err(|e| Error::Other(format!("{uri}: {e}")))?;
+        return Ok(Some(data));
+    }
+
+    Ok(None)
+}
+
+/// Return whether `uri` begins with an RFC-style scheme name.
+///
+/// This keeps `urn:...` and `http:...` out of the local-file fallback even
+/// though they do not necessarily contain `://`.
+fn uri_has_scheme(uri: &str) -> bool {
+    let Some((scheme, _)) = uri.split_once(':') else {
+        return false;
+    };
+    let mut chars = scheme.chars();
+    matches!(chars.next(), Some(first) if first.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
 }
 
 /// Apply a single transform.
@@ -3899,6 +3972,59 @@ fn extract_ec_key_from_spki(
 mod tests {
     use super::*;
 
+    /// Runtime-owned file used by resolver tests.
+    ///
+    /// The resolver behavior depends on whether a path exists, so tests create
+    /// a real file and remove it automatically when the test finishes.
+    struct TestFile {
+        path: std::path::PathBuf,
+    }
+
+    impl TestFile {
+        /// Create a unique temporary file with `contents`.
+        fn new(contents: &[u8]) -> Self {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock must be after unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "bergshamra-dsig-reference-{pid}-{nonce}.bin",
+                pid = std::process::id()
+            ));
+            std::fs::write(&path, contents).expect("temporary resolver fixture must be writable");
+            Self { path }
+        }
+
+        /// Return the temporary path as UTF-8 for URI test inputs.
+        fn as_str(&self) -> &str {
+            self.path
+                .to_str()
+                .expect("temporary resolver path must be valid UTF-8")
+        }
+
+        /// Return the parent directory as UTF-8 for `base_dir` tests.
+        fn parent_str(&self) -> &str {
+            self.path
+                .parent()
+                .and_then(std::path::Path::to_str)
+                .expect("temporary resolver parent must be valid UTF-8")
+        }
+
+        /// Return only the file name as UTF-8 for relative URI tests.
+        fn file_name_str(&self) -> &str {
+            self.path
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .expect("temporary resolver filename must be valid UTF-8")
+        }
+    }
+
+    impl Drop for TestFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
     /// Build a key manager containing one HMAC key for compact signing tests.
     ///
     /// HMAC keeps the no-reference regression self-contained: the generated
@@ -4103,6 +4229,127 @@ mod tests {
             "non-cid reference should be processed normally, digest mismatch expected"
         );
         assert!(vref.digest_verified);
+    }
+
+    #[test]
+    fn resolve_reference_uri_rejects_absolute_local_file_reference() {
+        // Absolute paths in a signed document are attacker-controlled input.
+        // Verification must reject them before reading the file; otherwise an
+        // invalid signature could select and disclose arbitrary local bytes.
+        let secret = "scan-local secret bytes";
+        let local_file = TestFile::new(secret.as_bytes());
+        let xml = r#"<Root Id="body"><Data>ok</Data></Root>"#;
+        let doc = uppsala::parse(xml).expect("parse");
+        let id_map = HashMap::new();
+
+        let message = match resolve_reference_uri(
+            local_file.as_str(),
+            &doc,
+            &id_map,
+            xml,
+            &[],
+            Some(local_file.parent_str()),
+        ) {
+            Err(Error::InvalidUri(message)) => message,
+            Err(err) => panic!("expected InvalidUri for absolute local path, got {err:?}"),
+            Ok(_) => panic!("absolute local path must not resolve to bytes"),
+        };
+
+        assert!(
+            message.contains("absolute local file"),
+            "error must identify the blocked local path policy"
+        );
+        assert!(
+            !message.contains(secret),
+            "error reporting must not include local file contents"
+        );
+    }
+
+    #[test]
+    fn resolve_reference_uri_rejects_parent_directory_local_file_reference() {
+        // Simple relative detached files are allowed for XML-DSig
+        // compatibility, but `..` would let untrusted XML escape the intended
+        // document-adjacent directory.
+        let xml = r#"<Root Id="body"><Data>ok</Data></Root>"#;
+        let doc = uppsala::parse(xml).expect("parse");
+        let id_map = HashMap::new();
+
+        let message =
+            match resolve_reference_uri("../secret.txt", &doc, &id_map, xml, &[], Some("/tmp")) {
+                Err(Error::InvalidUri(message)) => message,
+                Err(err) => {
+                    panic!("expected InvalidUri for parent-directory reference, got {err:?}")
+                }
+                Ok(_) => panic!("parent-directory reference must not resolve to bytes"),
+            };
+
+        assert!(
+            message.contains("parent-directory"),
+            "error must identify the blocked traversal policy"
+        );
+    }
+
+    #[test]
+    fn resolve_reference_uri_reads_document_relative_file_without_debug_dump() {
+        // XML-DSig compatibility suites use detached files beside the signed
+        // document. These bytes can be hashed, but they must remain redacted
+        // from pre-digest debug output until the outer signature is trusted.
+        let mapped_bytes = b"document relative bytes";
+        let local_file = TestFile::new(mapped_bytes);
+        let xml = r#"<Root Id="body"><Data>ok</Data></Root>"#;
+        let doc = uppsala::parse(xml).expect("parse");
+        let id_map = HashMap::new();
+
+        match resolve_reference_uri(
+            local_file.file_name_str(),
+            &doc,
+            &id_map,
+            xml,
+            &[],
+            Some(local_file.parent_str()),
+        ) {
+            Ok(ResolvedUri::Binary {
+                bytes,
+                debug_pre_digest_bytes,
+            }) => {
+                assert_eq!(bytes, mapped_bytes);
+                assert!(
+                    !debug_pre_digest_bytes,
+                    "detached local bytes must be redacted in verifier debug output"
+                );
+            }
+            Ok(ResolvedUri::Xml { .. }) => panic!("local file must resolve to detached bytes"),
+            Err(err) => panic!("document-relative file should resolve, got {err:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_reference_uri_reads_explicit_url_map() {
+        // Explicit URL maps are the supported detached-content path: callers
+        // decide which URI may read which file before untrusted XML is
+        // verified.
+        let mapped_bytes = b"mapped external bytes";
+        let mapped_file = TestFile::new(mapped_bytes);
+        let xml = r#"<Root Id="body"><Data>ok</Data></Root>"#;
+        let doc = uppsala::parse(xml).expect("parse");
+        let id_map = HashMap::new();
+        let uri = "urn:bergshamra:test-resource";
+        let url_maps = vec![(uri.to_owned(), mapped_file.as_str().to_owned())];
+
+        match resolve_reference_uri(uri, &doc, &id_map, xml, &url_maps, None) {
+            Ok(ResolvedUri::Binary {
+                bytes,
+                debug_pre_digest_bytes,
+            }) => {
+                assert_eq!(bytes, mapped_bytes);
+                assert!(
+                    !debug_pre_digest_bytes,
+                    "detached mapped bytes must be redacted in verifier debug output"
+                );
+            }
+            Ok(ResolvedUri::Xml { .. }) => panic!("url-map must resolve to detached bytes"),
+            Err(err) => panic!("explicit url-map should resolve, got {err:?}"),
+        }
     }
 
     fn verified_reference(digest_verified: bool) -> VerifiedReference {

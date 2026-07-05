@@ -10,6 +10,7 @@
 - Malformed RSA `KeyValue` CryptoBinary values now return parse errors instead of panicking on odd-length hex input.
 - XML-DSig verification now requires local `<Reference>` digest coverage by default. `DsigContext::require_reference_digests` defaults to `true`; callers that verify detached content out-of-band can opt out with `with_require_reference_digests(false)`. The CLI adds `verify --allow-missing-reference-digests` for the same compatibility case.
 - API note: this release adds `DsigContext::require_reference_digests`; downstream code constructing `DsigContext { .. }` must set the new field (or switch to `DsigContext::new()`/builder methods).
+- XML-DSig verification now rejects absolute and parent-traversing local `<Reference URI>` values, and verifier debug output redacts detached reference bytes. Simple relative detached files remain supported for XML-DSig compatibility; use `DsigContext::add_url_map()` or CLI `--url-map URL=FILE` for explicit external URI mappings.
 
 ### Added
 
