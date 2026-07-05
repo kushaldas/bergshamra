@@ -168,9 +168,19 @@ A successful verification returns `VerifyResult::Valid` which carries:
 When `digest_verified` is `false`, the reference is currently a `cid:`
 attachment reference: its URI, transforms, and declared digest are still
 integrity-protected by the signed `<SignedInfo>`, but Bergshamra did not hash
-the external attachment bytes. Library consumers that require complete local
-digest coverage should use `VerifyResult::all_reference_digests_verified()` or
-`VerifyResult::has_unverified_references()`.
+the external attachment bytes. When local digest coverage is explicitly disabled
+for detached-content workflows, use
+`VerifyResult::all_reference_digests_verified()` or
+`VerifyResult::has_unverified_references()` to check whether any or all
+reference digests were verified locally. Inspect the `references` list when you
+need per-reference detail.
+
+By default, verification requires local digest coverage: an otherwise valid
+`SignatureValue` is reported invalid when `<SignedInfo>` has no `<Reference>`
+elements or when any reference digest was not computed locally. Detached-content
+profiles that verify attachment bytes out-of-band can opt out with
+`DsigContext::with_require_reference_digests(false)` or the CLI flag
+`--allow-missing-reference-digests`.
 
 You should always check that the signature covers the element you intend to
 consume. For example, a SAML Service Provider should verify that one of the

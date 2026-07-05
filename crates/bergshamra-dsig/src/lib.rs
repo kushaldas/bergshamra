@@ -39,10 +39,18 @@
 //! If `digest_verified` is `false`, the reference is currently a `cid:`
 //! attachment reference: its URI, transforms, and declared digest are
 //! integrity-protected by the signed `<SignedInfo>`, but the external
-//! attachment bytes were not hashed by Bergshamra. Use
+//! attachment bytes were not hashed by Bergshamra. When local digest coverage is
+//! explicitly disabled for detached-content workflows, use
 //! [`VerifyResult::all_reference_digests_verified`] or
-//! [`VerifyResult::has_unverified_references`] when your application requires
-//! complete local digest coverage.
+//! [`VerifyResult::has_unverified_references`] to check whether any or all
+//! reference digests were verified locally. Match on [`VerifyResult::Valid`] and inspect
+//! `references` when you need per-reference detail.
+//!
+//! By default, verification requires local digest coverage: an otherwise valid
+//! `SignatureValue` is reported invalid when `<SignedInfo>` has no
+//! `<Reference>` elements or when any reference digest was not computed locally.
+//! Detached-content profiles that validate attachment bytes out-of-band can opt
+//! out by calling [`DsigContext::with_require_reference_digests`] with `false`.
 //!
 //! **You should always check that the signature covers the element you intend
 //! to consume.** For example, a SAML Service Provider should verify that one
@@ -102,9 +110,13 @@
 //!   ancestors, siblings, or the document element (XSW protection).
 //! - **`hmac_min_out_len = 160`** — enforces a minimum HMAC output length of
 //!   160 bits to prevent truncation attacks (CVE-2009-0217).
+//! - **`require_reference_digests = true`** — requires at least one
+//!   `<Reference>` and requires every `<Reference>` digest to be locally
+//!   verified before returning [`VerifyResult::Valid`].
 //!
-//! Use [`DsigContext::new_permissive()`] for W3C XML-DSig standard behavior
-//! (e.g., self-contained signatures with inline keys).
+//! Use [`DsigContext::new_permissive()`] when you need inline-key and relaxed
+//! structural behavior for self-contained signatures. It still requires local
+//! reference-digest coverage unless you explicitly disable that policy.
 //!
 //! ## Recommended Configuration for SAML
 //!

@@ -39,6 +39,14 @@ pub struct DsigContext {
     /// XML Signature Wrapping (XSW) attacks where signed content is moved to an
     /// unexpected position in the document.
     pub strict_verification: bool,
+    /// When true, a valid `SignatureValue` is still reported invalid unless at
+    /// least one `Reference` digest was computed locally and every reference
+    /// digest was locally verified.
+    ///
+    /// Disable this only for detached-content profiles, such as WS-Security
+    /// `cid:` attachments, after the caller verifies those external bytes
+    /// out-of-band.
+    pub require_reference_digests: bool,
     /// Optional HSM-backed signer. When set, bypasses KeysManager for signing.
     pub hsm_signer: Option<Box<dyn Signer>>,
     /// Optional HSM-backed verifier. When set, bypasses KeysManager for verification.
@@ -67,6 +75,7 @@ impl std::fmt::Debug for DsigContext {
             .field("enabled_key_data_x509", &self.enabled_key_data_x509)
             .field("trusted_keys_only", &self.trusted_keys_only)
             .field("strict_verification", &self.strict_verification)
+            .field("require_reference_digests", &self.require_reference_digests)
             .field(
                 "hsm_signer",
                 &self.hsm_signer.as_ref().map(|_| "<hsm_signer>"),
@@ -90,9 +99,12 @@ impl DsigContext {
     ///   (XSW protection).
     /// - **`hmac_min_out_len = 160`** — enforce minimum HMAC output length of 160 bits
     ///   to prevent truncation attacks (CVE-2009-0217).
+    /// - **`require_reference_digests = true`** — require the signed
+    ///   `<SignedInfo>` to contain at least one `<Reference>` and require every
+    ///   `<Reference>` digest to be verified locally.
     ///
-    /// Use [`new_permissive()`](Self::new_permissive) if you need the W3C XML-DSig
-    /// default behavior (e.g., self-contained signatures with inline keys).
+    /// Use [`new_permissive()`](Self::new_permissive) if you need inline-key and
+    /// relaxed structural behavior for self-contained signatures.
     pub fn new(keys_manager: KeysManager) -> Self {
         Self {
             trusted_keys_only: true,
@@ -102,12 +114,15 @@ impl DsigContext {
         }
     }
 
-    /// Create a DSig context with permissive defaults (W3C XML-DSig standard behavior).
+    /// Create a DSig context with permissive key and structure defaults.
     ///
     /// This accepts inline keys from `<KeyInfo>`, does not enforce reference positions,
-    /// and does not enforce a minimum HMAC output length. Suitable for document signing
-    /// with self-contained signatures, or when the caller overrides all security-relevant
-    /// fields explicitly.
+    /// and does not enforce a minimum HMAC output length. It still requires local
+    /// reference-digest coverage by default so a valid `SignatureValue` cannot be
+    /// confused for payload integrity when no XML bytes were digested.
+    ///
+    /// Suitable for document signing with self-contained signatures, or when the
+    /// caller overrides all security-relevant fields explicitly.
     ///
     /// **For SAML, WS-Security, or any protocol with pre-established key trust, use
     /// [`new()`](Self::new) instead.**
@@ -126,6 +141,7 @@ impl DsigContext {
             enabled_key_data_x509: false,
             trusted_keys_only: false,
             strict_verification: false,
+            require_reference_digests: true,
             hsm_signer: None,
             hsm_verifier: None,
         }
@@ -186,6 +202,16 @@ impl DsigContext {
     /// Set strict verification (builder style).
     pub fn with_strict_verification(mut self, strict: bool) -> Self {
         self.strict_verification = strict;
+        self
+    }
+
+    /// Set whether verification requires local reference-digest coverage.
+    ///
+    /// Keep this enabled for ordinary XML signature verification. Set it to
+    /// `false` only when the caller has a separate policy for validating
+    /// detached content, such as `cid:` attachment bytes.
+    pub fn with_require_reference_digests(mut self, require: bool) -> Self {
+        self.require_reference_digests = require;
         self
     }
 
