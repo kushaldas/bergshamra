@@ -133,7 +133,11 @@ fn reference_digest_policy_failure(
     if !ctx.require_reference_digests {
         return None;
     }
-    if references.is_empty() {
+    if references.is_empty()
+        || references
+            .iter()
+            .all(|reference| !reference.digest_verified)
+    {
         return Some("no Reference digests were verified locally");
     }
     if references
@@ -4160,6 +4164,35 @@ mod tests {
 
         assert!(!result.all_reference_digests_verified());
         assert!(!result.has_unverified_references());
+    }
+
+    /// A signature with references but no locally verified digests should use
+    /// the same policy reason as a zero-reference signature.
+    ///
+    /// This covers detached-only cases such as all-`cid:` references, where the
+    /// reference list is non-empty but every digest is still out-of-band.
+    #[test]
+    fn reference_digest_policy_reports_no_digests_when_all_references_are_unverified() {
+        let ctx = DsigContext::new_permissive(bergshamra_keys::KeysManager::new());
+        let references = vec![verified_reference(false), verified_reference(false)];
+
+        assert_eq!(
+            reference_digest_policy_failure(&ctx, &references),
+            Some("no Reference digests were verified locally")
+        );
+    }
+
+    /// Mixed local and skipped references should report that only some digests
+    /// were missing.
+    #[test]
+    fn reference_digest_policy_reports_some_missing_digests_for_mixed_references() {
+        let ctx = DsigContext::new_permissive(bergshamra_keys::KeysManager::new());
+        let references = vec![verified_reference(true), verified_reference(false)];
+
+        assert_eq!(
+            reference_digest_policy_failure(&ctx, &references),
+            Some("one or more Reference digests were not verified locally")
+        );
     }
 
     /// A valid `SignatureValue` with no `Reference` digests is invalid by default.

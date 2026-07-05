@@ -25,9 +25,10 @@ fn decode_crypto_binary(text: &str, engine: &impl base64::Engine) -> Result<Vec<
     }
 
     // If base64 fails, try hex decoding (some test vectors use hex).
-    // XML CryptoBinary hex requires complete byte pairs; reject odd lengths
-    // before chunking so malformed KeyInfo stays a recoverable parse error.
-    if clean.len() >= 2 && clean.chars().all(|c| c.is_ascii_hexdigit()) {
+    // XML CryptoBinary hex requires complete byte pairs; reject odd lengths,
+    // including a single hex digit, before chunking so malformed KeyInfo stays
+    // a recoverable parse error.
+    if clean.chars().all(|c| c.is_ascii_hexdigit()) {
         if clean.len() % 2 != 0 {
             return Err("odd-length hex CryptoBinary value".into());
         }
@@ -829,6 +830,21 @@ mod tests {
                     .is_some_and(|e| &*e.name.local_name == ns::node::KEY_VALUE)
             })
             .expect("KeyValue element present")
+    }
+
+    /// A single hex digit is still an odd-length CryptoBinary value.
+    ///
+    /// This keeps diagnostics consistent for all all-hex odd lengths, including
+    /// the length-one case that never reaches byte-pair decoding.
+    #[test]
+    fn test_decode_crypto_binary_rejects_single_hex_digit_as_odd_length() {
+        let engine = base64::engine::general_purpose::STANDARD;
+        let err = decode_crypto_binary("a", &engine).expect_err("single hex digit must fail");
+
+        assert!(
+            err.contains("odd-length hex"),
+            "single hex digit should be reported as odd-length hex: {err}"
+        );
     }
 
     /// Odd-length hex in an RSA modulus must be a recoverable parse error.
