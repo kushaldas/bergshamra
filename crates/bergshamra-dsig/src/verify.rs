@@ -124,8 +124,9 @@ impl VerifyResult {
 /// Return the reference-coverage policy failure for an otherwise valid signature.
 ///
 /// `SignatureValue` authenticates `<SignedInfo>`, but payload integrity depends
-/// on locally verifying at least one `<Reference>` digest. This helper keeps the
-/// software and HSM verifier paths on the same fail-closed policy.
+/// on a non-empty `<Reference>` list and every listed digest being verified
+/// locally. This helper keeps the software and HSM verifier paths on the same
+/// fail-closed policy.
 fn reference_digest_policy_failure(
     ctx: &DsigContext,
     references: &[VerifiedReference],
@@ -3983,16 +3984,37 @@ mod tests {
     impl TestFile {
         /// Create a unique temporary file with `contents`.
         fn new(contents: &[u8]) -> Self {
-            let nonce = std::time::SystemTime::now()
+            let base_nonce = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("system clock must be after unix epoch")
                 .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "bergshamra-dsig-reference-{pid}-{nonce}.bin",
-                pid = std::process::id()
-            ));
-            std::fs::write(&path, contents).expect("temporary resolver fixture must be writable");
-            Self { path }
+            for attempt in 0..100_u32 {
+                let path = std::env::temp_dir().join(format!(
+                    "bergshamra-dsig-reference-{pid}-{base_nonce}-{attempt}.bin",
+                    pid = std::process::id()
+                ));
+                match std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                {
+                    Ok(mut file) => {
+                        use std::io::Write;
+                        file.write_all(contents)
+                            .expect("temporary resolver fixture must be writable");
+                        return Self { path };
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(err) => {
+                        panic!(
+                            "temporary resolver fixture {} must be creatable: {err}",
+                            path.display()
+                        );
+                    }
+                }
+            }
+
+            panic!("temporary resolver fixture path must be unique after retries");
         }
 
         /// Return the temporary path as UTF-8 for URI test inputs.

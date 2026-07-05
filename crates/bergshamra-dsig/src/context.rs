@@ -236,8 +236,9 @@ impl DsigContext {
     /// Set base directory for signing-time relative URIs, verifier
     /// document-relative URIs, and key retrieval.
     ///
-    /// Verifier `<Reference>` resolution only accepts simple relative paths
-    /// under this directory; absolute paths and parent traversal are rejected.
+    /// Verifier `<Reference>` resolution tries simple relative paths under this
+    /// directory first, then the current working directory; absolute paths and
+    /// parent traversal are rejected.
     pub fn with_base_dir(mut self, dir: impl Into<String>) -> Self {
         self.base_dir = Some(dir.into());
         self

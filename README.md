@@ -171,8 +171,9 @@ integrity-protected by the signed `<SignedInfo>`, but Bergshamra did not hash
 the external attachment bytes. When local digest coverage is explicitly disabled
 for detached-content workflows, use
 `VerifyResult::all_reference_digests_verified()` or
-`VerifyResult::has_unverified_references()` to inspect which references were not
-verified locally.
+`VerifyResult::has_unverified_references()` to check whether all reference
+digests were verified locally or whether any were not. Inspect the `references`
+list when you need per-reference detail.
 
 By default, verification requires local digest coverage: an otherwise valid
 `SignatureValue` is reported invalid when `<SignedInfo>` has no `<Reference>`
