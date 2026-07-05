@@ -3,6 +3,11 @@
 
 ## 0.7.0 [2026-07-05]
 
+### Security
+
+- XML Encryption PBKDF2 parameters now enforce a configurable iteration-count cap before invoking PBKDF2. `EncContext` defaults to `DEFAULT_MAX_PBKDF2_ITERATIONS` and exposes `with_max_pbkdf2_iterations()`.
+- API note: this release adds `EncContext::max_pbkdf2_iterations`; downstream code constructing `EncContext { .. }` must set the new field (or switch to `EncContext::new()`/builder methods).
+
 ### Added
 
 - Added `bergshamra_dsig::sign::sign_owned`, an owned-template signing entry

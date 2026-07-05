@@ -529,7 +529,12 @@ fn resolve_agreement_method_encrypt(
                     bergshamra_crypto::kdf::concat_kdf(&shared_secret, kek_len, &params)?
                 }
                 algorithm::PBKDF2 => {
-                    let params = crate::decrypt::parse_pbkdf2_params(doc, kdm_id, kek_len)?;
+                    let params = crate::decrypt::parse_pbkdf2_params(
+                        doc,
+                        kdm_id,
+                        kek_len,
+                        ctx.max_pbkdf2_iterations,
+                    )?;
                     bergshamra_crypto::kdf::pbkdf2_derive(&shared_secret, &params)?
                 }
                 _ => {

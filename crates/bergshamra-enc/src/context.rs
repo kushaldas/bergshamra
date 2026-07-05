@@ -5,6 +5,14 @@
 use bergshamra_core::Error;
 use bergshamra_keys::KeysManager;
 
+/// Default maximum PBKDF2 iterations accepted from XML Encryption input.
+///
+/// XML Encryption documents control `<xenc11:IterationCount>`, so decryption
+/// must treat it as an untrusted work factor. This default accepts the bundled
+/// XMLSec/NIST interop vectors while rejecting pathological counts before they
+/// reach PBKDF2.
+pub const DEFAULT_MAX_PBKDF2_ITERATIONS: u32 = 100_000;
+
 /// Context for XML-Enc operations.
 pub struct EncContext {
     /// Keys manager for key lookup.
@@ -13,6 +21,11 @@ pub struct EncContext {
     pub id_attrs: Vec<String>,
     /// Whether CipherReference resolution is disabled.
     pub disable_cipher_reference: bool,
+    /// Maximum PBKDF2 iterations accepted from XML-controlled parameters.
+    ///
+    /// Set this lower for latency-sensitive services. Set to `0` to reject all
+    /// XML Encryption PBKDF2 usage through this context.
+    pub max_pbkdf2_iterations: u32,
     /// Optional HSM-backed decryptor for RSA key transport.
     /// When set, EncryptedKey elements are decrypted using this instead of software RSA keys.
     pub hsm_decryptor: Option<Box<dyn kryptering::Decryptor>>,
@@ -48,6 +61,7 @@ impl std::fmt::Debug for EncContext {
             )
             .field("id_attrs", &self.id_attrs)
             .field("disable_cipher_reference", &self.disable_cipher_reference)
+            .field("max_pbkdf2_iterations", &self.max_pbkdf2_iterations)
             .field(
                 "hsm_decryptor",
                 &self.hsm_decryptor.as_ref().map(|_| "<hsm_decryptor>"),
@@ -85,13 +99,16 @@ impl EncContext {
     /// Create an XML Encryption context using the provided key manager.
     ///
     /// The context starts with no extra ID attributes, CipherReference support
-    /// enabled, and no HSM delegates configured. Use the builder methods to
-    /// bind HSM operations to explicit XML Encryption algorithm URIs.
+    /// enabled, [`DEFAULT_MAX_PBKDF2_ITERATIONS`] as the cap for XML-controlled
+    /// PBKDF2 work factors, and no HSM delegates configured. Use the builder
+    /// methods to adjust limits and bind HSM operations to explicit XML
+    /// Encryption algorithm URIs.
     pub fn new(keys_manager: KeysManager) -> Self {
         Self {
             keys_manager,
             id_attrs: Vec::new(),
             disable_cipher_reference: false,
+            max_pbkdf2_iterations: DEFAULT_MAX_PBKDF2_ITERATIONS,
             hsm_decryptor: None,
             hsm_decryptor_algorithms: Vec::new(),
             hsm_key_unwrapper: None,
@@ -114,6 +131,16 @@ impl EncContext {
     /// Set disable cipher reference (builder style).
     pub fn with_disable_cipher_reference(mut self, disable: bool) -> Self {
         self.disable_cipher_reference = disable;
+        self
+    }
+
+    /// Set the maximum PBKDF2 iteration count accepted from XML parameters.
+    ///
+    /// XML Encryption PBKDF2 parameters come from the document being processed,
+    /// so this limit prevents a document from selecting an unbounded CPU work
+    /// factor. A value of `0` rejects all PBKDF2-derived keys for this context.
+    pub fn with_max_pbkdf2_iterations(mut self, max_iterations: u32) -> Self {
+        self.max_pbkdf2_iterations = max_iterations;
         self
     }
 
@@ -256,7 +283,7 @@ fn ensure_hsm_binding(
 
 #[cfg(test)]
 mod tests {
-    use super::EncContext;
+    use super::{EncContext, DEFAULT_MAX_PBKDF2_ITERATIONS};
     use bergshamra_core::algorithm;
     use bergshamra_keys::KeysManager;
 
@@ -335,5 +362,14 @@ mod tests {
         assert!(ctx
             .ensure_hsm_key_unwrapper_matches(algorithm::KW_AES256)
             .is_err());
+    }
+
+    #[test]
+    fn pbkdf2_limit_defaults_and_can_be_overridden() {
+        let ctx = EncContext::new(KeysManager::new());
+        assert_eq!(ctx.max_pbkdf2_iterations, DEFAULT_MAX_PBKDF2_ITERATIONS);
+
+        let ctx = ctx.with_max_pbkdf2_iterations(4096);
+        assert_eq!(ctx.max_pbkdf2_iterations, 4096);
     }
 }
