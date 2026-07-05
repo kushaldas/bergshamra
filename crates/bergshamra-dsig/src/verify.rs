@@ -1132,8 +1132,9 @@ fn resolve_reference_uri<'a>(
 ///
 /// XML Signature interop suites use document-adjacent detached files such as
 /// `document.xml`, so Bergshamra keeps that compatibility. Absolute paths and
-/// parent-directory traversal are rejected before any filesystem read, and the
-/// caller treats returned bytes as unsafe for raw debug logging.
+/// parent-directory traversal are rejected before any filesystem read. Existing
+/// candidates are canonicalized and kept inside the base directory used for the
+/// lookup, and the caller treats returned bytes as unsafe for raw debug logging.
 fn read_relative_reference_uri(
     uri: &str,
     base_dir: Option<&str>,
@@ -1168,20 +1169,49 @@ fn read_relative_reference_uri(
     }
 
     if let Some(base) = base_dir {
-        let full = std::path::Path::new(base).join(path);
-        if full.exists() {
-            let data = std::fs::read(&full)
-                .map_err(|e| Error::Other(format!("{}: {e}", full.display())))?;
+        if let Some(data) = read_existing_relative_file(std::path::Path::new(base), path, uri)? {
             return Ok(Some(data));
         }
     }
 
-    if path.exists() {
-        let data = std::fs::read(path).map_err(|e| Error::Other(format!("{uri}: {e}")))?;
+    let cwd = std::env::current_dir().map_err(|e| Error::Other(format!("current dir: {e}")))?;
+    if let Some(data) = read_existing_relative_file(&cwd, path, uri)? {
         return Ok(Some(data));
     }
 
     Ok(None)
+}
+
+/// Read `relative_path` under `base` only when canonical resolution stays below
+/// that same canonical base directory.
+///
+/// This prevents a document-relative `<Reference URI>` from following a symlink
+/// inside the document directory to an arbitrary local file.
+fn read_existing_relative_file(
+    base: &std::path::Path,
+    relative_path: &std::path::Path,
+    uri: &str,
+) -> Result<Option<Vec<u8>>, Error> {
+    let full = base.join(relative_path);
+    if !full.exists() {
+        return Ok(None);
+    }
+
+    let canonical_base = base
+        .canonicalize()
+        .map_err(|e| Error::Other(format!("{}: {e}", base.display())))?;
+    let canonical_full = full
+        .canonicalize()
+        .map_err(|e| Error::Other(format!("{}: {e}", full.display())))?;
+    if !canonical_full.starts_with(&canonical_base) {
+        return Err(Error::InvalidUri(format!(
+            "local file Reference URI escapes base directory: {uri}"
+        )));
+    }
+
+    let data = std::fs::read(&canonical_full)
+        .map_err(|e| Error::Other(format!("{}: {e}", canonical_full.display())))?;
+    Ok(Some(data))
 }
 
 /// Return whether `uri` begins with an RFC-style scheme name.
@@ -4053,6 +4083,55 @@ mod tests {
         }
     }
 
+    /// Runtime-owned directory used by resolver containment tests.
+    ///
+    /// A real directory lets tests exercise canonical path containment without
+    /// depending on repository fixtures or shared global state.
+    struct TestDir {
+        path: std::path::PathBuf,
+    }
+
+    impl TestDir {
+        /// Create a unique temporary directory.
+        fn new() -> Self {
+            let base_nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock must be after unix epoch")
+                .as_nanos();
+            for attempt in 0..100_u32 {
+                let path = std::env::temp_dir().join(format!(
+                    "bergshamra-dsig-reference-dir-{pid}-{base_nonce}-{attempt}",
+                    pid = std::process::id()
+                ));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => return Self { path },
+                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(err) => {
+                        panic!(
+                            "temporary resolver directory {} must be creatable: {err}",
+                            path.display()
+                        );
+                    }
+                }
+            }
+
+            panic!("temporary resolver directory path must be unique after retries");
+        }
+
+        /// Return the temporary directory path as UTF-8 for `base_dir` inputs.
+        fn as_str(&self) -> &str {
+            self.path
+                .to_str()
+                .expect("temporary resolver directory must be valid UTF-8")
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
     /// Build a key manager containing one HMAC key for compact signing tests.
     ///
     /// HMAC keeps the no-reference regression self-contained: the generated
@@ -4314,6 +4393,44 @@ mod tests {
         assert!(
             message.contains("parent-directory"),
             "error must identify the blocked traversal policy"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_reference_uri_rejects_symlink_escape_from_base_dir() {
+        // A simple relative name can still escape the document directory if it
+        // is a symlink. Canonical containment must catch that before reading
+        // detached bytes selected by untrusted XML.
+        let outside_secret = "symlink escape secret";
+        let outside_file = TestFile::new(outside_secret.as_bytes());
+        let base_dir = TestDir::new();
+        std::os::unix::fs::symlink(outside_file.as_str(), base_dir.path.join("allowed"))
+            .expect("symlink fixture must be creatable");
+        let xml = r#"<Root Id="body"><Data>ok</Data></Root>"#;
+        let doc = uppsala::parse(xml).expect("parse");
+        let id_map = HashMap::new();
+
+        let message = match resolve_reference_uri(
+            "allowed",
+            &doc,
+            &id_map,
+            xml,
+            &[],
+            Some(base_dir.as_str()),
+        ) {
+            Err(Error::InvalidUri(message)) => message,
+            Err(err) => panic!("expected InvalidUri for symlink escape, got {err:?}"),
+            Ok(_) => panic!("symlink escape must not resolve to bytes"),
+        };
+
+        assert!(
+            message.contains("escapes base directory"),
+            "error must identify the blocked canonical containment policy"
+        );
+        assert!(
+            !message.contains(outside_secret),
+            "error reporting must not include escaped file contents"
         );
     }
 
