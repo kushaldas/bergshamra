@@ -1138,27 +1138,33 @@ fn read_relative_reference_uri(
     uri: &str,
     base_dir: Option<&str>,
 ) -> Result<Option<Vec<u8>>, Error> {
-    if uri_has_scheme(uri) {
-        return Ok(None);
-    }
-
     let path = std::path::Path::new(uri);
     if path.is_absolute() {
         return Err(Error::InvalidUri(format!(
             "absolute local file Reference URI not allowed: {uri}"
         )));
     }
-    if path.components().any(|component| {
-        matches!(
-            component,
-            std::path::Component::ParentDir
-                | std::path::Component::RootDir
-                | std::path::Component::Prefix(_)
-        )
-    }) {
-        return Err(Error::InvalidUri(format!(
-            "parent-directory Reference URI not allowed: {uri}"
-        )));
+    // Validate path-only hazards before URI schemes. On Windows, drive paths
+    // such as `C:\secret.txt` and `C:secret.txt` begin with a `Prefix`
+    // component and would otherwise look like a one-letter URI scheme.
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                return Err(Error::InvalidUri(format!(
+                    "absolute local file Reference URI not allowed: {uri}"
+                )));
+            }
+            std::path::Component::ParentDir => {
+                return Err(Error::InvalidUri(format!(
+                    "parent-directory Reference URI not allowed: {uri}"
+                )));
+            }
+            _ => {}
+        }
+    }
+
+    if uri_has_scheme(uri) {
+        return Ok(None);
     }
 
     if let Some(base) = base_dir {
@@ -4309,6 +4315,30 @@ mod tests {
             message.contains("parent-directory"),
             "error must identify the blocked traversal policy"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_reference_uri_rejects_windows_drive_local_file_reference() {
+        // Windows drive-qualified paths can look like one-letter URI schemes.
+        // The verifier must reject them as local paths before scheme handling
+        // so the local-file policy is consistent across platforms.
+        let xml = r#"<Root Id="body"><Data>ok</Data></Root>"#;
+        let doc = uppsala::parse(xml).expect("parse");
+        let id_map = HashMap::new();
+
+        for uri in ["C:\\secret.txt", "C:secret.txt"] {
+            let message = match resolve_reference_uri(uri, &doc, &id_map, xml, &[], Some("C:\\")) {
+                Err(Error::InvalidUri(message)) => message,
+                Err(err) => panic!("expected InvalidUri for Windows local path, got {err:?}"),
+                Ok(_) => panic!("Windows local path must not resolve to bytes"),
+            };
+
+            assert!(
+                message.contains("absolute local file"),
+                "error must identify the blocked local path policy for {uri}"
+            );
+        }
     }
 
     #[test]
