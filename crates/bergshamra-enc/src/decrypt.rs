@@ -535,7 +535,8 @@ fn resolve_agreement_method_kek(
                     bergshamra_crypto::kdf::concat_kdf(&shared_secret, kek_len, &params)?
                 }
                 algorithm::PBKDF2 => {
-                    let params = parse_pbkdf2_params(doc, kdm_id, kek_len)?;
+                    let params =
+                        parse_pbkdf2_params(doc, kdm_id, kek_len, ctx.max_pbkdf2_iterations)?;
                     bergshamra_crypto::kdf::pbkdf2_derive(&shared_secret, &params)?
                 }
                 algorithm::HKDF => {
@@ -803,7 +804,8 @@ pub(crate) fn resolve_derived_key(
             bergshamra_crypto::kdf::concat_kdf(&master_key_bytes, key_len, &params)
         }
         algorithm::PBKDF2 => {
-            let params = parse_pbkdf2_params(doc, kd_method_id, key_len)?;
+            let params =
+                parse_pbkdf2_params(doc, kd_method_id, key_len, ctx.max_pbkdf2_iterations)?;
             bergshamra_crypto::kdf::pbkdf2_derive(&master_key_bytes, &params)
         }
         _ => Err(Error::UnsupportedAlgorithm(format!(
@@ -860,10 +862,19 @@ pub(crate) fn parse_concat_kdf_params(
 }
 
 /// Parse PBKDF2 parameters from a KeyDerivationMethod element.
+///
+/// `max_iterations` comes from [`EncContext`] and caps the XML-controlled
+/// `<IterationCount>` before any PBKDF2 work is started.
+///
+/// # Errors
+///
+/// Returns [`Error::XmlStructure`] when the XML requests zero iterations or a
+/// count above the configured policy maximum.
 pub(crate) fn parse_pbkdf2_params(
     doc: &Document<'_>,
     kd_method_id: NodeId,
     default_key_len: usize,
+    max_iterations: u32,
 ) -> Result<bergshamra_crypto::kdf::Pbkdf2Params, Error> {
     let pbkdf2_params_id =
         find_child_element(doc, kd_method_id, ns::ENC11, ns::node::PBKDF2_PARAMS)
@@ -898,6 +909,7 @@ pub(crate) fn parse_pbkdf2_params(
         .trim()
         .parse()
         .map_err(|_| Error::XmlStructure("invalid IterationCount".into()))?;
+    validate_pbkdf2_iteration_count(iteration_count, max_iterations)?;
 
     // KeyLength (optional, defaults to encryption algorithm key length)
     let key_length = if let Some(kl_id) = find_child_element(
@@ -928,6 +940,20 @@ pub(crate) fn parse_pbkdf2_params(
         iteration_count,
         key_length,
     })
+}
+
+fn validate_pbkdf2_iteration_count(iteration_count: u32, max_iterations: u32) -> Result<(), Error> {
+    if iteration_count == 0 {
+        return Err(Error::XmlStructure(
+            "PBKDF2 IterationCount must be at least 1".into(),
+        ));
+    }
+    if iteration_count > max_iterations {
+        return Err(Error::XmlStructure(format!(
+            "PBKDF2 IterationCount {iteration_count} exceeds configured maximum {max_iterations}"
+        )));
+    }
+    Ok(())
 }
 
 /// Parse HKDF parameters from a KeyDerivationMethod element.
@@ -1703,6 +1729,63 @@ fn map_kryptering_err(e: kryptering::Error) -> Error {
 mod tests {
     use super::*;
 
+    /// Build a minimal PBKDF2 `KeyDerivationMethod` with a caller-selected
+    /// iteration count.
+    ///
+    /// Parser tests use this fixture to exercise the iteration policy without
+    /// running the full XML Encryption key-resolution flow.
+    fn parse_pbkdf2_params_for_iteration(
+        iteration_count: &str,
+        max_iterations: u32,
+    ) -> Result<bergshamra_crypto::kdf::Pbkdf2Params, Error> {
+        let xml = format!(
+            r#"<xenc11:KeyDerivationMethod
+                    xmlns:xenc11="http://www.w3.org/2009/xmlenc11#"
+                    xmlns:dsig-more="http://www.w3.org/2001/04/xmldsig-more#"
+                    Algorithm="{pbkdf2}">
+                  <xenc11:PBKDF2-params>
+                    <xenc11:Salt>
+                      <xenc11:Specified>AQIDBA==</xenc11:Specified>
+                    </xenc11:Salt>
+                    <xenc11:IterationCount>{iteration_count}</xenc11:IterationCount>
+                    <xenc11:KeyLength>16</xenc11:KeyLength>
+                    <xenc11:PRF Algorithm="{hmac_sha256}"/>
+                  </xenc11:PBKDF2-params>
+                </xenc11:KeyDerivationMethod>"#,
+            pbkdf2 = algorithm::PBKDF2,
+            hmac_sha256 = algorithm::HMAC_SHA256,
+        );
+        let doc = uppsala::parse(&xml).unwrap();
+        let root = doc.document_element().unwrap();
+        parse_pbkdf2_params(&doc, root, 32, max_iterations)
+    }
+
+    /// Build a minimal `DerivedKey` document that reaches the PBKDF2 branch in
+    /// `resolve_derived_key`.
+    ///
+    /// The regression test uses this to verify that the runtime decrypt path
+    /// forwards the context's PBKDF2 iteration cap into the shared parser.
+    fn derived_key_xml_for_pbkdf2_iteration(iteration_count: &str) -> String {
+        format!(
+            r#"<xenc11:DerivedKey
+                    xmlns:xenc11="http://www.w3.org/2009/xmlenc11#"
+                    xmlns:dsig-more="http://www.w3.org/2001/04/xmldsig-more#">
+                  <xenc11:KeyDerivationMethod Algorithm="{pbkdf2}">
+                    <xenc11:PBKDF2-params>
+                      <xenc11:Salt>
+                        <xenc11:Specified>AQIDBA==</xenc11:Specified>
+                      </xenc11:Salt>
+                      <xenc11:IterationCount>{iteration_count}</xenc11:IterationCount>
+                      <xenc11:KeyLength>16</xenc11:KeyLength>
+                      <xenc11:PRF Algorithm="{hmac_sha256}"/>
+                    </xenc11:PBKDF2-params>
+                  </xenc11:KeyDerivationMethod>
+                </xenc11:DerivedKey>"#,
+            pbkdf2 = algorithm::PBKDF2,
+            hmac_sha256 = algorithm::HMAC_SHA256,
+        )
+    }
+
     #[test]
     fn test_read_cipher_data_base64() {
         // Simple test with a CipherValue element
@@ -1715,5 +1798,73 @@ mod tests {
         let ctx = EncContext::new(bergshamra_keys::KeysManager::new());
         let result = read_cipher_data(&ctx, &doc, root, &id_map).unwrap();
         assert_eq!(result, b"Hello World");
+    }
+
+    /// The configured PBKDF2 iteration cap is inclusive.
+    ///
+    /// A document requesting exactly the configured maximum remains valid, so
+    /// deployments can choose a policy limit without rejecting boundary values.
+    #[test]
+    fn parse_pbkdf2_params_accepts_iteration_at_policy_limit() {
+        let params = parse_pbkdf2_params_for_iteration("4096", 4096).unwrap();
+
+        assert_eq!(params.iteration_count, 4096);
+        assert_eq!(params.key_length, 16);
+    }
+
+    /// A zero PBKDF2 iteration count is invalid.
+    ///
+    /// Rejecting zero avoids accepting XML that asks for no password-stretching
+    /// work and keeps the parser behavior explicit.
+    #[test]
+    fn parse_pbkdf2_params_rejects_zero_iteration_count() {
+        let err = parse_pbkdf2_params_for_iteration("0", 4096).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("PBKDF2 IterationCount must be at least 1"));
+    }
+
+    /// PBKDF2 iteration counts above the configured cap are rejected.
+    ///
+    /// This is the direct parser guard for XML-controlled CPU work before any
+    /// backend PBKDF2 computation can start.
+    #[test]
+    fn parse_pbkdf2_params_rejects_iteration_above_policy_limit() {
+        let err = parse_pbkdf2_params_for_iteration("4097", 4096).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("PBKDF2 IterationCount 4097 exceeds configured maximum 4096"));
+    }
+
+    /// Regression for the XML Encryption `DerivedKey` decrypt path.
+    ///
+    /// The parser-level tests prove the policy guard works in isolation. This
+    /// test proves `resolve_derived_key` passes `EncContext`'s cap into that
+    /// parser, preventing a future refactor from bypassing the configured
+    /// PBKDF2 work limit.
+    #[test]
+    fn resolve_derived_key_rejects_pbkdf2_iteration_above_context_limit() {
+        let xml = derived_key_xml_for_pbkdf2_iteration("4097");
+        let doc = uppsala::parse(&xml).unwrap();
+        let root = doc.document_element().unwrap();
+
+        // No MasterKeyName is needed: the resolver falls back to the first
+        // configured symmetric key before parsing the KeyDerivationMethod.
+        let mut keys = bergshamra_keys::KeysManager::new();
+        keys.add_key(bergshamra_keys::Key::new(
+            bergshamra_keys::KeyData::Aes(vec![0x42; 32]),
+            bergshamra_keys::KeyUsage::Any,
+        ));
+        let ctx = EncContext::new(keys).with_max_pbkdf2_iterations(4096);
+
+        // Regression check: the runtime DerivedKey path must enforce the
+        // context policy before invoking backend PBKDF2.
+        let err = resolve_derived_key(&ctx, &doc, root, algorithm::AES128_CBC).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("PBKDF2 IterationCount 4097 exceeds configured maximum 4096"));
     }
 }

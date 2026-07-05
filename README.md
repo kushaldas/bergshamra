@@ -205,6 +205,16 @@ deployment where the signing key is known ahead of time.
 Set `DsigContext::hmac_min_out_len` to enforce a minimum `<HMACOutputLength>`
 in bits. A zero-length or very short HMAC is trivially forgeable.
 
+### XML Encryption PBKDF2 iteration limit
+
+XML Encryption documents can carry `<xenc11:IterationCount>` inside PBKDF2
+key-derivation parameters. Bergshamra caps that XML-controlled work factor
+before invoking PBKDF2. `EncContext::new()` uses
+`bergshamra_enc::context::DEFAULT_MAX_PBKDF2_ITERATIONS`; set
+`EncContext::max_pbkdf2_iterations` or use
+`EncContext::with_max_pbkdf2_iterations()` when a deployment needs a lower or
+higher CPU budget. A value of `0` rejects XML Encryption PBKDF2 usage.
+
 ### Recommended configuration for SAML
 
 ```rust
