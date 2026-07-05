@@ -1,6 +1,26 @@
 # Changelog
 
 
+## 0.7.0 [2026-07-05]
+
+### Added
+
+- Added `bergshamra_dsig::sign::sign_owned`, an owned-template signing entry
+  point for callers and bindings that construct a template `String` immediately
+  before signing and can transfer ownership into the signer.
+
+### Changed
+
+- Updated `uppsala` `0.8.0` → `0.9.0`.
+- Optimized XML-DSig signing for common same-document references whose transform
+  chain can be handled as enveloped-signature plus C14N, canonicalizing the
+  resolved node set directly and falling back to the generic transform pipeline
+  for other transform chains.
+- `DigestValue` and `SignatureValue` replacement now uses Uppsala node byte
+  ranges and `XmlWriter` when possible, preserving the target element/prefix
+  instead of relying only on the first-empty-element fallback.
+
+
 ## 0.6.4 [2026-07-03]
 
 ### Changed

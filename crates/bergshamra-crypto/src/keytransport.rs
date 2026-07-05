@@ -9,8 +9,13 @@ use kryptering::algorithm::{
 
 /// Trait for key transport algorithms.
 pub trait KeyTransportAlgorithm: Send {
+    /// Return the XML Encryption algorithm URI implemented by this transport.
     fn uri(&self) -> &'static str;
+
+    /// Encrypt a content-encryption key or key-wrapping key for `public_key`.
     fn encrypt(&self, public_key: &rsa::RsaPublicKey, key_data: &[u8]) -> Result<Vec<u8>, Error>;
+
+    /// Decrypt transported key bytes with `private_key`.
     fn decrypt(&self, private_key: &rsa::RsaPrivateKey, encrypted: &[u8])
         -> Result<Vec<u8>, Error>;
 }

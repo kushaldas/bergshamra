@@ -129,6 +129,17 @@ Key loading options: `-k` (auto-detect PEM/DER), `-K NAME:FILE` (named key),
 `--pkcs12`, `--cert`, `--hmac-key`, `--aes-key`, `--keys-file` (xmlsec keys.xml),
 `--trusted` (CA cert), `--pwd` (password).
 
+## Library usage
+
+```rust
+let signed = bergshamra::sign(&ctx, template_xml)?;
+let signed = bergshamra::dsig::sign::sign_owned(&ctx, template_xml_string)?;
+```
+
+Use `sign_owned` when the caller already owns a generated template `String` and
+wants to avoid the initial clone that the borrowed `sign` convenience wrapper
+performs.
+
 ## Security hardening
 
 XML Digital Signatures are a frequent target of attack. Bergshamra provides

@@ -7,9 +7,23 @@ use kryptering::algorithm::{AesKeySize, CipherAlgorithm as KCipherAlgorithm};
 
 /// Trait for cipher algorithms.
 pub trait CipherAlgorithm: Send {
+    /// Return the XML Encryption algorithm URI implemented by this cipher.
     fn uri(&self) -> &'static str;
+
+    /// Encrypt `plaintext` with `key`.
+    ///
+    /// The `key` length must match [`CipherAlgorithm::key_size`]. The returned
+    /// bytes are the XML Encryption cipher payload for the selected algorithm,
+    /// including any algorithm-specific IV or nonce material.
     fn encrypt(&self, key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error>;
+
+    /// Decrypt `ciphertext` with `key`.
+    ///
+    /// The input must be in the format produced by [`CipherAlgorithm::encrypt`]
+    /// for the same algorithm URI.
     fn decrypt(&self, key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, Error>;
+
+    /// Return the required symmetric key size in bytes.
     fn key_size(&self) -> usize;
 }
 

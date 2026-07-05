@@ -5,34 +5,54 @@
 /// Usage flags for a key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyUsage {
+    /// Key may be used to create signatures.
     Sign,
+    /// Key may be used to verify signatures.
     Verify,
+    /// Key may be used for encryption or key wrapping.
     Encrypt,
+    /// Key may be used for decryption or key unwrapping.
     Decrypt,
+    /// Key may be used for any operation supported by its key type.
     Any,
 }
 
 /// The underlying key data.
 #[derive(Clone)]
 pub enum KeyData {
+    /// RSA key pair or public key.
     Rsa {
+        /// Private RSA key, present when signing or decryption is supported.
         private: Option<rsa::RsaPrivateKey>,
+        /// Public RSA key.
         public: rsa::RsaPublicKey,
     },
+    /// ECDSA P-256 key pair or public key.
     EcP256 {
+        /// Private ECDSA signing key, present when signing is supported.
         private: Option<p256::ecdsa::SigningKey>,
+        /// Public ECDSA verification key.
         public: p256::ecdsa::VerifyingKey,
     },
+    /// ECDSA P-384 key pair or public key.
     EcP384 {
+        /// Private ECDSA signing key, present when signing is supported.
         private: Option<p384::ecdsa::SigningKey>,
+        /// Public ECDSA verification key.
         public: p384::ecdsa::VerifyingKey,
     },
+    /// ECDSA P-521 key pair or public key.
     EcP521 {
+        /// Private ECDSA signing key, present when signing is supported.
         private: Option<p521::ecdsa::SigningKey>,
+        /// Public ECDSA verification key.
         public: p521::ecdsa::VerifyingKey,
     },
+    /// DSA key pair or public key.
     Dsa {
+        /// Private DSA signing key, present when signing is supported.
         private: Option<dsa::SigningKey>,
+        /// Public DSA verification key.
         public: dsa::VerifyingKey,
     },
     /// Finite-field Diffie-Hellman (X9.42 DH) key.
@@ -50,21 +70,31 @@ pub enum KeyData {
     },
     /// Ed25519 (EdDSA over Curve25519) key.
     Ed25519 {
+        /// Private Ed25519 signing key, present when signing is supported.
         private: Option<ed25519_dalek::SigningKey>,
+        /// Public Ed25519 verification key.
         public: ed25519_dalek::VerifyingKey,
     },
     /// X25519 (ECDH over Curve25519) key for key agreement.
     X25519 {
+        /// Private scalar bytes, present when deriving a shared secret.
         private: Option<[u8; 32]>,
+        /// Public X25519 key bytes.
         public: [u8; 32],
     },
+    /// HMAC shared secret bytes.
     Hmac(Vec<u8>),
+    /// AES symmetric key bytes.
     Aes(Vec<u8>),
+    /// Triple-DES symmetric key bytes.
     Des3(Vec<u8>),
     /// Post-quantum key (ML-DSA or SLH-DSA) stored as raw DER bytes.
     PostQuantum {
+        /// Post-quantum signature algorithm for the DER blobs.
         algorithm: bergshamra_crypto::sign::PqAlgorithm,
+        /// Optional private key DER, present when signing is supported.
         private_der: Option<Vec<u8>>,
+        /// Public key DER, always present for verification.
         public_der: Vec<u8>,
     },
 }

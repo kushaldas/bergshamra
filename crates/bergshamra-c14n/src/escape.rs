@@ -33,6 +33,7 @@
 //! reach a C14N value via numeric character references and are rare. A cheap
 //! pre-check routes those uncommon inputs to a full-needle per-byte loop.
 
+use crate::C14nSink;
 use memchr::{memchr, memchr3, memchr_iter};
 
 /// Below this clean-run length we treat the region as "dense" and switch from
@@ -56,8 +57,11 @@ fn entity_for(byte: u8) -> &'static [u8] {
     }
 }
 
-/// Escape text node content per C14N rules, appending to `out`.
-pub fn escape_text_into(out: &mut Vec<u8>, s: &str) {
+/// Escape text node content per C14N rules and append it to `out`.
+///
+/// The output is UTF-8 bytes. The sink receives unmodified clean runs and C14N
+/// entity byte sequences for `&`, `<`, `>`, and carriage returns.
+pub fn escape_text_into<W: C14nSink>(out: &mut W, s: &str) {
     let bytes = s.as_bytes();
     out.reserve(bytes.len());
     // Fast path: no carriage return (the rare 4th needle), so the only specials
@@ -68,8 +72,8 @@ pub fn escape_text_into(out: &mut Vec<u8>, s: &str) {
         let mut last = 0;
         while let Some(rel) = memchr3(b'&', b'<', b'>', &bytes[i..]) {
             let pos = i + rel;
-            out.extend_from_slice(&bytes[last..pos]);
-            out.extend_from_slice(entity_for(bytes[pos]));
+            out.write(&bytes[last..pos]);
+            out.write(entity_for(bytes[pos]));
             last = pos + 1;
             i = pos + 1;
             if rel < DENSE_RUN {
@@ -78,7 +82,7 @@ pub fn escape_text_into(out: &mut Vec<u8>, s: &str) {
                 return;
             }
         }
-        out.extend_from_slice(&bytes[last..]);
+        out.write(&bytes[last..]);
     } else {
         push_text_bytes(out, bytes);
     }
@@ -87,20 +91,24 @@ pub fn escape_text_into(out: &mut Vec<u8>, s: &str) {
 /// Per-byte loop over the full text needle set (`& < > \r`). Does strictly less
 /// work than the original per-`char` loop (no UTF-8 decode), so it never
 /// regresses; used for dense regions and for the rare `\r`-bearing inputs.
-fn push_text_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+fn push_text_bytes<W: C14nSink>(out: &mut W, bytes: &[u8]) {
     for &b in bytes {
         match b {
-            b'&' => out.extend_from_slice(b"&amp;"),
-            b'<' => out.extend_from_slice(b"&lt;"),
-            b'>' => out.extend_from_slice(b"&gt;"),
-            b'\r' => out.extend_from_slice(b"&#xD;"),
-            _ => out.push(b),
+            b'&' => out.write(b"&amp;"),
+            b'<' => out.write(b"&lt;"),
+            b'>' => out.write(b"&gt;"),
+            b'\r' => out.write(b"&#xD;"),
+            _ => out.write_byte(b),
         }
     }
 }
 
-/// Escape attribute value per C14N rules, appending to `out`.
-pub fn escape_attr_into(out: &mut Vec<u8>, s: &str) {
+/// Escape an attribute value per C14N rules and append it to `out`.
+///
+/// In addition to the text-node escapes, this also escapes `"`, tab, and line
+/// feed. Attribute normalization happens during XML parsing; these control
+/// bytes generally appear only when they came from character references.
+pub fn escape_attr_into<W: C14nSink>(out: &mut W, s: &str) {
     let bytes = s.as_bytes();
     out.reserve(bytes.len());
     // Fast path: no tab/newline/CR (the rare extra needles — normalised away on
@@ -111,8 +119,8 @@ pub fn escape_attr_into(out: &mut Vec<u8>, s: &str) {
         let mut last = 0;
         while let Some(rel) = memchr3(b'&', b'<', b'"', &bytes[i..]) {
             let pos = i + rel;
-            out.extend_from_slice(&bytes[last..pos]);
-            out.extend_from_slice(entity_for(bytes[pos]));
+            out.write(&bytes[last..pos]);
+            out.write(entity_for(bytes[pos]));
             last = pos + 1;
             i = pos + 1;
             if rel < DENSE_RUN {
@@ -120,41 +128,46 @@ pub fn escape_attr_into(out: &mut Vec<u8>, s: &str) {
                 return;
             }
         }
-        out.extend_from_slice(&bytes[last..]);
+        out.write(&bytes[last..]);
     } else {
         push_attr_bytes(out, bytes);
     }
 }
 
 /// Per-byte loop over the full attribute needle set (`& < " \t \n \r`).
-fn push_attr_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+fn push_attr_bytes<W: C14nSink>(out: &mut W, bytes: &[u8]) {
     for &b in bytes {
         match b {
-            b'&' => out.extend_from_slice(b"&amp;"),
-            b'<' => out.extend_from_slice(b"&lt;"),
-            b'"' => out.extend_from_slice(b"&quot;"),
-            b'\t' => out.extend_from_slice(b"&#x9;"),
-            b'\n' => out.extend_from_slice(b"&#xA;"),
-            b'\r' => out.extend_from_slice(b"&#xD;"),
-            _ => out.push(b),
+            b'&' => out.write(b"&amp;"),
+            b'<' => out.write(b"&lt;"),
+            b'"' => out.write(b"&quot;"),
+            b'\t' => out.write(b"&#x9;"),
+            b'\n' => out.write(b"&#xA;"),
+            b'\r' => out.write(b"&#xD;"),
+            _ => out.write_byte(b),
         }
     }
 }
 
-/// Escape processing instruction data (`\r` → `&#xD;`), appending to `out`.
-pub fn escape_pi_into(out: &mut Vec<u8>, s: &str) {
+/// Escape processing instruction data and append it to `out`.
+///
+/// C14N only changes carriage returns in PI data, replacing each `\r` with
+/// `&#xD;`.
+pub fn escape_pi_into<W: C14nSink>(out: &mut W, s: &str) {
     let bytes = s.as_bytes();
     out.reserve(bytes.len());
     let mut last = 0;
     for pos in memchr_iter(b'\r', bytes) {
-        out.extend_from_slice(&bytes[last..pos]);
-        out.extend_from_slice(b"&#xD;");
+        out.write(&bytes[last..pos]);
+        out.write(b"&#xD;");
         last = pos + 1;
     }
-    out.extend_from_slice(&bytes[last..]);
+    out.write(&bytes[last..]);
 }
 
-/// Escape text node content per C14N rules.
+/// Escape text node content per C14N rules and return a UTF-8 string.
+///
+/// This is the convenience wrapper around [`escape_text_into`].
 pub fn escape_text(s: &str) -> String {
     let mut out = Vec::with_capacity(s.len());
     escape_text_into(&mut out, s);
@@ -163,14 +176,18 @@ pub fn escape_text(s: &str) -> String {
     String::from_utf8(out).expect("escaped text is valid UTF-8")
 }
 
-/// Escape attribute value per C14N rules.
+/// Escape an attribute value per C14N rules and return a UTF-8 string.
+///
+/// This is the convenience wrapper around [`escape_attr_into`].
 pub fn escape_attr(s: &str) -> String {
     let mut out = Vec::with_capacity(s.len());
     escape_attr_into(&mut out, s);
     String::from_utf8(out).expect("escaped attr is valid UTF-8")
 }
 
-/// Escape processing instruction data.
+/// Escape processing instruction data and return a UTF-8 string.
+///
+/// This is the convenience wrapper around [`escape_pi_into`].
 pub fn escape_pi(s: &str) -> String {
     let mut out = Vec::with_capacity(s.len());
     escape_pi_into(&mut out, s);

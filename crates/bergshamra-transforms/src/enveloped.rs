@@ -37,17 +37,21 @@ impl Transform for EnvelopedSignatureTransform {
         algorithm::ENVELOPED_SIGNATURE
     }
 
-    fn execute(&self, input: TransformData) -> Result<TransformData, Error> {
+    fn execute<'a>(&self, input: TransformData<'a>) -> Result<TransformData<'a>, Error> {
         match input {
             TransformData::Xml { xml_text, node_set } => {
-                let doc = uppsala::parse(&xml_text).map_err(|e| Error::XmlParse(e.to_string()))?;
+                let ns = {
+                    let doc = uppsala::parse(xml_text.as_ref())
+                        .map_err(|e| Error::XmlParse(e.to_string()))?;
 
-                // Build a node set that excludes the Signature subtree
-                let mut ns = node_set.unwrap_or_else(|| NodeSet::all(&doc));
+                    // Build a node set that excludes the Signature subtree.
+                    let mut ns = node_set.unwrap_or_else(|| NodeSet::all(&doc));
 
-                // Find the signature node and remove it + all descendants
-                let sig_id = NodeId::new(self.signature_node_index);
-                remove_subtree(sig_id, &doc, &mut ns);
+                    // Find the signature node and remove it + all descendants.
+                    let sig_id = NodeId::new(self.signature_node_index);
+                    remove_subtree(sig_id, &doc, &mut ns);
+                    ns
+                };
 
                 Ok(TransformData::Xml {
                     xml_text,

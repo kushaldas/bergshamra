@@ -6,7 +6,7 @@
 
 use crate::context::DsigContext;
 use bergshamra_c14n::C14nMode;
-use bergshamra_core::{ns, Error};
+use bergshamra_core::{algorithm, ns, Error};
 use bergshamra_crypto::digest;
 use bergshamra_xml::nodeset::NodeSet;
 use std::collections::HashMap;
@@ -18,8 +18,41 @@ use uppsala::{Document, NodeId, XmlWriter};
 /// `<DigestValue>` and `<SignatureValue>` elements.
 ///
 /// Returns the signed XML document as a string.
+///
+/// This convenience wrapper borrows `template_xml` and clones it into an owned
+/// string before signing. Use [`sign_owned`] when the caller can transfer
+/// ownership and wants to avoid that initial clone.
+///
+/// # Errors
+///
+/// Returns an error when the template is malformed, required DSig elements are
+/// missing, an algorithm is unsupported, key material cannot be resolved, a
+/// transform fails, or the final signature cannot be produced.
 pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
-    let doc = uppsala::parse(template_xml).map_err(|e| Error::XmlParse(e.to_string()))?;
+    sign_owned(ctx, template_xml.to_owned())
+}
+
+/// Sign an owned XML template document without cloning the full template first.
+///
+/// This is useful for bindings that construct a template string immediately
+/// before signing and can transfer ownership into the signer.
+///
+/// The function fills each empty `<DigestValue>` in document order and then
+/// signs the updated `<SignedInfo>`. The document is reparsed after each digest
+/// replacement so later same-document references see earlier digest values, as
+/// required by XML-DSig template signing.
+///
+/// Same-document fallback transforms borrow this owned string instead of
+/// cloning it, and empty `<DigestValue>` / `<SignatureValue>` replacements are
+/// applied in place after the parsed document is dropped. This keeps peak memory
+/// lower for large templates while preserving the same returned XML.
+///
+/// # Errors
+///
+/// Returns an error when parsing, reference resolution, transform execution,
+/// digesting, key resolution, or signature generation fails.
+pub fn sign_owned(ctx: &DsigContext, mut result_xml: String) -> Result<String, Error> {
+    let doc = uppsala::parse(&result_xml).map_err(|e| Error::XmlParse(e.to_string()))?;
 
     // Build ID map
     let mut id_attrs: Vec<&str> = vec!["Id", "ID", "id", "AssertionID"];
@@ -44,8 +77,9 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
     let c14n_uri = doc
         .element(c14n_method)
         .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
-        .ok_or_else(|| Error::MissingAttribute("Algorithm on CanonicalizationMethod".into()))?;
-    let c14n_mode = C14nMode::from_uri(c14n_uri)
+        .ok_or_else(|| Error::MissingAttribute("Algorithm on CanonicalizationMethod".into()))?
+        .to_owned();
+    let c14n_mode = C14nMode::from_uri(&c14n_uri)
         .ok_or_else(|| Error::UnsupportedAlgorithm(format!("C14N: {c14n_uri}")))?;
     let inclusive_prefixes = read_inclusive_prefixes(&doc, c14n_method);
 
@@ -55,13 +89,18 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
     let sig_method_uri = doc
         .element(sig_method)
         .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
-        .ok_or_else(|| Error::MissingAttribute("Algorithm on SignatureMethod".into()))?;
+        .ok_or_else(|| Error::MissingAttribute("Algorithm on SignatureMethod".into()))?
+        .to_owned();
 
     // Process each Reference to compute digests.
     // We re-parse result_xml on each iteration so that same-document references
     // (e.g. URI=#reference-1) see DigestValues filled in by earlier iterations.
-    let mut result_xml = template_xml.to_owned();
     let ref_count = find_child_elements(&doc, signed_info, ns::DSIG, ns::node::REFERENCE).len();
+    drop(doc);
+    // DigestValue and SignatureValue inserts are small. Reserving after the
+    // initial parse keeps later in-place replacements from reallocating while a
+    // document tree is live.
+    result_xml.reserve(4096);
 
     for ref_idx in 0..ref_count {
         // Re-parse current state so same-document refs see filled DigestValues
@@ -96,103 +135,125 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
             .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
             .ok_or_else(|| Error::MissingAttribute("Algorithm on DigestMethod".into()))?;
 
-        // Resolve reference and apply transforms
-        let mut data = if uri.is_empty() {
-            // Per W3C spec: URI="" selects whole document without comments
-            let ns = NodeSet::all_without_comments(&cur_doc);
-            bergshamra_transforms::TransformData::Xml {
-                xml_text: result_xml.clone(),
-                node_set: Some(ns),
-            }
-        } else if let Some(fragment) = bergshamra_xml::xpath::parse_same_document_ref(uri) {
-            if fragment == "xpointer(/)" {
-                bergshamra_transforms::TransformData::Xml {
-                    xml_text: result_xml.clone(),
-                    node_set: None,
-                }
-            } else {
-                let is_xpointer = bergshamra_xml::xpath::parse_xpointer_id(fragment).is_some();
-                let frag_id =
-                    bergshamra_xml::xpath::parse_xpointer_id(fragment).unwrap_or(fragment);
-                let resolved_id =
-                    bergshamra_xml::xpath::resolve_id(&cur_doc, &cur_id_map, frag_id)?;
-                let ns = if is_xpointer {
-                    NodeSet::tree_with_comments(resolved_id, &cur_doc)
-                } else {
-                    NodeSet::tree_without_comments(resolved_id, &cur_doc)
-                };
-                bergshamra_transforms::TransformData::Xml {
-                    xml_text: result_xml.clone(),
-                    node_set: Some(ns),
-                }
-            }
-        } else {
-            // Try url-map for external URIs
-            let mut resolved = None;
-            for (map_url, file_path) in &ctx.url_maps {
-                if uri == map_url || uri.starts_with(map_url) {
-                    let bytes = std::fs::read(file_path)
-                        .map_err(|e| Error::Other(format!("url-map {file_path}: {e}")))?;
-                    resolved = Some(bergshamra_transforms::TransformData::Binary(bytes));
-                    break;
-                }
-            }
-            // Try resolving as a relative file path (no scheme = local file)
-            if resolved.is_none() && !uri.contains("://") {
-                if let Some(base) = &ctx.base_dir {
-                    let path = std::path::Path::new(base).join(uri);
-                    if path.exists() {
-                        let bytes = std::fs::read(&path)
-                            .map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
-                        resolved = Some(bergshamra_transforms::TransformData::Binary(bytes));
-                    }
-                }
-                if resolved.is_none() {
-                    let path = std::path::Path::new(uri);
-                    if path.exists() {
-                        let bytes =
-                            std::fs::read(path).map_err(|e| Error::Other(format!("{uri}: {e}")))?;
-                        resolved = Some(bergshamra_transforms::TransformData::Binary(bytes));
-                    }
-                }
-            }
-            resolved.ok_or_else(|| Error::InvalidUri(format!("unsupported URI: {uri}")))?
-        };
         let transforms_node =
             find_child_element(&cur_doc, reference, ns::DSIG, ns::node::TRANSFORMS);
-        if let Some(transforms_id) = transforms_node {
-            for t_node in cur_doc.children(transforms_id) {
-                let is_transform = cur_doc
-                    .element(t_node)
-                    .is_some_and(|e| &*e.name.local_name == ns::node::TRANSFORM);
-                if !is_transform {
-                    continue;
-                }
-                let t_uri = cur_doc
-                    .element(t_node)
-                    .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
-                    .unwrap_or("");
-                data = crate::verify::apply_transform(t_uri, data, t_node, cur_sig, &cur_doc)?;
-            }
-        }
 
-        let bytes = data.to_binary()?;
-        let computed = digest::digest(digest_uri, &bytes)?;
+        // The common enveloped-signature + C14N case can be digested directly
+        // from the parsed document. Any transform chain outside that narrow
+        // shape returns `None` and is handled by the generic pipeline below.
+        let fast_digest = reference_node_set_for_fast(&cur_doc, &cur_id_map, uri)?
+            .and_then(|node_set| {
+                try_fast_reference_digest(&cur_doc, cur_sig, node_set, transforms_node, digest_uri)
+                    .transpose()
+            })
+            .transpose()?;
+
+        let computed = if let Some(computed) = fast_digest {
+            computed
+        } else {
+            // Resolve reference and apply the generic transform pipeline.
+            let mut data = if uri.is_empty() {
+                // Per W3C spec: URI="" selects whole document without comments
+                let ns = NodeSet::all_without_comments(&cur_doc);
+                bergshamra_transforms::TransformData::xml_borrowed(&result_xml, Some(ns))
+            } else if let Some(fragment) = bergshamra_xml::xpath::parse_same_document_ref(uri) {
+                if fragment == "xpointer(/)" {
+                    bergshamra_transforms::TransformData::xml_borrowed(&result_xml, None)
+                } else {
+                    let is_xpointer = bergshamra_xml::xpath::parse_xpointer_id(fragment).is_some();
+                    let frag_id =
+                        bergshamra_xml::xpath::parse_xpointer_id(fragment).unwrap_or(fragment);
+                    let resolved_id =
+                        bergshamra_xml::xpath::resolve_id(&cur_doc, &cur_id_map, frag_id)?;
+                    let ns = if is_xpointer {
+                        NodeSet::tree_with_comments(resolved_id, &cur_doc)
+                    } else {
+                        NodeSet::tree_without_comments(resolved_id, &cur_doc)
+                    };
+                    bergshamra_transforms::TransformData::xml_borrowed(&result_xml, Some(ns))
+                }
+            } else {
+                // Try url-map for external URIs
+                let mut resolved = None;
+                for (map_url, file_path) in &ctx.url_maps {
+                    if uri == map_url || uri.starts_with(map_url) {
+                        let bytes = std::fs::read(file_path)
+                            .map_err(|e| Error::Other(format!("url-map {file_path}: {e}")))?;
+                        resolved = Some(bergshamra_transforms::TransformData::Binary(bytes));
+                        break;
+                    }
+                }
+                // Try resolving as a relative file path (no scheme = local file)
+                if resolved.is_none() && !uri.contains("://") {
+                    if let Some(base) = &ctx.base_dir {
+                        let path = std::path::Path::new(base).join(uri);
+                        if path.exists() {
+                            let bytes = std::fs::read(&path)
+                                .map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
+                            resolved = Some(bergshamra_transforms::TransformData::Binary(bytes));
+                        }
+                    }
+                    if resolved.is_none() {
+                        let path = std::path::Path::new(uri);
+                        if path.exists() {
+                            let bytes = std::fs::read(path)
+                                .map_err(|e| Error::Other(format!("{uri}: {e}")))?;
+                            resolved = Some(bergshamra_transforms::TransformData::Binary(bytes));
+                        }
+                    }
+                }
+                resolved.ok_or_else(|| Error::InvalidUri(format!("unsupported URI: {uri}")))?
+            };
+
+            if let Some(transforms_id) = transforms_node {
+                for t_node in cur_doc.children(transforms_id) {
+                    let is_transform = cur_doc
+                        .element(t_node)
+                        .is_some_and(|e| &*e.name.local_name == ns::node::TRANSFORM);
+                    if !is_transform {
+                        continue;
+                    }
+                    let t_uri = cur_doc
+                        .element(t_node)
+                        .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
+                        .unwrap_or("");
+                    data = crate::verify::apply_transform(t_uri, data, t_node, cur_sig, &cur_doc)?;
+                }
+            }
+
+            let bytes = data.to_binary()?;
+            let computed = digest::digest(digest_uri, &bytes)?;
+            drop(bytes);
+            computed
+        };
 
         use base64::Engine;
         let engine = base64::engine::general_purpose::STANDARD;
         let digest_b64 = engine.encode(&computed);
 
-        // Replace the empty DigestValue in the result XML
-        // This is a simple text replacement — works for templates
-        // where DigestValue elements are initially empty.
-        let digest_value_text =
+        // Capture replacement metadata while the parsed document is live, then
+        // drop it before mutating `result_xml`. This avoids allocating a second
+        // document-sized XML string while the DOM still holds the first one.
+        let mut needs_digest_fallback = false;
+        let digest_replacement = if let Some(digest_value_id) =
             find_child_element(&cur_doc, reference, ns::DSIG, ns::node::DIGEST_VALUE)
-                .map(|id| cur_doc.text_content_deep(id))
-                .unwrap_or_default();
+        {
+            let digest_value_text = cur_doc.text_content_deep(digest_value_id);
+            if digest_value_text.trim().is_empty() {
+                empty_element_replacement(&result_xml, &cur_doc, digest_value_id, "DigestValue")
+            } else {
+                None
+            }
+        } else {
+            needs_digest_fallback = true;
+            None
+        };
+        drop(cur_doc);
 
-        if digest_value_text.trim().is_empty() {
-            result_xml = replace_first_empty_element(&result_xml, "DigestValue", &digest_b64);
+        if let Some(replacement) = digest_replacement {
+            replace_element_in_place(&mut result_xml, replacement, &digest_b64);
+        } else if needs_digest_fallback {
+            replace_first_empty_element_in_place(&mut result_xml, "DigestValue", &digest_b64);
         }
     }
 
@@ -223,7 +284,7 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
         // SignatureValue was produced with another, making it self-inconsistent
         // and likely to fail interop verification.
         let signer_uri = bergshamra_crypto::sign::kryptering_algorithm_uri(hsm_signer.algorithm());
-        if signer_uri != Some(sig_method_uri) {
+        if signer_uri != Some(sig_method_uri.as_str()) {
             return Err(Error::UnsupportedAlgorithm(format!(
                 "HSM signer algorithm {:?} (URI {}) does not match the template's SignatureMethod {sig_method_uri}",
                 hsm_signer.algorithm(),
@@ -251,7 +312,7 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
 
         // Extract PQ context string for ML-DSA/SLH-DSA signing
         let pq_context: Option<Vec<u8>> =
-            if bergshamra_crypto::sign::is_pq_algorithm(sig_method_uri) {
+            if bergshamra_crypto::sign::is_pq_algorithm(&sig_method_uri) {
                 let ctx_node = find_child_element(
                     &updated_doc,
                     updated_sig_method,
@@ -286,11 +347,11 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
                 None
             };
 
-        let sig_alg = bergshamra_crypto::sign::from_uri_with_context(sig_method_uri, pq_context)?;
+        let sig_alg = bergshamra_crypto::sign::from_uri_with_context(&sig_method_uri, pq_context)?;
         let mut sig = sig_alg.sign(&signing_key, &c14n_signed_info)?;
 
         // Truncate HMAC output if HMACOutputLength is specified
-        if bergshamra_crypto::sign::is_hmac_algorithm(sig_method_uri) {
+        if bergshamra_crypto::sign::is_hmac_algorithm(&sig_method_uri) {
             if let Some(hmac_len_id) = find_child_element(
                 &updated_doc,
                 updated_sig_method,
@@ -316,9 +377,33 @@ pub fn sign(ctx: &DsigContext, template_xml: &str) -> Result<String, Error> {
     use base64::Engine;
     let engine = base64::engine::general_purpose::STANDARD;
     let sig_b64 = engine.encode(&signature);
+    drop(c14n_signed_info);
 
     // Replace empty SignatureValue
-    result_xml = replace_first_empty_element(&result_xml, "SignatureValue", &sig_b64);
+    let mut needs_signature_fallback = false;
+    let signature_replacement = if let Some(sig_value_id) = find_child_element(
+        &updated_doc,
+        updated_sig,
+        ns::DSIG,
+        ns::node::SIGNATURE_VALUE,
+    ) {
+        let sig_value_text = updated_doc.text_content_deep(sig_value_id);
+        if sig_value_text.trim().is_empty() {
+            empty_element_replacement(&result_xml, &updated_doc, sig_value_id, "SignatureValue")
+        } else {
+            None
+        }
+    } else {
+        needs_signature_fallback = true;
+        None
+    };
+    drop(updated_doc);
+
+    if let Some(replacement) = signature_replacement {
+        replace_element_in_place(&mut result_xml, replacement, &sig_b64);
+    } else if needs_signature_fallback {
+        replace_first_empty_element_in_place(&mut result_xml, "SignatureValue", &sig_b64);
+    }
 
     // Populate KeyInfo elements from the software key (skipped for HSM signers
     // because the key material lives on the HSM and is not available here).
@@ -414,11 +499,237 @@ fn build_id_map(doc: &Document<'_>, attr_names: &[&str]) -> Result<HashMap<Strin
     Ok(map)
 }
 
-/// Replace the text content of the first XML element whose body is empty or
-/// whitespace-only.  Handles self-closing tags and arbitrary namespace prefixes.
-fn replace_first_empty_element(xml: &str, local_name: &str, new_content: &str) -> String {
+/// Resolve a reference URI into the node-set shape used by the signing fast path.
+///
+/// Returns:
+///
+/// - `Ok(None)` when the URI is not a same-document reference and must use the
+///   generic pipeline.
+/// - `Ok(Some(None))` for `#xpointer(/)`, which means "the whole parsed
+///   document" and therefore no subset node set.
+/// - `Ok(Some(Some(node_set)))` for empty URI, bare `#id`, and
+///   `#xpointer(id(...))` references that the fast path can canonicalize.
+fn reference_node_set_for_fast(
+    doc: &Document<'_>,
+    id_map: &HashMap<String, NodeId>,
+    uri: &str,
+) -> Result<Option<Option<NodeSet>>, Error> {
+    if uri.is_empty() {
+        return Ok(Some(Some(NodeSet::all_without_comments(doc))));
+    }
+
+    let Some(fragment) = bergshamra_xml::xpath::parse_same_document_ref(uri) else {
+        return Ok(None);
+    };
+
+    if fragment == "xpointer(/)" {
+        return Ok(Some(None));
+    }
+
+    let is_xpointer = bergshamra_xml::xpath::parse_xpointer_id(fragment).is_some();
+    let frag_id = bergshamra_xml::xpath::parse_xpointer_id(fragment).unwrap_or(fragment);
+    let resolved_id = bergshamra_xml::xpath::resolve_id(doc, id_map, frag_id)?;
+    let node_set = if is_xpointer {
+        NodeSet::tree_with_comments(resolved_id, doc)
+    } else {
+        NodeSet::tree_without_comments(resolved_id, doc)
+    };
+    Ok(Some(Some(node_set)))
+}
+
+/// C14N sink that feeds canonical bytes into a digest stream.
+///
+/// Signing only needs the reference digest, not the full pre-digest byte
+/// buffer, so this sink avoids allocating a document-sized `Vec<u8>` on the
+/// fast path.
+struct ReferenceDigestSink {
+    inner: Box<dyn digest::DigestAlgorithm>,
+}
+
+impl ReferenceDigestSink {
+    /// Create a digest sink for an XML Security digest algorithm URI.
+    fn new(uri: &str) -> Result<Self, Error> {
+        Ok(Self {
+            inner: digest::from_uri(uri)?,
+        })
+    }
+
+    /// Finalize the digest stream and return the computed digest bytes.
+    fn finalize(self) -> Vec<u8> {
+        self.inner.finalize()
+    }
+}
+
+impl bergshamra_c14n::C14nSink for ReferenceDigestSink {
+    /// Feed canonicalized bytes into the underlying digest.
+    fn write(&mut self, bytes: &[u8]) {
+        self.inner.update(bytes);
+    }
+}
+
+/// Canonicalization mode, InclusiveNamespaces PrefixList, and selected node-set.
+type FastC14nParams = (C14nMode, Vec<String>, Option<NodeSet>);
+
+/// Compute a reference digest through the fast C14N path.
+///
+/// Returns `Ok(None)` when the transform list contains anything other than the
+/// supported fast-path sequence. The caller must then run the generic transform
+/// pipeline to preserve full XML-DSig behavior.
+fn try_fast_reference_digest(
+    doc: &Document<'_>,
+    sig_node: NodeId,
+    node_set: Option<NodeSet>,
+    transforms_node: Option<NodeId>,
+    digest_uri: &str,
+) -> Result<Option<Vec<u8>>, Error> {
+    let Some((c14n_mode, inclusive_prefixes, node_set)) =
+        fast_reference_c14n_params(doc, sig_node, node_set, transforms_node)?
+    else {
+        return Ok(None);
+    };
+
+    let mut sink = ReferenceDigestSink::new(digest_uri)?;
+    bergshamra_c14n::canonicalize_doc_to(
+        doc,
+        c14n_mode,
+        node_set.as_ref(),
+        &inclusive_prefixes,
+        &mut sink,
+    )?;
+    Ok(Some(sink.finalize()))
+}
+
+/// Parse the fast-path transform list and return canonicalization parameters.
+///
+/// The fast path accepts only:
+///
+/// - zero or one enveloped-signature transform before C14N
+/// - zero or one C14N transform
+///
+/// Any other transform, missing algorithm URI, duplicate C14N transform, or
+/// enveloped-signature after C14N returns `Ok(None)` so the caller can fall
+/// back to generic transform execution.
+fn fast_reference_c14n_params(
+    doc: &Document<'_>,
+    sig_node: NodeId,
+    mut node_set: Option<NodeSet>,
+    transforms_node: Option<NodeId>,
+) -> Result<Option<FastC14nParams>, Error> {
+    let mut c14n_mode = C14nMode::Inclusive;
+    let mut inclusive_prefixes = Vec::new();
+    let mut saw_c14n = false;
+
+    if let Some(transforms_id) = transforms_node {
+        for t_node in doc.children(transforms_id) {
+            let is_transform = doc
+                .element(t_node)
+                .is_some_and(|e| &*e.name.local_name == ns::node::TRANSFORM);
+            if !is_transform {
+                continue;
+            }
+            let Some(t_uri) = doc
+                .element(t_node)
+                .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
+            else {
+                return Ok(None);
+            };
+
+            match t_uri {
+                algorithm::ENVELOPED_SIGNATURE => {
+                    if saw_c14n {
+                        return Ok(None);
+                    }
+                    let ns = node_set.get_or_insert_with(|| NodeSet::all(doc));
+                    remove_subtree_from_node_set(sig_node, doc, ns);
+                }
+                algorithm::C14N
+                | algorithm::C14N_WITH_COMMENTS
+                | algorithm::C14N11
+                | algorithm::C14N11_WITH_COMMENTS
+                | algorithm::EXC_C14N
+                | algorithm::EXC_C14N_WITH_COMMENTS => {
+                    if saw_c14n {
+                        return Ok(None);
+                    }
+                    c14n_mode = C14nMode::from_uri(t_uri)
+                        .ok_or_else(|| Error::UnsupportedAlgorithm(format!("C14N: {t_uri}")))?;
+                    inclusive_prefixes = read_inclusive_prefixes(doc, t_node);
+                    saw_c14n = true;
+                }
+                _ => return Ok(None),
+            }
+        }
+    }
+
+    Ok(Some((c14n_mode, inclusive_prefixes, node_set)))
+}
+
+/// Remove a node and all descendants from `node_set`.
+///
+/// This implements the enveloped-signature transform for the fast path. It uses
+/// [`NodeSet::remove_id`], so it works for both normal and inverted node sets.
+fn remove_subtree_from_node_set(id: NodeId, doc: &Document<'_>, node_set: &mut NodeSet) {
+    node_set.remove_id(id);
+    for child in doc.children(id) {
+        remove_subtree_from_node_set(child, doc, node_set);
+    }
+}
+
+/// Byte range and tag name needed to replace an empty XML element.
+struct ElementReplacement {
+    /// Byte range of the parsed element in the current XML string.
+    range: std::ops::Range<usize>,
+    /// Qualified tag name to write back, preserving the original namespace
+    /// prefix when the template used one.
+    tag: String,
+}
+
+/// Locate an empty element by parsed node id without allocating replacement XML.
+///
+/// The returned range is valid only for the exact `xml` string that was parsed
+/// into `doc`. Callers must finish using `doc`, drop it, and then apply the
+/// replacement before reparsing or making additional range-based edits.
+fn empty_element_replacement(
+    xml: &str,
+    doc: &Document<'_>,
+    id: NodeId,
+    local_name: &str,
+) -> Option<ElementReplacement> {
+    let range = doc.node_range(id)?;
+    let original = &xml[range.clone()];
+    let prefix = extract_tag_prefix(original, local_name);
+    let tag = pname(prefix, local_name);
+    Some(ElementReplacement { range, tag })
+}
+
+/// Replace an element range in-place with `<tag>new_content</tag>`.
+///
+/// This allocates only the small replacement fragment, then lets `String`
+/// shift the existing buffer. The caller is responsible for ensuring no parsed
+/// `Document` still borrows `xml`.
+fn replace_element_in_place(xml: &mut String, replacement: ElementReplacement, new_content: &str) {
+    let mut w = XmlWriter::new();
+    w.start_element(&replacement.tag, &[]);
+    w.text(new_content);
+    w.end_element(&replacement.tag);
+    let replacement_xml = w.into_string();
+    xml.replace_range(replacement.range, &replacement_xml);
+}
+
+/// Replace the first empty element in-place.
+///
+/// This is the fallback for unusual templates where the caller did not locate
+/// the exact parsed node first. It still avoids returning a second full XML
+/// string: the document is parsed only to find the range, then the mutation is
+/// applied after that parse result has gone out of scope.
+fn replace_first_empty_element_in_place(
+    xml: &mut String,
+    local_name: &str,
+    new_content: &str,
+) -> bool {
     // Use uppsala to find the element's byte range for accurate replacement
-    if let Ok(doc) = uppsala::parse(xml) {
+    let replacement = if let Ok(doc) = uppsala::parse(xml.as_str()) {
+        let mut replacement = None;
         for id in doc.descendants(doc.root()) {
             let elem = match doc.element(id) {
                 Some(e) => e,
@@ -438,24 +749,20 @@ fn replace_first_empty_element(xml: &str, local_name: &str, new_content: &str) -
                 continue;
             }
             // Found an empty element — replace it
-            let range = doc.node_range(id).unwrap();
-            let original = &xml[range.start..range.end];
-            // Extract the tag prefix from the original XML
-            let prefix = extract_tag_prefix(original, local_name);
-            let tag = pname(prefix, local_name);
-            let mut w = XmlWriter::new();
-            w.start_element(&tag, &[]);
-            w.text(new_content);
-            w.end_element(&tag);
-            let replacement = w.into_string();
-            let mut result = String::with_capacity(xml.len() + new_content.len());
-            result.push_str(&xml[..range.start]);
-            result.push_str(&replacement);
-            result.push_str(&xml[range.end..]);
-            return result;
+            replacement = empty_element_replacement(xml, &doc, id, local_name);
+            break;
         }
+        replacement
+    } else {
+        None
+    };
+
+    if let Some(replacement) = replacement {
+        replace_element_in_place(xml, replacement, new_content);
+        true
+    } else {
+        false
     }
-    xml.to_string()
 }
 
 /// Build a prefixed element name like `"ds:Foo"` or just `"Foo"`.

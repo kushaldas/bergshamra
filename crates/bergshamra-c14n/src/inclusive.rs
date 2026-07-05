@@ -12,23 +12,59 @@
 //! - Optionally preserves or strips comments
 //! - Supports document-subset canonicalization via NodeSet
 
-use crate::escape;
 use crate::render::{Attr, NsDecl};
+use crate::{escape, C14nSink};
 use bergshamra_core::Error;
 use bergshamra_xml::nodeset::NodeSet;
 use std::collections::BTreeMap;
 use uppsala::{Document, NodeId, NodeKind};
 
 /// Canonicalize a document using Inclusive C14N 1.0.
+///
+/// Pass `with_comments = true` for
+/// `http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments`.
+/// `node_set` controls document-subset canonicalization; `None` makes every
+/// node visible.
+///
+/// # Errors
+///
+/// Returns an error if document-subset C14N needs unsupported state.
 pub fn canonicalize(
     doc: &Document<'_>,
     with_comments: bool,
     node_set: Option<&NodeSet>,
 ) -> Result<Vec<u8>, Error> {
-    canonicalize_with_options(doc, with_comments, node_set, false)
+    let mut output = Vec::new();
+    canonicalize_to(doc, with_comments, node_set, &mut output)?;
+    Ok(output)
 }
 
-/// Canonicalize with optional C14N 1.1 xml:base absolutization.
+/// Canonicalize a document into a byte sink using Inclusive C14N 1.0.
+///
+/// This writes the same byte stream as [`canonicalize`] without first
+/// allocating the full output buffer. The caller owns the sink and can append
+/// to an existing buffer or feed the bytes into a digest.
+///
+/// # Errors
+///
+/// Returns the same errors as [`canonicalize`].
+pub fn canonicalize_to<W: C14nSink>(
+    doc: &Document<'_>,
+    with_comments: bool,
+    node_set: Option<&NodeSet>,
+    output: &mut W,
+) -> Result<(), Error> {
+    canonicalize_with_options_to(doc, with_comments, node_set, false, output)
+}
+
+/// Canonicalize with optional C14N 1.1 `xml:base` handling.
+///
+/// `c14n11_mode` enables the C14N 1.1 rule that can inherit or absolutize
+/// `xml:base` for visible elements whose parent is outside the node set.
+///
+/// # Errors
+///
+/// Returns an error if canonicalization cannot be completed.
 pub fn canonicalize_with_options(
     doc: &Document<'_>,
     with_comments: bool,
@@ -36,14 +72,31 @@ pub fn canonicalize_with_options(
     c14n11_mode: bool,
 ) -> Result<Vec<u8>, Error> {
     let mut output = Vec::new();
+    canonicalize_with_options_to(doc, with_comments, node_set, c14n11_mode, &mut output)?;
+    Ok(output)
+}
+
+/// Canonicalize with optional C14N 1.1 `xml:base` handling into a byte sink.
+///
+/// This is the streaming form of [`canonicalize_with_options`].
+///
+/// # Errors
+///
+/// Returns the same errors as [`canonicalize_with_options`].
+pub fn canonicalize_with_options_to<W: C14nSink>(
+    doc: &Document<'_>,
+    with_comments: bool,
+    node_set: Option<&NodeSet>,
+    c14n11_mode: bool,
+    output: &mut W,
+) -> Result<(), Error> {
     let mut ctx = C14nContext {
         doc,
         with_comments,
         node_set,
         c14n11_mode,
     };
-    ctx.process_node(doc.root(), &mut output, &BTreeMap::new())?;
-    Ok(output)
+    ctx.process_node(doc.root(), output, &BTreeMap::new())
 }
 
 struct C14nContext<'a, 'doc> {
@@ -54,6 +107,10 @@ struct C14nContext<'a, 'doc> {
 }
 
 impl<'a, 'doc> C14nContext<'a, 'doc> {
+    /// Return whether `id` is visible according to the optional document
+    /// subset. Visibility controls whether the node itself is serialized; even
+    /// invisible elements may still have visible descendants that must be
+    /// processed.
     fn is_visible(&self, id: NodeId) -> bool {
         match self.node_set {
             None => true,
@@ -61,10 +118,16 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
         }
     }
 
-    fn process_node(
+    /// Process a node in document order, passing along the namespace
+    /// declarations inherited from the nearest visible ancestor.
+    ///
+    /// The inherited map represents namespaces that have already been rendered
+    /// on visible ancestor elements, which lets `process_element` emit only the
+    /// declarations that C14N requires at the current position.
+    fn process_node<W: C14nSink>(
         &mut self,
         id: NodeId,
-        output: &mut Vec<u8>,
+        output: &mut W,
         inherited_ns: &BTreeMap<String, String>,
     ) -> Result<(), Error> {
         match self.doc.node_kind(id) {
@@ -81,7 +144,9 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
             }
             Some(NodeKind::Comment(text)) if self.with_comments && self.is_visible(id) => {
                 let text = text.clone();
-                // Check if we need newlines around comments at the document level
+                // Top-level comments are separated from the document element by
+                // newlines. Comments inside elements are emitted without those
+                // synthetic separators.
                 let parent_is_root = self
                     .doc
                     .parent(id)
@@ -92,18 +157,18 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
                     // After document element: \ncomment
                     let has_preceding_element = has_preceding_element(self.doc, id);
                     if has_preceding_element {
-                        output.push(b'\n');
+                        output.write_byte(b'\n');
                     }
                 }
 
-                output.extend_from_slice(b"<!--");
-                output.extend_from_slice(text.as_bytes());
-                output.extend_from_slice(b"-->");
+                output.write(b"<!--");
+                output.write(text.as_bytes());
+                output.write(b"-->");
 
                 if parent_is_root {
                     let has_following_element = has_following_element(self.doc, id);
                     if has_following_element {
-                        output.push(b'\n');
+                        output.write_byte(b'\n');
                     }
                 }
             }
@@ -119,24 +184,24 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
                 if parent_is_root {
                     let has_preceding_element = has_preceding_element(self.doc, id);
                     if has_preceding_element {
-                        output.push(b'\n');
+                        output.write_byte(b'\n');
                     }
                 }
 
-                output.extend_from_slice(b"<?");
-                output.extend_from_slice(target.as_bytes());
+                output.write(b"<?");
+                output.write(target.as_bytes());
                 if let Some(value) = &data {
                     if !value.is_empty() {
-                        output.push(b' ');
+                        output.write_byte(b' ');
                         escape::escape_pi_into(output, value);
                     }
                 }
-                output.extend_from_slice(b"?>");
+                output.write(b"?>");
 
                 if parent_is_root {
                     let has_following_element = has_following_element(self.doc, id);
                     if has_following_element {
-                        output.push(b'\n');
+                        output.write_byte(b'\n');
                     }
                 }
             }
@@ -145,10 +210,16 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
         Ok(())
     }
 
-    fn process_element(
+    /// Process an element and its descendants.
+    ///
+    /// Visible elements emit a start tag, namespace declarations, attributes,
+    /// child content, and an end tag. Invisible elements do not emit their own
+    /// tag, but their children must still be visited because a document subset
+    /// may select descendants without selecting the ancestor.
+    fn process_element<W: C14nSink>(
         &mut self,
         id: NodeId,
-        output: &mut Vec<u8>,
+        output: &mut W,
         inherited_ns: &BTreeMap<String, String>,
     ) -> Result<(), Error> {
         let visible = self.is_visible(id);
@@ -288,15 +359,15 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
             let elem_name = qualified_element_name(self.doc, id);
 
             // Output: <name ns-decls attrs>
-            output.push(b'<');
-            output.extend_from_slice(elem_name.as_bytes());
+            output.write_byte(b'<');
+            output.write(elem_name.as_bytes());
             for ns_decl in &ns_decls {
-                output.extend_from_slice(ns_decl.render().as_bytes());
+                output.write(ns_decl.render().as_bytes());
             }
             for attr in &attrs {
-                output.extend_from_slice(attr.render().as_bytes());
+                output.write(attr.render().as_bytes());
             }
-            output.push(b'>');
+            output.write_byte(b'>');
 
             // Process children with updated namespace context.
             // Per C14N spec (section 2.3): the "nearest ancestor element in
@@ -331,9 +402,9 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
             }
 
             // Close tag
-            output.extend_from_slice(b"</");
-            output.extend_from_slice(elem_name.as_bytes());
-            output.push(b'>');
+            output.write(b"</");
+            output.write(elem_name.as_bytes());
+            output.write_byte(b'>');
         } else {
             // Element not visible, but per C14N 1.0 spec (section 2.3):
             // "If the element is not in the node-set, then the result is
@@ -381,7 +452,7 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
                 }
                 ns_decls.sort();
                 for ns_decl in &ns_decls {
-                    output.extend_from_slice(ns_decl.render().as_bytes());
+                    output.write(ns_decl.render().as_bytes());
                 }
             }
 

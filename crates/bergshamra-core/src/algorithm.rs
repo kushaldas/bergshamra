@@ -1,9 +1,12 @@
 #![forbid(unsafe_code)]
+#![allow(missing_docs)]
 
 //! Algorithm URI constants for XML Security.
 //!
 //! Ported from xmlsec `src/strings.c`. Each constant is the canonical
-//! URI string that appears in `Algorithm` attributes.
+//! URI string that appears in `Algorithm` attributes. Constants are grouped by
+//! XML Security algorithm family; the identifier names are the stable API for
+//! callers that need to compare or emit exact URIs.
 
 // ── Canonicalization ─────────────────────────────────────────────────
 

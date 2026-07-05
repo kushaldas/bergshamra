@@ -12,33 +12,66 @@
 //! 3. The prefix appears in the InclusiveNamespaces PrefixList, OR
 //! 4. It's the default namespace and the element is in that namespace.
 
-use crate::escape;
 use crate::render::{Attr, NsDecl};
+use crate::{escape, C14nSink};
 use bergshamra_core::Error;
 use bergshamra_xml::nodeset::NodeSet;
 use std::collections::{BTreeMap, HashSet};
 use uppsala::{Document, NodeId, NodeKind};
 
 /// Canonicalize using Exclusive C14N 1.0.
+///
+/// `inclusive_prefixes` is the InclusiveNamespaces PrefixList from an
+/// `ec:InclusiveNamespaces` transform parameter. Prefixes are compared after
+/// converting each entry with [`AsRef<str>`]; use `"#default"` for the default
+/// namespace as specified by Exclusive C14N.
+///
+/// # Errors
+///
+/// Returns an error if canonicalization cannot be completed.
 pub fn canonicalize<S: AsRef<str>>(
     doc: &Document<'_>,
     with_comments: bool,
     node_set: Option<&NodeSet>,
     inclusive_prefixes: &[S],
 ) -> Result<Vec<u8>, Error> {
+    let mut output = Vec::new();
+    canonicalize_to(
+        doc,
+        with_comments,
+        node_set,
+        inclusive_prefixes,
+        &mut output,
+    )?;
+    Ok(output)
+}
+
+/// Canonicalize using Exclusive C14N 1.0 into a byte sink.
+///
+/// This is the streaming form of [`canonicalize`]. It writes the exact same
+/// bytes into `output` without allocating a complete canonical byte vector.
+///
+/// # Errors
+///
+/// Returns the same errors as [`canonicalize`].
+pub fn canonicalize_to<S: AsRef<str>, W: C14nSink>(
+    doc: &Document<'_>,
+    with_comments: bool,
+    node_set: Option<&NodeSet>,
+    inclusive_prefixes: &[S],
+    output: &mut W,
+) -> Result<(), Error> {
     let prefix_set: HashSet<String> = inclusive_prefixes
         .iter()
         .map(|s| s.as_ref().to_owned())
         .collect();
-    let mut output = Vec::new();
     let mut ctx = ExcC14nContext {
         doc,
         with_comments,
         node_set,
         inclusive_prefixes: prefix_set,
     };
-    ctx.process_node(doc.root(), &mut output, &BTreeMap::new())?;
-    Ok(output)
+    ctx.process_node(doc.root(), output, &BTreeMap::new())
 }
 
 struct ExcC14nContext<'a, 'doc> {
@@ -49,6 +82,9 @@ struct ExcC14nContext<'a, 'doc> {
 }
 
 impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
+    /// Return whether `id` is visible according to the optional document
+    /// subset. Invisible elements can still affect traversal because selected
+    /// descendants must be serialized.
     fn is_visible(&self, id: NodeId) -> bool {
         match self.node_set {
             None => true,
@@ -56,10 +92,16 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
         }
     }
 
-    fn process_node(
+    /// Process a node in document order.
+    ///
+    /// `rendered_ns` records namespace bindings that have already been emitted
+    /// by visible ancestors. Exclusive C14N uses this to avoid repeating
+    /// bindings unless the current element visibly uses a prefix that needs a
+    /// new declaration.
+    fn process_node<W: C14nSink>(
         &mut self,
         id: NodeId,
-        output: &mut Vec<u8>,
+        output: &mut W,
         rendered_ns: &BTreeMap<String, String>,
     ) -> Result<(), Error> {
         match self.doc.node_kind(id) {
@@ -84,18 +126,18 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
                 if parent_is_root {
                     let has_preceding_element = has_preceding_element(self.doc, id);
                     if has_preceding_element {
-                        output.push(b'\n');
+                        output.write_byte(b'\n');
                     }
                 }
 
-                output.extend_from_slice(b"<!--");
-                output.extend_from_slice(text.as_bytes());
-                output.extend_from_slice(b"-->");
+                output.write(b"<!--");
+                output.write(text.as_bytes());
+                output.write(b"-->");
 
                 if parent_is_root {
                     let has_following_element = has_following_element(self.doc, id);
                     if has_following_element {
-                        output.push(b'\n');
+                        output.write_byte(b'\n');
                     }
                 }
             }
@@ -111,24 +153,24 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
                 if parent_is_root {
                     let has_preceding_element = has_preceding_element(self.doc, id);
                     if has_preceding_element {
-                        output.push(b'\n');
+                        output.write_byte(b'\n');
                     }
                 }
 
-                output.extend_from_slice(b"<?");
-                output.extend_from_slice(target.as_bytes());
+                output.write(b"<?");
+                output.write(target.as_bytes());
                 if let Some(value) = &data {
                     if !value.is_empty() {
-                        output.push(b' ');
+                        output.write_byte(b' ');
                         escape::escape_pi_into(output, value);
                     }
                 }
-                output.extend_from_slice(b"?>");
+                output.write(b"?>");
 
                 if parent_is_root {
                     let has_following_element = has_following_element(self.doc, id);
                     if has_following_element {
-                        output.push(b'\n');
+                        output.write_byte(b'\n');
                     }
                 }
             }
@@ -137,10 +179,17 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
         Ok(())
     }
 
-    fn process_element(
+    /// Process an element according to Exclusive C14N visibility rules.
+    ///
+    /// Unlike inclusive C14N, namespace declarations are emitted only when the
+    /// prefix is visibly utilized by the current element, its attributes, or
+    /// the InclusiveNamespaces PrefixList. When namespace-node filtering is
+    /// active, the rendered namespace chain may be broken so descendants
+    /// re-declare prefixes whose namespace nodes were not visible here.
+    fn process_element<W: C14nSink>(
         &mut self,
         id: NodeId,
-        output: &mut Vec<u8>,
+        output: &mut W,
         rendered_ns: &BTreeMap<String, String>,
     ) -> Result<(), Error> {
         let visible = self.is_visible(id);
@@ -252,15 +301,15 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
             let elem_name = qualified_element_name(self.doc, id);
 
             // Output start tag
-            output.push(b'<');
-            output.extend_from_slice(elem_name.as_bytes());
+            output.write_byte(b'<');
+            output.write(elem_name.as_bytes());
             for ns_decl in &ns_decls {
-                output.extend_from_slice(ns_decl.render().as_bytes());
+                output.write(ns_decl.render().as_bytes());
             }
             for attr in &attrs {
-                output.extend_from_slice(attr.render().as_bytes());
+                output.write(attr.render().as_bytes());
             }
-            output.push(b'>');
+            output.write_byte(b'>');
 
             // Update rendered namespace context for children.
             let mut child_rendered_ns = rendered_ns.clone();
@@ -292,9 +341,9 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
             }
 
             // Close tag
-            output.extend_from_slice(b"</");
-            output.extend_from_slice(elem_name.as_bytes());
-            output.push(b'>');
+            output.write(b"</");
+            output.write(elem_name.as_bytes());
+            output.write_byte(b'>');
         } else {
             // Element not visible -- in exclusive C14N, namespace
             // declarations are only rendered on visible element start
@@ -332,7 +381,7 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
                 }
                 ns_decls.sort();
                 for ns_decl in &ns_decls {
-                    output.extend_from_slice(ns_decl.render().as_bytes());
+                    output.write(ns_decl.render().as_bytes());
                 }
             }
 
