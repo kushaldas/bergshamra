@@ -124,8 +124,9 @@ impl VerifyResult {
 /// Return the reference-coverage policy failure for an otherwise valid signature.
 ///
 /// `SignatureValue` authenticates `<SignedInfo>`, but payload integrity depends
-/// on locally verifying at least one `<Reference>` digest. This helper keeps the
-/// software and HSM verifier paths on the same fail-closed policy.
+/// on locally verifying at least one `<Reference>` digest and not skipping any
+/// listed `<Reference>` digest. This helper keeps the software and HSM verifier
+/// paths on the same fail-closed policy.
 fn reference_digest_policy_failure(
     ctx: &DsigContext,
     references: &[VerifiedReference],
