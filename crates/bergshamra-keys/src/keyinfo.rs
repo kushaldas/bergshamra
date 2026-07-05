@@ -24,22 +24,29 @@ fn decode_crypto_binary(text: &str, engine: &impl base64::Engine) -> Result<Vec<
         return Ok(bytes);
     }
 
-    // If base64 fails, try hex decoding (some test vectors use hex)
+    // If base64 fails, try hex decoding (some test vectors use hex).
+    // XML CryptoBinary hex requires complete byte pairs; reject odd lengths
+    // before chunking so malformed KeyInfo stays a recoverable parse error.
     if clean.len() >= 2 && clean.chars().all(|c| c.is_ascii_hexdigit()) {
-        // Hex string — decode it
-        let bytes: Result<Vec<u8>, _> = (0..clean.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&clean[i..i + 2], 16))
+        if clean.len() % 2 != 0 {
+            return Err("odd-length hex CryptoBinary value".into());
+        }
+
+        let bytes: Result<Vec<u8>, _> = clean
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                let hex = std::str::from_utf8(pair).map_err(|e| e.to_string())?;
+                u8::from_str_radix(hex, 16).map_err(|e| e.to_string())
+            })
             .collect();
         if let Ok(bytes) = bytes {
             return Ok(bytes);
         }
     }
 
-    Err(format!(
-        "Invalid symbol at position 0 for {}",
-        &clean[..clean.len().min(20)]
-    ))
+    let preview: String = clean.chars().take(20).collect();
+    Err(format!("Invalid symbol at position 0 for {}", preview))
 }
 
 /// Process a `<KeyInfo>` element and attempt to resolve a key from the manager.
@@ -791,6 +798,78 @@ mod tests {
                     .is_some_and(|e| &*e.name.local_name == ns::node::KEY_INFO)
             })
             .expect("KeyInfo element present")
+    }
+
+    /// Build an RSA `KeyValue` fixture with caller-selected CryptoBinary text.
+    ///
+    /// The malformed-value regression tests use this helper to keep the XML
+    /// shape realistic while changing only the modulus or exponent payload.
+    fn rsa_key_value_xml(modulus: &str, exponent: &str) -> String {
+        format!(
+            concat!(
+                r#"<ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#">"#,
+                "<ds:KeyValue>",
+                "<ds:RSAKeyValue>",
+                "<ds:Modulus>{modulus}</ds:Modulus>",
+                "<ds:Exponent>{exponent}</ds:Exponent>",
+                "</ds:RSAKeyValue>",
+                "</ds:KeyValue>",
+                "</ds:KeyInfo>",
+            ),
+            modulus = modulus,
+            exponent = exponent,
+        )
+    }
+
+    fn find_key_value(doc: &Document<'_>) -> NodeId {
+        doc.descendants(doc.root())
+            .into_iter()
+            .find(|&id| {
+                doc.element(id)
+                    .is_some_and(|e| &*e.name.local_name == ns::node::KEY_VALUE)
+            })
+            .expect("KeyValue element present")
+    }
+
+    /// Odd-length hex in an RSA modulus must be a recoverable parse error.
+    ///
+    /// This is a regression test for malformed inline `KeyValue` XML that used
+    /// to panic while slicing the final incomplete hex byte.
+    #[test]
+    fn test_rsa_key_value_rejects_odd_length_hex_modulus_without_panic() {
+        let xml = rsa_key_value_xml("abc", "010001");
+        let doc = uppsala::parse(&xml).expect("parse XML");
+
+        let err = parse_rsa_key_value(find_key_value(&doc), &doc)
+            .expect_err("odd-length modulus must be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("Modulus"), "error should name Modulus: {msg}");
+        assert!(
+            msg.contains("odd-length hex"),
+            "error should explain the malformed hex length: {msg}"
+        );
+    }
+
+    /// Odd-length hex in an RSA exponent must also stay recoverable.
+    ///
+    /// The modulus is even-length hex so the test reaches exponent decoding and
+    /// proves both RSA CryptoBinary fields are guarded.
+    #[test]
+    fn test_rsa_key_value_rejects_odd_length_hex_exponent_without_panic() {
+        let xml = rsa_key_value_xml("010203", "abc");
+        let doc = uppsala::parse(&xml).expect("parse XML");
+
+        let err = parse_rsa_key_value(find_key_value(&doc), &doc)
+            .expect_err("odd-length exponent must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Exponent"),
+            "error should name Exponent: {msg}"
+        );
+        assert!(
+            msg.contains("odd-length hex"),
+            "error should explain the malformed hex length: {msg}"
+        );
     }
 
     /// Regression test for the X.509 leaf-binding trust bypass

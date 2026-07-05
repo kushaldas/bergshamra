@@ -121,6 +121,30 @@ impl VerifyResult {
     }
 }
 
+/// Return the reference-coverage policy failure for an otherwise valid signature.
+///
+/// `SignatureValue` authenticates `<SignedInfo>`, but payload integrity depends
+/// on locally verifying at least one `<Reference>` digest. This helper keeps the
+/// software and HSM verifier paths on the same fail-closed policy.
+fn reference_digest_policy_failure(
+    ctx: &DsigContext,
+    references: &[VerifiedReference],
+) -> Option<&'static str> {
+    if !ctx.require_reference_digests {
+        return None;
+    }
+    if references.is_empty() {
+        return Some("no Reference digests were verified locally");
+    }
+    if references
+        .iter()
+        .any(|reference| !reference.digest_verified)
+    {
+        return Some("one or more Reference digests were not verified locally");
+    }
+    None
+}
+
 /// Verify a signed XML document.
 ///
 /// Verifies the **first** `<Signature>` element in document order. Documents that
@@ -410,15 +434,21 @@ fn verify_signature_node(
             .map_err(crate::map_kryptering_err)?;
 
         return if valid {
-            Ok(VerifyResult::Valid {
-                signature_node: sig_node,
-                references: verified_refs,
-                key_info: VerifiedKeyInfo {
-                    algorithm: format!("{:?}", hsm_verifier.algorithm()),
-                    key_name: None,
-                    x509_chain: Vec::new(),
-                },
-            })
+            if let Some(reason) = reference_digest_policy_failure(ctx, &verified_refs) {
+                Ok(VerifyResult::Invalid {
+                    reason: reason.to_owned(),
+                })
+            } else {
+                Ok(VerifyResult::Valid {
+                    signature_node: sig_node,
+                    references: verified_refs,
+                    key_info: VerifiedKeyInfo {
+                        algorithm: format!("{:?}", hsm_verifier.algorithm()),
+                        key_name: None,
+                        x509_chain: Vec::new(),
+                    },
+                })
+            }
         } else {
             Ok(VerifyResult::Invalid {
                 reason: "signature value verification failed (HSM)".into(),
@@ -568,6 +598,11 @@ fn verify_signature_node(
     };
 
     if valid {
+        if let Some(reason) = reference_digest_policy_failure(ctx, &verified_refs) {
+            return Ok(VerifyResult::Invalid {
+                reason: reason.to_owned(),
+            });
+        }
         Ok(VerifyResult::Valid {
             signature_node: sig_node,
             references: verified_refs,
@@ -3859,6 +3894,48 @@ fn extract_ec_key_from_spki(
 mod tests {
     use super::*;
 
+    /// Build a key manager containing one HMAC key for compact signing tests.
+    ///
+    /// HMAC keeps the no-reference regression self-contained: the generated
+    /// signature is real, but the fixture does not need RSA keys or certificates.
+    fn hmac_keys_manager() -> bergshamra_keys::KeysManager {
+        let mut keys = bergshamra_keys::KeysManager::new();
+        keys.add_key(bergshamra_keys::Key::new(
+            bergshamra_keys::KeyData::Hmac(b"reference-policy-secret".to_vec()),
+            bergshamra_keys::KeyUsage::Any,
+        ));
+        keys
+    }
+
+    /// XML-DSig template with a `SignedInfo` that intentionally has no
+    /// `Reference` children.
+    ///
+    /// Signing this template reproduces the coverage-bypass shape from the
+    /// security finding: `SignatureValue` can be valid while no payload bytes
+    /// were locally digested.
+    fn no_reference_hmac_template() -> String {
+        format!(
+            r#"<Root xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+  <Payload>unsigned content</Payload>
+  <ds:Signature>
+    <ds:SignedInfo>
+      <ds:CanonicalizationMethod Algorithm="{c14n}"/>
+      <ds:SignatureMethod Algorithm="{hmac_sha256}"/>
+    </ds:SignedInfo>
+    <ds:SignatureValue></ds:SignatureValue>
+  </ds:Signature>
+</Root>"#,
+            c14n = algorithm::EXC_C14N,
+            hmac_sha256 = algorithm::HMAC_SHA256,
+        )
+    }
+
+    fn signed_no_reference_hmac_xml() -> String {
+        let signing_ctx = DsigContext::new_permissive(hmac_keys_manager());
+        crate::sign::sign(&signing_ctx, &no_reference_hmac_template())
+            .expect("no-reference HMAC template should sign")
+    }
+
     #[test]
     fn test_build_id_map_includes_assertionid() {
         // SAML v1.1 uses AssertionID as the identifier attribute
@@ -4083,6 +4160,53 @@ mod tests {
 
         assert!(!result.all_reference_digests_verified());
         assert!(!result.has_unverified_references());
+    }
+
+    /// A valid `SignatureValue` with no `Reference` digests is invalid by default.
+    ///
+    /// This regression covers the source-to-sink behavior from the security
+    /// finding: verification must not return `Valid` when no payload digest was
+    /// computed locally.
+    #[test]
+    fn verify_rejects_no_reference_signature_by_default() {
+        let signed_xml = signed_no_reference_hmac_xml();
+        let ctx = DsigContext::new_permissive(hmac_keys_manager());
+
+        let result = verify(&ctx, &signed_xml).expect("verification should complete");
+
+        assert!(
+            matches!(
+                result,
+                VerifyResult::Invalid { ref reason }
+                    if reason.contains("no Reference digests were verified locally")
+            ),
+            "no-reference signature must be invalid by default: {result:?}"
+        );
+    }
+
+    /// Detached-content callers can explicitly opt out of the local digest policy.
+    ///
+    /// The opt-out is a compatibility escape hatch for profiles that verify
+    /// attachment or detached-content digests outside Bergshamra.
+    #[test]
+    fn verify_allows_no_reference_signature_when_policy_disabled() {
+        let signed_xml = signed_no_reference_hmac_xml();
+        let ctx =
+            DsigContext::new_permissive(hmac_keys_manager()).with_require_reference_digests(false);
+
+        let result = verify(&ctx, &signed_xml).expect("verification should complete");
+
+        match result {
+            VerifyResult::Valid { references, .. } => {
+                assert!(
+                    references.is_empty(),
+                    "fixture must remain a no-reference signature"
+                );
+            }
+            VerifyResult::Invalid { reason } => {
+                panic!("policy-disabled verification should accept the signature: {reason}");
+            }
+        }
     }
 
     #[test]

@@ -172,6 +172,13 @@ the external attachment bytes. Library consumers that require complete local
 digest coverage should use `VerifyResult::all_reference_digests_verified()` or
 `VerifyResult::has_unverified_references()`.
 
+By default, verification requires local digest coverage: an otherwise valid
+`SignatureValue` is reported invalid when `<SignedInfo>` has no `<Reference>`
+elements or when any reference digest was not computed locally. Detached-content
+profiles that verify attachment bytes out-of-band can opt out with
+`DsigContext::with_require_reference_digests(false)` or the CLI flag
+`--allow-missing-reference-digests`.
+
 You should always check that the signature covers the element you intend to
 consume. For example, a SAML Service Provider should verify that one of the
 references points to the `<Assertion>` it will process.

@@ -44,6 +44,12 @@
 //! [`VerifyResult::has_unverified_references`] when your application requires
 //! complete local digest coverage.
 //!
+//! By default, verification requires local digest coverage: an otherwise valid
+//! `SignatureValue` is reported invalid when `<SignedInfo>` has no
+//! `<Reference>` elements or when any reference digest was not computed locally.
+//! Detached-content profiles that validate attachment bytes out-of-band can opt
+//! out by calling [`DsigContext::with_require_reference_digests`] with `false`.
+//!
 //! **You should always check that the signature covers the element you intend
 //! to consume.** For example, a SAML Service Provider should verify that one
 //! of the references points to the `<Assertion>` it will process:
@@ -102,6 +108,8 @@
 //!   ancestors, siblings, or the document element (XSW protection).
 //! - **`hmac_min_out_len = 160`** — enforces a minimum HMAC output length of
 //!   160 bits to prevent truncation attacks (CVE-2009-0217).
+//! - **`require_reference_digests = true`** — requires at least one locally
+//!   verified `<Reference>` digest before returning [`VerifyResult::Valid`].
 //!
 //! Use [`DsigContext::new_permissive()`] for W3C XML-DSig standard behavior
 //! (e.g., self-contained signatures with inline keys).

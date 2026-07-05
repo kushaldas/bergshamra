@@ -83,9 +83,19 @@ enum Commands {
         #[arg(long)]
         insecure: bool,
 
-        /// Fail if any Reference digest was not verified locally (for example cid: attachments)
-        #[arg(long = "require-reference-digests")]
+        /// Require local Reference digest coverage (default; kept for compatibility)
+        #[arg(
+            long = "require-reference-digests",
+            conflicts_with = "allow_missing_reference_digests"
+        )]
         require_reference_digests: bool,
+
+        /// Allow signatures whose Reference digests are verified out-of-band
+        #[arg(
+            long = "allow-missing-reference-digests",
+            conflicts_with = "require_reference_digests"
+        )]
+        allow_missing_reference_digests: bool,
 
         /// Verify keys loaded from cert files (validate their certificates)
         #[arg(long = "verify-keys")]
@@ -318,6 +328,7 @@ fn main() {
             verbose,
             insecure,
             require_reference_digests,
+            allow_missing_reference_digests,
             verify_keys,
             verification_gmt_time,
             x509_skip_time_checks,
@@ -344,6 +355,7 @@ fn main() {
             verbose,
             insecure,
             require_reference_digests,
+            allow_missing_reference_digests,
             verify_keys,
             verification_gmt_time,
             x509_skip_time_checks,
@@ -463,6 +475,7 @@ fn cmd_verify(
     verbose: bool,
     insecure: bool,
     require_reference_digests: bool,
+    allow_missing_reference_digests: bool,
     verify_keys: bool,
     verification_gmt_time: Option<String>,
     x509_skip_time_checks: bool,
@@ -532,6 +545,7 @@ fn cmd_verify(
     }
     ctx.insecure = insecure;
     ctx.verify_keys = verify_keys;
+    ctx.require_reference_digests = require_reference_digests || !allow_missing_reference_digests;
     ctx.verification_time = verification_gmt_time;
     ctx.skip_time_checks = x509_skip_time_checks;
     ctx.enabled_key_data_x509 = enabled_key_data
@@ -551,20 +565,13 @@ fn cmd_verify(
     let result = bergshamra_dsig::verify::verify(&ctx, &xml)?;
     match &result {
         bergshamra_dsig::verify::VerifyResult::Valid { .. } => {
-            // Reference-digest coverage is decided by `VerifyResult` itself, so
-            // the policy lives in one place (see `all_reference_digests_verified`
-            // / `has_unverified_references`).
-            if require_reference_digests && !result.all_reference_digests_verified() {
+            if verbose && !result.all_reference_digests_verified() {
                 let reason = if result.has_unverified_references() {
                     "one or more Reference digests were not verified locally"
                 } else {
                     "no Reference digests were verified locally"
                 };
-                eprintln!("INVALID: {reason}");
-                process::exit(1);
-            }
-            if verbose && result.has_unverified_references() {
-                eprintln!("Warning: one or more Reference digests were not verified locally");
+                eprintln!("Warning: {reason}");
             }
             println!("OK");
             Ok(())

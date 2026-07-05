@@ -131,12 +131,13 @@ Applied in two locations:
 - Documents where **all** references are `cid:` will have their
   `<SignedInfo>` signature verified but no individual reference digests
   checked. This is a weaker guarantee — the caller should be aware.
-- The skip is silent (no warning/error). This is intentional: the `cid:`
-  references are expected in WS-Security, and logging on every occurrence
-  would be noisy.
-- The CLI provides `--require-reference-digests` for callers that want any
-  skipped reference, or an otherwise valid signature with no locally verified
-  references, to be fatal.
+- The low-level reference resolver still records skipped `cid:` references
+  without hashing attachment bytes. High-level verification rejects missing
+  local digest coverage by default so callers cannot confuse a valid
+  `SignatureValue` with payload integrity.
+- The CLI provides `--allow-missing-reference-digests` for callers that verify
+  detached attachment bytes out-of-band and intentionally accept skipped local
+  digests.
 - Option C (pluggable resolver) remains available as a future enhancement
   if callers need full `cid:` digest verification within the library.
 

@@ -7,12 +7,17 @@
 
 - XML Encryption PBKDF2 parameters now enforce a configurable iteration-count cap before invoking PBKDF2. `EncContext` defaults to `DEFAULT_MAX_PBKDF2_ITERATIONS` and exposes `with_max_pbkdf2_iterations()`.
 - API note: this release adds `EncContext::max_pbkdf2_iterations`; downstream code constructing `EncContext { .. }` must set the new field (or switch to `EncContext::new()`/builder methods).
+- Malformed RSA `KeyValue` CryptoBinary values now return parse errors instead of panicking on odd-length hex input.
+- XML-DSig verification now requires local `<Reference>` digest coverage by default. `DsigContext::require_reference_digests` defaults to `true`; callers that verify detached content out-of-band can opt out with `with_require_reference_digests(false)`. The CLI adds `verify --allow-missing-reference-digests` for the same compatibility case.
+- API note: this release adds `DsigContext::require_reference_digests`; downstream code constructing `DsigContext { .. }` must set the new field (or switch to `DsigContext::new()`/builder methods).
 
 ### Added
 
 - Added `bergshamra_dsig::sign::sign_owned`, an owned-template signing entry
   point for callers and bindings that construct a template `String` immediately
   before signing and can transfer ownership into the signer.
+- Added `DsigContext::with_require_reference_digests()` for explicit reference
+  digest coverage policy configuration.
 
 ### Changed
 
