@@ -40,6 +40,13 @@ pub struct DsigContext {
     pub skip_time_checks: bool,
     /// Whether --enabled-key-data includes x509.
     pub enabled_key_data_x509: bool,
+    /// Allow raw inline `<KeyValue>` / `<DEREncodedKeyValue>` even when trust
+    /// anchors are configured.
+    ///
+    /// Keep this `false` for normal verification. It exists for xmlsec
+    /// compatibility suites that intentionally combine trusted CA flags with
+    /// raw inline test keys.
+    pub allow_raw_inline_keyinfo_with_trust_anchors: bool,
     /// When true, only use keys from the KeysManager for verification.
     /// Skip extraction of inline keys from KeyInfo (KeyValue, X509Certificate, etc.).
     /// This is the secure mode for SAML: only trust pre-configured IdP keys,
@@ -84,6 +91,10 @@ impl std::fmt::Debug for DsigContext {
             .field("verification_time", &self.verification_time)
             .field("skip_time_checks", &self.skip_time_checks)
             .field("enabled_key_data_x509", &self.enabled_key_data_x509)
+            .field(
+                "allow_raw_inline_keyinfo_with_trust_anchors",
+                &self.allow_raw_inline_keyinfo_with_trust_anchors,
+            )
             .field("trusted_keys_only", &self.trusted_keys_only)
             .field("strict_verification", &self.strict_verification)
             .field("require_reference_digests", &self.require_reference_digests)
@@ -150,6 +161,7 @@ impl DsigContext {
             verification_time: None,
             skip_time_checks: false,
             enabled_key_data_x509: false,
+            allow_raw_inline_keyinfo_with_trust_anchors: false,
             trusted_keys_only: false,
             strict_verification: false,
             require_reference_digests: true,
@@ -206,6 +218,17 @@ impl DsigContext {
     /// Set enabled key data x509 (builder style).
     pub fn with_enabled_key_data_x509(mut self, enabled: bool) -> Self {
         self.enabled_key_data_x509 = enabled;
+        self
+    }
+
+    /// Set whether raw inline KeyInfo keys may satisfy verification when trust
+    /// anchors are configured.
+    ///
+    /// This is a compatibility escape hatch for xmlsec interop suites. Leave it
+    /// disabled for normal verification so a raw document-controlled `<KeyValue>`
+    /// cannot bypass configured trust anchors.
+    pub fn with_allow_raw_inline_keyinfo_with_trust_anchors(mut self, allow: bool) -> Self {
+        self.allow_raw_inline_keyinfo_with_trust_anchors = allow;
         self
     }
 

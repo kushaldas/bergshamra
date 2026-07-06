@@ -219,6 +219,20 @@ XML can embed their own key and sign with it — the signature will verify, but
 against the wrong key. This is essential for SAML Service Providers and any
 deployment where the signing key is known ahead of time.
 
+When trust anchors are configured, Bergshamra rejects raw inline `<KeyValue>`
+and `<DEREncodedKeyValue>` keys because they have no certificate chain to
+validate. Inline `<X509Data>` remains supported, but the certificate chain must
+validate to a configured anchor.
+
+Library callers that need xmlsec compatibility fixtures where trusted CA
+settings are combined with raw inline `KeyValue` test signatures can explicitly
+chain `.with_allow_raw_inline_keyinfo_with_trust_anchors(true)` on the
+`DsigContext` value. Do not enable that flag for normal verification of
+untrusted XML; prefer `DsigContext::new` for known-key protocols, or
+`DsigContext::new_permissive(keys).with_enabled_key_data_x509(true)` when
+inline signer certificates should chain to configured anchors. See
+`docs/adr/0007-raw-inline-keyinfo-trust-anchors.md` for the full policy.
+
 ### HMAC output truncation (CVE-2009-0217)
 
 Set `DsigContext::hmac_min_out_len` to enforce a minimum `<HMACOutputLength>`
