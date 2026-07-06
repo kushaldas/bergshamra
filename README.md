@@ -156,8 +156,8 @@ documents that contain duplicate ID values across any registered ID attribute
 duplicate is found.
 
 The lower-level `XmlDocument::build_id_map` helper also rejects duplicate ID
-values and returns `Err(Error::XmlStructure("duplicate ID: ..."))` instead of
-silently overwriting the earlier element.
+values and returns `Err(Error::XmlStructure("duplicate ID: ...".into()))`
+instead of silently overwriting the earlier element.
 
 ### Inspecting what was signed (`VerifyResult` metadata)
 

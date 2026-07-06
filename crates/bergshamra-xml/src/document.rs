@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn build_id_map_rejects_custom_attribute_duplicate() {
         let mut xdoc =
-            XmlDocument::parse(r#"<root><a CustomId="dup"/><b Id="dup"/></root>"#.into())
+            XmlDocument::parse(r#"<root><a CustomId="dup"/><b CustomId="dup"/></root>"#.into())
                 .expect("valid XML");
         xdoc.add_id_attr("CustomId");
         let doc = xdoc.parse_doc().expect("parse document");
