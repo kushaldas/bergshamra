@@ -46,6 +46,11 @@ Concretely, during verification:
 3. Inline `<X509Data>` remains supported. It is accepted only when its selected
    leaf certificate chains to one of the configured anchors.
 
+If a `<KeyInfo>` contains both raw key material and `<X509Data>`, anchored
+verification prefers the certificate-backed `<X509Data>` path before considering
+the raw key. This keeps valid anchored signatures from failing only because a
+raw `<KeyValue>` appears earlier in document order.
+
 The enforcement lives in `bergshamra-dsig`, not only in the CLI, because the
 library is the primary API surface for most deployments.
 
@@ -188,6 +193,8 @@ Regression coverage was added for:
 
 - raw inline `KeyValue` verification without trust anchors;
 - rejection of raw inline `KeyValue` when a trust anchor is configured;
+- preference for a later `<X509Data>` chain when a raw `<KeyValue>` appears
+  first under an anchored policy;
 - explicit compatibility opt-in via a context built with
   `.with_allow_raw_inline_keyinfo_with_trust_anchors(true)`.
 

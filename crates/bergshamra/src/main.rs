@@ -109,7 +109,7 @@ enum Commands {
         #[arg(long = "x509-skip-time-checks")]
         x509_skip_time_checks: bool,
 
-        /// Skip strict inline KeyInfo trust-anchor checks for xmlsec compatibility.
+        /// Allow raw inline `<KeyValue>` / `<DEREncodedKeyValue>` even when trust anchors are configured (xmlsec compatibility).
         #[arg(long = "x509-skip-strict-checks")]
         x509_skip_strict_checks: bool,
 

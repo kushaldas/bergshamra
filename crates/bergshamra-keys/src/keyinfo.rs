@@ -229,6 +229,30 @@ fn format_serial_decimal(bytes: &[u8]) -> String {
         })
 }
 
+/// Try to extract a certificate-backed inline key from `<KeyInfo>`.
+///
+/// This only considers `<X509Data><X509Certificate>` entries and ignores raw
+/// inline keys such as `<KeyValue>` and `<DEREncodedKeyValue>`. Verifiers use
+/// this when trust anchors are configured so an anchorable certificate chain is
+/// preferred over document-controlled raw key material.
+pub fn extract_x509_key_value(key_info_node: NodeId, doc: &Document<'_>) -> Option<Key> {
+    for child in doc.children(key_info_node) {
+        let elem = match doc.element(child) {
+            Some(e) => e,
+            None => continue,
+        };
+        let ns_uri = elem.name.namespace_uri.as_deref().unwrap_or("");
+        let local = &*elem.name.local_name;
+
+        if local == ns::node::X509_DATA && (ns_uri == ns::DSIG || ns_uri.is_empty()) {
+            if let Some(key) = extract_x509_certificate(child, doc) {
+                return Some(key);
+            }
+        }
+    }
+    None
+}
+
 /// Try to extract an inline key from `<KeyInfo>` (RSA, EC, DSA KeyValue, or X509Certificate).
 ///
 /// Returns `Some(Key)` if a KeyValue or X509Certificate was found and parsed, `None` otherwise.
@@ -940,6 +964,35 @@ mod tests {
         );
         let doc = uppsala::parse(&xml).unwrap();
         let key = extract_key_value(find_key_info(&doc), &doc).expect("extract X509 key");
+        assert_eq!(key.x509_chain, vec![leaf_der]);
+    }
+
+    /// Certificate-only extraction skips raw `KeyValue` entries even when they
+    /// appear first in document order.
+    ///
+    /// Anchored DSig verification uses this helper to prefer an anchorable
+    /// `<X509Data>` chain over raw document-controlled key material.
+    #[test]
+    fn test_extract_x509_key_value_skips_earlier_raw_keyvalue() {
+        use base64::Engine;
+        let engine = base64::engine::general_purpose::STANDARD;
+        let leaf_der = engine.decode(LEAF_B64).unwrap();
+        let xml = format!(
+            concat!(
+                r#"<ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#">"#,
+                "<ds:KeyValue>",
+                "<ds:RSAKeyValue>",
+                "<ds:Modulus>srryidgrlDw994IT7eEPDIpXrB8VW26cin5mm62FaQxlQ5jiiqd9+6iVGWfeSn8JV20do9M8iliZr0cVMfj7Ew==</ds:Modulus>",
+                "<ds:Exponent>AQAB</ds:Exponent>",
+                "</ds:RSAKeyValue>",
+                "</ds:KeyValue>",
+                "<ds:X509Data><ds:X509Certificate>{leaf}</ds:X509Certificate></ds:X509Data>",
+                "</ds:KeyInfo>"
+            ),
+            leaf = LEAF_B64
+        );
+        let doc = uppsala::parse(&xml).unwrap();
+        let key = extract_x509_key_value(find_key_info(&doc), &doc).expect("extract X509 key");
         assert_eq!(key.x509_chain, vec![leaf_der]);
     }
 }

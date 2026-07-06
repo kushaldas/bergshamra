@@ -509,14 +509,21 @@ fn verify_signature_node(
         // Standard mode: try inline KeyValue (RSA/EC public key embedded in XML),
         // then try EncryptedKey unwrap, then fall back to KeysManager lookup.
         let effective_ki = resolve_key_info_reference(doc, ki, id_map).unwrap_or(ki);
-        extracted_key = if let Some(key) =
+        let prefer_anchorable_inline_key = !ctx.insecure
+            && ctx.keys_manager.has_trusted_certs()
+            && !ctx.allow_raw_inline_keyinfo_with_trust_anchors;
+        let inline_key = if prefer_anchorable_inline_key {
+            bergshamra_keys::keyinfo::extract_x509_key_value(effective_ki, doc)
+                .or_else(|| bergshamra_keys::keyinfo::extract_key_value(effective_ki, doc))
+        } else {
             bergshamra_keys::keyinfo::extract_key_value(effective_ki, doc)
-        {
+        };
+        extracted_key = if let Some(key) = inline_key {
             // `extract_key_value` accepts both certificate-backed `<X509Data>`
             // and raw inline key material (`<KeyValue>` / `<DEREncodedKeyValue>`).
-            // When trust anchors are configured below, raw document-controlled
-            // keys cannot satisfy that trust policy because there is no chain to
-            // validate against the configured anchors.
+            // Under an anchored policy we prefer `<X509Data>` first, so a raw
+            // key does not block a later certificate chain that can satisfy the
+            // configured anchors.
             key_from_raw_inline_keyinfo = key.x509_chain.is_empty();
             Some(key)
         } else {
@@ -5161,6 +5168,18 @@ mod tests {
   </ds:Signature>
 </Root>"##;
 
+    /// A parseable raw RSA `KeyValue` for mixed-KeyInfo regression tests.
+    ///
+    /// The key is intentionally unrelated to `X509DATA_TEST_XML`; anchored
+    /// verification must ignore it in favor of the following `<X509Data>`.
+    #[cfg(feature = "legacy-algorithms")]
+    const UNRELATED_RSA_KEYVALUE_XML: &str = r#"<KeyValue>
+        <RSAKeyValue>
+          <Modulus>srryidgrlDw994IT7eEPDIpXrB8VW26cin5mm62FaQxlQ5jiiqd9+6iVGWfeSn8JV20do9M8iliZr0cVMfj7Ew==</Modulus>
+          <Exponent>AQAB</Exponent>
+        </RSAKeyValue>
+      </KeyValue>"#;
+
     /// The signed document with its inline signer chain.
     const X509DATA_TEST_XML: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -5242,6 +5261,27 @@ mod tests {
         assert!(
             result.is_valid(),
             "explicit compatibility policy should allow raw inline KeyValue"
+        );
+    }
+
+    /// Anchored verification must not fail just because a raw `KeyValue`
+    /// appears before an anchorable inline certificate chain.
+    ///
+    /// Several interop documents carry both forms. When trust anchors are
+    /// configured and raw inline keys are disabled, the verifier should prefer
+    /// `<X509Data>` rather than rejecting the earlier raw key immediately.
+    #[cfg(feature = "legacy-algorithms")]
+    #[test]
+    fn test_anchor_policy_prefers_x509data_over_earlier_raw_keyvalue() {
+        let mixed_keyinfo_xml = X509DATA_TEST_XML.replace(
+            "<KeyInfo>\n      <X509Data>",
+            &format!("<KeyInfo>\n      {UNRELATED_RSA_KEYVALUE_XML}\n      <X509Data>"),
+        );
+        let ctx = permissive_ctx_with_anchor(Some(CACERT_PEM));
+        let result = verify(&ctx, &mixed_keyinfo_xml).expect("verify should not error");
+        assert!(
+            result.is_valid(),
+            "anchored verification should use the later X509Data instead of the raw KeyValue"
         );
     }
 

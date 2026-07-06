@@ -4,13 +4,6 @@
 **Status:** Accepted
 **Context:** `bergshamra verify` handling of inline `<X509Certificate>` keys when callers also provide `--trusted` CA certificates
 
-**Update 2026-07-06:** ADR-0007 extends trust-anchor enforcement into the
-`bergshamra-dsig` library for raw inline `<KeyValue>` and
-`<DEREncodedKeyValue>` material. This ADR remains the CLI decision record for
-inline X.509 certificate handling and xmlsec skip-strict compatibility, but its
-library-semantics discussion is now historical; see ADR-0007 for current
-library policy.
-
 ## Problem
 
 The `bergshamra-dsig` library historically treated inline X.509 data and
