@@ -187,4 +187,21 @@ mod tests {
             "error should name the duplicated value, got: {msg}"
         );
     }
+
+    /// A caller-registered attribute must also conflict with any default ID
+    /// attribute using the same value.
+    #[test]
+    fn build_id_map_rejects_default_and_custom_attribute_duplicate() {
+        let mut xdoc =
+            XmlDocument::parse(r#"<root><a Id="dup"/><b CustomId="dup"/></root>"#.into())
+                .expect("valid XML");
+        xdoc.add_id_attr("CustomId");
+        let doc = xdoc.parse_doc().expect("parse document");
+        let msg = duplicate_error_message(xdoc.build_id_map(&doc));
+
+        assert!(
+            msg.contains("duplicate ID: dup"),
+            "error should name the duplicated value, got: {msg}"
+        );
+    }
 }
