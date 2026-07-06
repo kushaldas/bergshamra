@@ -155,6 +155,10 @@ documents that contain duplicate ID values across any registered ID attribute
 `DsigContext::add_id_attr`). Both `verify` and `sign` return an error if a
 duplicate is found.
 
+The lower-level `XmlDocument::build_id_map` helper also rejects duplicate ID
+values and returns `Err(Error::XmlStructure("duplicate ID: ...".into()))`
+instead of silently overwriting the earlier element.
+
 ### Inspecting what was signed (`VerifyResult` metadata)
 
 A successful verification returns `VerifyResult::Valid` which carries:
