@@ -226,9 +226,9 @@ validate to a configured anchor.
 
 Library callers that need xmlsec compatibility fixtures where trusted CA
 settings are combined with raw inline `KeyValue` test signatures can explicitly
-set `DsigContext::with_allow_raw_inline_keyinfo_with_trust_anchors(true)`.
-Do not enable that flag for normal verification of untrusted XML; prefer
-`DsigContext::new()` for known-key protocols, or
+chain `.with_allow_raw_inline_keyinfo_with_trust_anchors(true)` on the
+`DsigContext` value. Do not enable that flag for normal verification of
+untrusted XML; prefer `DsigContext::new` for known-key protocols, or
 `DsigContext::new_permissive(keys).with_enabled_key_data_x509(true)` when
 inline signer certificates should chain to configured anchors. See
 `docs/adr/0007-raw-inline-keyinfo-trust-anchors.md` for the full policy.

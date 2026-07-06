@@ -66,7 +66,7 @@ let ctx = DsigContext::new(keys);
 let result = verify::verify(&ctx, xml)?;
 ```
 
-`DsigContext::new()` sets `trusted_keys_only = true`, so document-supplied
+`DsigContext::new` sets `trusted_keys_only = true`, so document-supplied
 `<KeyValue>`, `<DEREncodedKeyValue>`, and `<X509Data>` are ignored.
 
 For deployments that intentionally trust a CA and accept signer certificates
@@ -120,8 +120,9 @@ for normal verification of untrusted XML. Prefer one of these safer patterns:
 The CLI exposes the same compatibility behavior as
 `bergshamra verify --x509-skip-strict-checks`, primarily for xmlsec test-suite
 compatibility. Library users should use
-`DsigContext::with_allow_raw_inline_keyinfo_with_trust_anchors(true)` only when
-they knowingly need the same compatibility profile.
+the chained builder call
+`.with_allow_raw_inline_keyinfo_with_trust_anchors(true)` only when they
+knowingly need the same compatibility profile.
 
 ## Alternatives Considered
 
@@ -174,9 +175,9 @@ Accepted.
 
 ### Neutral
 
-- `DsigContext::new()` remains the recommended default for SAML,
+- `DsigContext::new` remains the recommended default for SAML,
   WS-Security, and other known-key protocols.
-- `DsigContext::new_permissive()` without trusted anchors still accepts raw
+- `DsigContext::new_permissive` without trusted anchors still accepts raw
   inline `KeyValue` signatures for self-contained XML-DSig documents.
 - `--x509-skip-strict-checks` and the matching library builder are
   compatibility switches, not security hardening switches.
@@ -187,8 +188,8 @@ Regression coverage was added for:
 
 - raw inline `KeyValue` verification without trust anchors;
 - rejection of raw inline `KeyValue` when a trust anchor is configured;
-- explicit compatibility opt-in via
-  `DsigContext::with_allow_raw_inline_keyinfo_with_trust_anchors(true)`.
+- explicit compatibility opt-in via a context built with
+  `.with_allow_raw_inline_keyinfo_with_trust_anchors(true)`.
 
 The original security reproducer is:
 

@@ -125,7 +125,7 @@ This ADR concerns certificate-bearing `KeyInfo`. Raw inline `<KeyValue>` and
 key. ADR-0007 covers that separate policy: when trust anchors are configured,
 raw inline keys are rejected by default unless the caller explicitly enables the
 xmlsec compatibility flag. Callers who must reject all inline keys should still
-use the secure-by-default `DsigContext::new()` (`trusted_keys_only`), which
+use the secure-by-default `DsigContext::new` (`trusted_keys_only`), which
 ignores inline key material and only trusts pre-configured keys.
 
 ## Testing
