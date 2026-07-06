@@ -2,6 +2,7 @@
 
 //! DSig context — holds keys and configuration for signature operations.
 
+use bergshamra_core::Error;
 use bergshamra_keys::KeysManager;
 use kryptering::traits::{Signer, Verifier};
 
@@ -11,13 +12,23 @@ pub struct DsigContext {
     pub keys_manager: KeysManager,
     /// Additional ID attribute names to register.
     pub id_attrs: Vec<String>,
-    /// URL-to-file mappings for external URI resolution.
+    /// Explicit URL-to-file mappings for external URI resolution.
+    ///
+    /// Prefer these mappings for detached `<Reference>` bytes when the URI is
+    /// not a simple document-relative file. Signing and verification reject
+    /// absolute paths, URI schemes, and parent-directory traversal for local
+    /// fallback; verifier debug output redacts detached bytes.
     pub url_maps: Vec<(String, String)>,
     /// Minimum HMAC output length in bits (0 = use spec default).
     pub hmac_min_out_len: usize,
     /// Debug mode: print pre-digest and pre-signature data to stderr.
     pub debug: bool,
-    /// Base directory for resolving relative external URI references.
+    /// Base directory for signing-time relative references, verifier
+    /// document-relative references, and retrieval-method key resolution.
+    ///
+    /// This is not an unrestricted filesystem root: signing and verifier
+    /// `<Reference>` resolution reject URI schemes, absolute paths, and `..`
+    /// traversal for local-file fallback.
     pub base_dir: Option<String>,
     /// Insecure mode: skip all certificate validation.
     pub insecure: bool,
@@ -153,6 +164,11 @@ impl DsigContext {
     }
 
     /// Map an external URI to a local file path.
+    ///
+    /// Use this for detached `<Reference>` values that are external URIs or
+    /// require a path outside the document-adjacent relative-file policy.
+    /// Resolution matches the URI exactly, or matches the same URI followed by
+    /// a `#fragment` suffix.
     pub fn add_url_map(&mut self, url: &str, file_path: &str) {
         self.url_maps.push((url.to_owned(), file_path.to_owned()));
     }
@@ -221,7 +237,13 @@ impl DsigContext {
         self
     }
 
-    /// Set base directory for resolving relative URIs (builder style).
+    /// Set base directory for signing-time relative URIs, verifier
+    /// document-relative URIs, and key retrieval.
+    ///
+    /// Signing and verifier `<Reference>` resolution try simple relative paths
+    /// under this directory first, then the current working directory. URI
+    /// schemes, absolute paths, and parent traversal are rejected for local-file
+    /// fallback.
     pub fn with_base_dir(mut self, dir: impl Into<String>) -> Self {
         self.base_dir = Some(dir.into());
         self
@@ -245,4 +267,100 @@ impl DsigContext {
         self.hsm_verifier = Some(verifier);
         self
     }
+}
+
+/// Return whether a configured URL map applies to a `<Reference URI>`.
+///
+/// URL maps are exact by default. The only non-exact match accepted here is a
+/// fragment suffix on the same mapped resource, such as mapping
+/// `https://example.test/doc.xml` for `https://example.test/doc.xml#payload`.
+/// This avoids treating lookalike prefixes such as
+/// `https://example.test.evil/...` as the mapped resource.
+pub(crate) fn url_map_matches(uri: &str, map_url: &str) -> bool {
+    uri == map_url
+        || uri
+            .strip_prefix(map_url)
+            .is_some_and(|suffix| suffix.starts_with('#'))
+}
+
+/// Return whether `uri` begins with an RFC-style scheme name.
+///
+/// This keeps `urn:...` and `http:...` out of local-file fallback paths even
+/// when they do not contain `://`.
+pub(crate) fn uri_has_scheme(uri: &str) -> bool {
+    let Some((scheme, _)) = uri.split_once(':') else {
+        return false;
+    };
+    let mut chars = scheme.chars();
+    matches!(chars.next(), Some(first) if first.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+}
+
+/// Validate a `<Reference URI>` before considering local relative-file lookup.
+///
+/// Absolute paths, Windows path prefixes, root components, and parent traversal
+/// are rejected before scheme detection. That ordering matters on Windows,
+/// where drive-letter paths such as `C:\secret.txt` can otherwise look like a
+/// one-letter URI scheme.
+pub(crate) fn local_reference_relative_path(uri: &str) -> Result<Option<&std::path::Path>, Error> {
+    let path = std::path::Path::new(uri);
+    if path.is_absolute() {
+        return Err(Error::InvalidUri(format!(
+            "absolute local file Reference URI not allowed: {uri}"
+        )));
+    }
+
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                return Err(Error::InvalidUri(format!(
+                    "absolute local file Reference URI not allowed: {uri}"
+                )));
+            }
+            std::path::Component::ParentDir => {
+                return Err(Error::InvalidUri(format!(
+                    "parent-directory Reference URI not allowed: {uri}"
+                )));
+            }
+            _ => {}
+        }
+    }
+
+    if uri_has_scheme(uri) {
+        return Ok(None);
+    }
+
+    Ok(Some(path))
+}
+
+/// Read `relative_path` under `base` only when canonical resolution stays below
+/// that same canonical base directory.
+///
+/// This prevents local `<Reference URI>` resolution from following a symlink
+/// inside the lookup directory to an arbitrary local file.
+pub(crate) fn read_existing_relative_file(
+    base: &std::path::Path,
+    relative_path: &std::path::Path,
+    uri: &str,
+) -> Result<Option<Vec<u8>>, Error> {
+    let full = base.join(relative_path);
+    if !full.exists() {
+        return Ok(None);
+    }
+
+    let canonical_base = base
+        .canonicalize()
+        .map_err(|e| Error::Other(format!("{}: {e}", base.display())))?;
+    let canonical_full = full
+        .canonicalize()
+        .map_err(|e| Error::Other(format!("{}: {e}", full.display())))?;
+    if !canonical_full.starts_with(&canonical_base) {
+        return Err(Error::InvalidUri(format!(
+            "local file Reference URI escapes base directory: {uri}"
+        )));
+    }
+
+    let data = std::fs::read(&canonical_full)
+        .map_err(|e| Error::Other(format!("{}: {e}", canonical_full.display())))?;
+    Ok(Some(data))
 }

@@ -171,9 +171,9 @@ integrity-protected by the signed `<SignedInfo>`, but Bergshamra did not hash
 the external attachment bytes. When local digest coverage is explicitly disabled
 for detached-content workflows, use
 `VerifyResult::all_reference_digests_verified()` or
-`VerifyResult::has_unverified_references()` to check whether any or all
-reference digests were verified locally. Inspect the `references` list when you
-need per-reference detail.
+`VerifyResult::has_unverified_references()` to check whether all reference
+digests were verified locally or whether any were not. Inspect the `references`
+list when you need per-reference detail.
 
 By default, verification requires local digest coverage: an otherwise valid
 `SignatureValue` is reported invalid when `<SignedInfo>` has no `<Reference>`
@@ -181,6 +181,15 @@ elements or when any reference digest was not computed locally. Detached-content
 profiles that verify attachment bytes out-of-band can opt out with
 `DsigContext::with_require_reference_digests(false)` or the CLI flag
 `--allow-missing-reference-digests`.
+
+Detached bytes that Bergshamra should hash locally must be mapped explicitly
+with `DsigContext::add_url_map("URI", "file")` or CLI `--url-map URI=FILE`.
+Mappings match the URI exactly, or the same URI with a `#fragment` suffix.
+For XML-DSig compatibility, simple relative local file references are also
+resolved against the input directory/current working directory. Absolute paths
+URI schemes, and parent-directory traversal are rejected for local-file
+fallback, and detached bytes are redacted from verifier debug output so an
+invalid signature cannot print local file contents.
 
 You should always check that the signature covers the element you intend to
 consume. For example, a SAML Service Provider should verify that one of the

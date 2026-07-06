@@ -59,7 +59,7 @@ enum Commands {
         #[arg(long = "keys-file")]
         keys_file: Option<PathBuf>,
 
-        /// Map external URI to local file (URL=FILE)
+        /// Map exact external URI (or URI#fragment) to local file (URL=FILE)
         #[arg(long = "url-map")]
         url_map: Vec<String>,
 
@@ -174,7 +174,7 @@ enum Commands {
         #[arg(long = "keys-file")]
         keys_file: Option<PathBuf>,
 
-        /// Map external URI to local file (URL=FILE)
+        /// Map exact external URI (or URI#fragment) to local file (URL=FILE)
         #[arg(long = "url-map")]
         url_map: Vec<String>,
 
