@@ -53,6 +53,21 @@
 //! Detached-content profiles that validate attachment bytes out-of-band can opt
 //! out by calling [`DsigContext::with_require_reference_digests`] with `false`.
 //!
+//! ## Trust Anchors and Inline Keys
+//!
+//! When trusted certificates are configured, raw inline keys from `<KeyValue>`
+//! or `<DEREncodedKeyValue>` are rejected because they have no certificate chain
+//! to validate against those anchors. Inline `<X509Data>` remains supported, but
+//! its chain must validate to a configured trust anchor.
+//!
+//! Library callers that must reproduce xmlsec compatibility behavior can opt
+//! back into raw inline keys with
+//! [`DsigContext::with_allow_raw_inline_keyinfo_with_trust_anchors`]. Do not
+//! enable that flag for normal verification of untrusted XML: it means a raw
+//! document-controlled key may verify even though trust anchors are configured.
+//! Use [`DsigContext::trusted_keys_only`] when the accepted signing keys are
+//! known ahead of time and all document-supplied keys should be ignored.
+//!
 //! **You should always check that the signature covers the element you intend
 //! to consume.** For example, a SAML Service Provider should verify that one
 //! of the references points to the `<Assertion>` it will process:

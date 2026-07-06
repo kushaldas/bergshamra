@@ -109,7 +109,7 @@ enum Commands {
         #[arg(long = "x509-skip-time-checks")]
         x509_skip_time_checks: bool,
 
-        /// Skip automatic inline X.509 trust-anchor validation for xmlsec compatibility.
+        /// Skip strict inline KeyInfo trust-anchor checks for xmlsec compatibility.
         #[arg(long = "x509-skip-strict-checks")]
         x509_skip_strict_checks: bool,
 
@@ -555,6 +555,7 @@ fn cmd_verify(
     if !trusted.is_empty() && !x509_skip_strict_checks {
         ctx.enabled_key_data_x509 = true;
     }
+    ctx.allow_raw_inline_keyinfo_with_trust_anchors = x509_skip_strict_checks;
     ctx.strict_verification = strict;
     ctx.trusted_keys_only = trusted_keys_only;
 

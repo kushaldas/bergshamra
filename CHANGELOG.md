@@ -11,6 +11,8 @@
 - XML-DSig verification now requires local `<Reference>` digest coverage by default. `DsigContext::require_reference_digests` defaults to `true`; callers that verify detached content out-of-band can opt out with `with_require_reference_digests(false)`. The CLI adds `verify --allow-missing-reference-digests` for the same compatibility case.
 - API note: this release adds `DsigContext::require_reference_digests`; downstream code constructing `DsigContext { .. }` must set the new field (or switch to `DsigContext::new()`/builder methods).
 - XML-DSig signing and verification now reject scheme, absolute, and parent-traversing local `<Reference URI>` fallback values, and verifier debug output redacts detached reference bytes. Simple relative detached files remain supported for XML-DSig compatibility; use `DsigContext::add_url_map()` or CLI `--url-map URL=FILE` for explicit external URI mappings. URL maps match exactly, with only same-resource `#fragment` suffixes accepted as non-exact matches.
+- XML-DSig verification now rejects raw inline `<KeyValue>`/`<DEREncodedKeyValue>` signing keys when trust anchors are configured. Inline `<X509Data>` remains supported, but its chain must validate to a configured anchor. Library compatibility cases can opt back into raw inline keys with `DsigContext::with_allow_raw_inline_keyinfo_with_trust_anchors(true)`.
+- API note: this release adds `DsigContext::allow_raw_inline_keyinfo_with_trust_anchors`; downstream code constructing `DsigContext { .. }` must set the new field (or switch to `DsigContext::new()`/builder methods).
 
 ### Added
 
@@ -19,6 +21,9 @@
   before signing and can transfer ownership into the signer.
 - Added `DsigContext::with_require_reference_digests()` for explicit reference
   digest coverage policy configuration.
+- Added `DsigContext::with_allow_raw_inline_keyinfo_with_trust_anchors()` for
+  explicit xmlsec compatibility when callers intentionally combine trust
+  anchors with raw inline `KeyValue` signatures.
 
 ### Changed
 

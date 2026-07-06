@@ -471,6 +471,7 @@ fn verify_signature_node(
     // trust pre-configured IdP keys, not whatever cert an attacker embeds.
     let key_info_node = find_child_element(doc, sig_node, ns::DSIG, ns::node::KEY_INFO);
     let mut key_from_x509 = false;
+    let mut key_from_raw_inline_keyinfo = false;
     let mut key_from_manager = false;
     // extracted_key holds ownership when key is extracted from inline KeyInfo.
     // The initial `None` is overwritten in every branch before being read, but
@@ -508,17 +509,23 @@ fn verify_signature_node(
         // Standard mode: try inline KeyValue (RSA/EC public key embedded in XML),
         // then try EncryptedKey unwrap, then fall back to KeysManager lookup.
         let effective_ki = resolve_key_info_reference(doc, ki, id_map).unwrap_or(ki);
-        extracted_key = bergshamra_keys::keyinfo::extract_key_value(effective_ki, doc)
-            .or_else(|| try_unwrap_encrypted_key(doc, effective_ki, &ctx.keys_manager).ok())
-            .or_else(|| {
-                try_resolve_retrieval_method(
-                    doc,
-                    effective_ki,
-                    ctx.base_dir.as_deref(),
-                    &ctx.url_maps,
-                )
-            })
-            .or_else(|| try_resolve_retrieval_method_inline(doc, effective_ki, id_map));
+        extracted_key = if let Some(key) =
+            bergshamra_keys::keyinfo::extract_key_value(effective_ki, doc)
+        {
+            // `extract_key_value` accepts both certificate-backed `<X509Data>`
+            // and raw inline key material (`<KeyValue>` / `<DEREncodedKeyValue>`).
+            // When trust anchors are configured below, raw document-controlled
+            // keys cannot satisfy that trust policy because there is no chain to
+            // validate against the configured anchors.
+            key_from_raw_inline_keyinfo = key.x509_chain.is_empty();
+            Some(key)
+        } else {
+            try_unwrap_encrypted_key(doc, effective_ki, &ctx.keys_manager).ok()
+        }
+        .or_else(|| {
+            try_resolve_retrieval_method(doc, effective_ki, ctx.base_dir.as_deref(), &ctx.url_maps)
+        })
+        .or_else(|| try_resolve_retrieval_method_inline(doc, effective_ki, id_map));
         if let Some(ref ek) = extracted_key {
             if ctx.debug {
                 eprintln!(
@@ -564,6 +571,15 @@ fn verify_signature_node(
         // signature could verify against an attacker-supplied cert while the
         // configured anchors are silently ignored (CVE-class trust bypass).
         let has_trusted_anchors = ctx.keys_manager.has_trusted_certs();
+        if has_trusted_anchors
+            && key_from_raw_inline_keyinfo
+            && !ctx.allow_raw_inline_keyinfo_with_trust_anchors
+        {
+            return Err(Error::Key(
+                "raw inline KeyInfo key is not trusted when trust anchors are configured".into(),
+            ));
+        }
+
         let needs_x509_validation = (ctx.enabled_key_data_x509 && key_from_x509)
             || (ctx.verify_keys && key_from_manager && !key.x509_chain.is_empty())
             || (has_trusted_anchors && !key.x509_chain.is_empty());
@@ -5112,6 +5128,39 @@ mod tests {
     // certificate must chain to one of them even in permissive mode
     // (`enabled_key_data_x509` and `verify_keys` both false).
 
+    /// A compact attacker-controlled document signed by the embedded raw
+    /// `<KeyValue>`.
+    ///
+    /// This is the original trust-bypass shape: the signature is valid for the
+    /// raw inline RSA key, but that key has no X.509 chain and therefore cannot
+    /// satisfy a caller's configured trust anchors.
+    const RAW_KEYVALUE_SIGNED_XML: &str = r##"<Root Id="root">
+  <Payload>attacker controlled payload</Payload>
+  <ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+    <ds:SignedInfo>
+      <ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
+      <ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>
+      <ds:Reference URI="#root">
+        <ds:Transforms>
+          <ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/>
+          <ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
+        </ds:Transforms>
+        <ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
+        <ds:DigestValue>NnrYodGkHwDR1Au09pcVBeLCVckmVGQVYP5qol5SFaw=</ds:DigestValue>
+      </ds:Reference>
+    </ds:SignedInfo>
+    <ds:SignatureValue>X3wPBPjRdCiRnpu8h1+Y0/IzMvd7+34v7KXHsxTZ6vc4Abs840GfEnYm5bpM8cAJM6hMI0vdglwtZSyZROZLHA==</ds:SignatureValue>
+    <ds:KeyInfo>
+      <ds:KeyValue>
+        <ds:RSAKeyValue>
+          <ds:Modulus>srryidgrlDw994IT7eEPDIpXrB8VW26cin5mm62FaQxlQ5jiiqd9+6iVGWfeSn8JV20do9M8iliZr0cVMfj7Ew==</ds:Modulus>
+          <ds:Exponent>AQAB</ds:Exponent>
+        </ds:RSAKeyValue>
+      </ds:KeyValue>
+    </ds:KeyInfo>
+  </ds:Signature>
+</Root>"##;
+
     /// The signed document with its inline signer chain.
     const X509DATA_TEST_XML: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -5151,7 +5200,49 @@ mod tests {
         // Permissive: inline keys accepted, no X509-data / verify-keys flags set.
         let ctx = DsigContext::new_permissive(mgr);
         assert!(!ctx.enabled_key_data_x509 && !ctx.verify_keys && !ctx.trusted_keys_only);
+        assert!(!ctx.allow_raw_inline_keyinfo_with_trust_anchors);
         ctx
+    }
+
+    /// Baseline: without configured trust anchors, permissive verification still
+    /// allows raw inline `KeyValue` documents for XML-DSig compatibility.
+    #[test]
+    fn test_raw_inline_keyvalue_verifies_without_anchors() {
+        let ctx = permissive_ctx_with_anchor(None);
+        let result = verify(&ctx, RAW_KEYVALUE_SIGNED_XML).expect("verify should not error");
+        assert!(
+            result.is_valid(),
+            "raw inline KeyValue should remain valid in permissive no-anchor mode"
+        );
+    }
+
+    /// Enforcement: once trust anchors are configured, a raw inline `KeyValue`
+    /// cannot satisfy that trust policy because it has no certificate chain to
+    /// validate against the anchors.
+    #[test]
+    fn test_raw_inline_keyvalue_rejected_when_anchor_configured() {
+        let ctx = permissive_ctx_with_anchor(Some(WRONG_CA_PEM));
+        let err = verify(&ctx, RAW_KEYVALUE_SIGNED_XML)
+            .expect_err("raw inline KeyValue must not bypass configured trust anchors");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("raw inline KeyInfo key"),
+            "error should explain raw inline KeyInfo rejection, got: {msg}"
+        );
+    }
+
+    /// Compatibility escape hatch: xmlsec interop tests intentionally combine
+    /// trusted CA flags with raw inline `KeyValue` fixtures. That mode must be
+    /// explicit so ordinary trust-anchor verification remains fail-closed.
+    #[test]
+    fn test_raw_inline_keyvalue_allowed_by_explicit_compatibility_policy() {
+        let ctx = permissive_ctx_with_anchor(Some(WRONG_CA_PEM))
+            .with_allow_raw_inline_keyinfo_with_trust_anchors(true);
+        let result = verify(&ctx, RAW_KEYVALUE_SIGNED_XML).expect("verify should not error");
+        assert!(
+            result.is_valid(),
+            "explicit compatibility policy should allow raw inline KeyValue"
+        );
     }
 
     /// Baseline: with NO trust anchors, the inline-certificate signature

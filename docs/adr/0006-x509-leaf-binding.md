@@ -120,11 +120,13 @@ hold its key).
 
 ## Scope note
 
-This ADR concerns certificate-bearing `KeyInfo`. A document that embeds a raw
-`<KeyValue>` (no certificate) has an empty `x509_chain` and is therefore not
-subject to anchor chaining at all; callers who must reject inline keys entirely
-should use the secure-by-default `DsigContext::new()` (`trusted_keys_only`),
-which ignores inline key material and only trusts pre-configured keys.
+This ADR concerns certificate-bearing `KeyInfo`. Raw inline `<KeyValue>` and
+`<DEREncodedKeyValue>` material has no certificate leaf to bind to the signing
+key. ADR-0007 covers that separate policy: when trust anchors are configured,
+raw inline keys are rejected by default unless the caller explicitly enables the
+xmlsec compatibility flag. Callers who must reject all inline keys should still
+use the secure-by-default `DsigContext::new()` (`trusted_keys_only`), which
+ignores inline key material and only trusts pre-configured keys.
 
 ## Testing
 
