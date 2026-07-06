@@ -4,7 +4,9 @@
 //!
 //! Signs an XML document using a template with empty DigestValue/SignatureValue.
 
-use crate::context::{url_map_matches, DsigContext};
+use crate::context::{
+    local_reference_relative_path, read_existing_relative_file, url_map_matches, DsigContext,
+};
 use bergshamra_c14n::C14nMode;
 use bergshamra_core::{algorithm, ns, Error};
 use bergshamra_crypto::digest;
@@ -184,23 +186,14 @@ pub fn sign_owned(ctx: &DsigContext, mut result_xml: String) -> Result<String, E
                         break;
                     }
                 }
-                // Try resolving as a relative file path (no scheme = local file)
-                if resolved.is_none() && !uri.contains("://") {
-                    if let Some(base) = &ctx.base_dir {
-                        let path = std::path::Path::new(base).join(uri);
-                        if path.exists() {
-                            let bytes = std::fs::read(&path)
-                                .map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
-                            resolved = Some(bergshamra_transforms::TransformData::Binary(bytes));
-                        }
-                    }
-                    if resolved.is_none() {
-                        let path = std::path::Path::new(uri);
-                        if path.exists() {
-                            let bytes = std::fs::read(path)
-                                .map_err(|e| Error::Other(format!("{uri}: {e}")))?;
-                            resolved = Some(bergshamra_transforms::TransformData::Binary(bytes));
-                        }
+                // Match verifier behavior for local detached files: URI
+                // schemes are not local paths, and any local path candidate
+                // must pass the same absolute/traversal checks.
+                if resolved.is_none() {
+                    if let Some(bytes) =
+                        read_signing_relative_reference_uri(uri, ctx.base_dir.as_deref())?
+                    {
+                        resolved = Some(bergshamra_transforms::TransformData::Binary(bytes));
                     }
                 }
                 resolved.ok_or_else(|| Error::InvalidUri(format!("unsupported URI: {uri}")))?
@@ -427,6 +420,29 @@ pub fn sign_owned(ctx: &DsigContext, mut result_xml: String) -> Result<String, E
     }
 
     Ok(result_xml)
+}
+
+/// Read local detached bytes for signing when `uri` is a safe relative path.
+///
+/// This mirrors verifier local-file fallback so signing cannot accidentally
+/// digest a local file for a scheme URI such as `urn:payload`, nor use absolute
+/// paths or parent traversal that verification would later reject.
+fn read_signing_relative_reference_uri(
+    uri: &str,
+    base_dir: Option<&str>,
+) -> Result<Option<Vec<u8>>, Error> {
+    let Some(path) = local_reference_relative_path(uri)? else {
+        return Ok(None);
+    };
+
+    if let Some(base) = base_dir {
+        if let Some(data) = read_existing_relative_file(std::path::Path::new(base), path, uri)? {
+            return Ok(Some(data));
+        }
+    }
+
+    let cwd = std::env::current_dir().map_err(|e| Error::Other(format!("current dir: {e}")))?;
+    read_existing_relative_file(&cwd, path, uri)
 }
 
 // Re-use helpers from verify module
@@ -1457,4 +1473,181 @@ fn find_descendant_element_by_local(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Runtime-owned directory for signing resolver fixtures.
+    ///
+    /// The tests create local files whose names affect URI resolution, so each
+    /// test gets an isolated directory that is removed automatically.
+    struct TestDir {
+        path: std::path::PathBuf,
+    }
+
+    impl TestDir {
+        /// Create a unique temporary directory.
+        fn new() -> Self {
+            let base_nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock must be after unix epoch")
+                .as_nanos();
+            for attempt in 0..100_u32 {
+                let path = std::env::temp_dir().join(format!(
+                    "bergshamra-dsig-sign-reference-{pid}-{base_nonce}-{attempt}",
+                    pid = std::process::id()
+                ));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => return Self { path },
+                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(err) => {
+                        panic!(
+                            "temporary signing fixture directory {} must be creatable: {err}",
+                            path.display()
+                        );
+                    }
+                }
+            }
+
+            panic!("temporary signing fixture directory path must be unique after retries");
+        }
+
+        /// Return a child path inside this temporary directory.
+        fn join(&self, name: &str) -> std::path::PathBuf {
+            self.path.join(name)
+        }
+
+        /// Return the temporary directory path as UTF-8 for `base_dir`.
+        fn as_str(&self) -> &str {
+            self.path
+                .to_str()
+                .expect("temporary signing fixture directory must be valid UTF-8")
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    /// Build a key manager with one HMAC key for compact signing regressions.
+    fn hmac_keys_manager() -> bergshamra_keys::KeysManager {
+        let mut keys = bergshamra_keys::KeysManager::new();
+        keys.add_key(bergshamra_keys::Key::new(
+            bergshamra_keys::KeyData::Hmac(b"signing-reference-secret".to_vec()),
+            bergshamra_keys::KeyUsage::Any,
+        ));
+        keys
+    }
+
+    /// Create a permissive signing context backed by the test HMAC key.
+    fn hmac_signing_context() -> DsigContext {
+        DsigContext::new_permissive(hmac_keys_manager())
+    }
+
+    /// Minimal detached-reference signing template for resolver tests.
+    ///
+    /// The empty digest and signature values force `sign_owned` to resolve the
+    /// `Reference URI`, compute the digest, and then produce a real HMAC
+    /// `SignatureValue`.
+    fn detached_reference_template(uri: &str) -> String {
+        format!(
+            r#"<Root xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+  <ds:Signature>
+    <ds:SignedInfo>
+      <ds:CanonicalizationMethod Algorithm="{c14n}"/>
+      <ds:SignatureMethod Algorithm="{hmac_sha256}"/>
+      <ds:Reference URI="{uri}">
+        <ds:DigestMethod Algorithm="{sha256}"/>
+        <ds:DigestValue></ds:DigestValue>
+      </ds:Reference>
+    </ds:SignedInfo>
+    <ds:SignatureValue></ds:SignatureValue>
+  </ds:Signature>
+</Root>"#,
+            c14n = algorithm::EXC_C14N,
+            hmac_sha256 = algorithm::HMAC_SHA256,
+            sha256 = algorithm::SHA256,
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sign_owned_rejects_scheme_uri_local_file_fallback() {
+        // A scheme URI such as `urn:...` must not be interpreted as a local file
+        // just because a same-named file exists under `base_dir`.
+        let dir = TestDir::new();
+        let uri = "urn:bergshamra:payload";
+        std::fs::write(dir.join(uri), b"detached bytes")
+            .expect("same-named scheme fixture must be writable");
+        let ctx = hmac_signing_context().with_base_dir(dir.as_str());
+
+        let err = sign_owned(&ctx, detached_reference_template(uri))
+            .expect_err("scheme URI without an explicit URL map must not use local fallback");
+        match err {
+            Error::InvalidUri(message) => assert!(
+                message.contains("unsupported URI"),
+                "unexpected scheme URI error: {message}"
+            ),
+            other => panic!("unexpected scheme URI error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sign_owned_allows_scheme_uri_from_explicit_url_map() {
+        // Explicit maps remain the supported way to sign detached bytes for
+        // external URI schemes.
+        let dir = TestDir::new();
+        let payload_path = dir.join("payload.txt");
+        std::fs::write(&payload_path, b"detached bytes")
+            .expect("mapped detached payload must be writable");
+        let uri = "urn:bergshamra:payload";
+        let mut ctx = hmac_signing_context();
+        ctx.add_url_map(
+            uri,
+            payload_path
+                .to_str()
+                .expect("mapped detached payload path must be valid UTF-8"),
+        );
+
+        let signed = sign_owned(&ctx, detached_reference_template(uri))
+            .expect("explicit URL map should allow signing scheme URI bytes");
+        assert!(
+            !signed.contains("<ds:DigestValue></ds:DigestValue>"),
+            "signing must fill the mapped detached reference digest"
+        );
+        assert!(
+            !signed.contains("<ds:SignatureValue></ds:SignatureValue>"),
+            "signing must fill the HMAC signature value"
+        );
+    }
+
+    #[test]
+    fn sign_owned_rejects_parent_directory_relative_file_uri() {
+        // Signing uses the same traversal guard as verification, so a template
+        // cannot sign bytes that verification would reject as `..` traversal.
+        let dir = TestDir::new();
+        let base_dir = dir.join("base");
+        std::fs::create_dir(&base_dir).expect("base directory fixture must be creatable");
+        std::fs::write(dir.join("payload.txt"), b"detached bytes")
+            .expect("outside payload fixture must be writable");
+        let base_dir = base_dir
+            .to_str()
+            .expect("base directory fixture must be valid UTF-8")
+            .to_owned();
+        let ctx = hmac_signing_context().with_base_dir(base_dir);
+
+        let err = sign_owned(&ctx, detached_reference_template("../payload.txt"))
+            .expect_err("parent traversal Reference URI must not sign local bytes");
+        match err {
+            Error::InvalidUri(message) => assert!(
+                message.contains("parent-directory Reference URI not allowed"),
+                "unexpected traversal error: {message}"
+            ),
+            other => panic!("unexpected traversal error: {other:?}"),
+        }
+    }
 }

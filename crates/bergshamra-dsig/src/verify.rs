@@ -10,7 +10,9 @@
 //! 5. Canonicalize `<SignedInfo>`
 //! 6. Verify `<SignatureValue>`
 
-use crate::context::{url_map_matches, DsigContext};
+use crate::context::{
+    local_reference_relative_path, read_existing_relative_file, url_map_matches, DsigContext,
+};
 use bergshamra_c14n::C14nMode;
 use bergshamra_core::{algorithm, ns, Error};
 use bergshamra_crypto::digest;
@@ -1140,34 +1142,9 @@ fn read_relative_reference_uri(
     uri: &str,
     base_dir: Option<&str>,
 ) -> Result<Option<Vec<u8>>, Error> {
-    let path = std::path::Path::new(uri);
-    if path.is_absolute() {
-        return Err(Error::InvalidUri(format!(
-            "absolute local file Reference URI not allowed: {uri}"
-        )));
-    }
-    // Validate path-only hazards before URI schemes. On Windows, drive paths
-    // such as `C:\secret.txt` and `C:secret.txt` begin with a `Prefix`
-    // component and would otherwise look like a one-letter URI scheme.
-    for component in path.components() {
-        match component {
-            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
-                return Err(Error::InvalidUri(format!(
-                    "absolute local file Reference URI not allowed: {uri}"
-                )));
-            }
-            std::path::Component::ParentDir => {
-                return Err(Error::InvalidUri(format!(
-                    "parent-directory Reference URI not allowed: {uri}"
-                )));
-            }
-            _ => {}
-        }
-    }
-
-    if uri_has_scheme(uri) {
+    let Some(path) = local_reference_relative_path(uri)? else {
         return Ok(None);
-    }
+    };
 
     if let Some(base) = base_dir {
         if let Some(data) = read_existing_relative_file(std::path::Path::new(base), path, uri)? {
@@ -1181,51 +1158,6 @@ fn read_relative_reference_uri(
     }
 
     Ok(None)
-}
-
-/// Read `relative_path` under `base` only when canonical resolution stays below
-/// that same canonical base directory.
-///
-/// This prevents a document-relative `<Reference URI>` from following a symlink
-/// inside the document directory to an arbitrary local file.
-fn read_existing_relative_file(
-    base: &std::path::Path,
-    relative_path: &std::path::Path,
-    uri: &str,
-) -> Result<Option<Vec<u8>>, Error> {
-    let full = base.join(relative_path);
-    if !full.exists() {
-        return Ok(None);
-    }
-
-    let canonical_base = base
-        .canonicalize()
-        .map_err(|e| Error::Other(format!("{}: {e}", base.display())))?;
-    let canonical_full = full
-        .canonicalize()
-        .map_err(|e| Error::Other(format!("{}: {e}", full.display())))?;
-    if !canonical_full.starts_with(&canonical_base) {
-        return Err(Error::InvalidUri(format!(
-            "local file Reference URI escapes base directory: {uri}"
-        )));
-    }
-
-    let data = std::fs::read(&canonical_full)
-        .map_err(|e| Error::Other(format!("{}: {e}", canonical_full.display())))?;
-    Ok(Some(data))
-}
-
-/// Return whether `uri` begins with an RFC-style scheme name.
-///
-/// This keeps `urn:...` and `http:...` out of the local-file fallback even
-/// though they do not necessarily contain `://`.
-fn uri_has_scheme(uri: &str) -> bool {
-    let Some((scheme, _)) = uri.split_once(':') else {
-        return false;
-    };
-    let mut chars = scheme.chars();
-    matches!(chars.next(), Some(first) if first.is_ascii_alphabetic())
-        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
 }
 
 /// Apply a single transform.

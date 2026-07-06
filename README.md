@@ -187,9 +187,9 @@ with `DsigContext::add_url_map("URI", "file")` or CLI `--url-map URI=FILE`.
 Mappings match the URI exactly, or the same URI with a `#fragment` suffix.
 For XML-DSig compatibility, simple relative local file references are also
 resolved against the input directory/current working directory. Absolute paths
-and parent-directory traversal are rejected, and detached bytes are redacted
-from verifier debug output so an invalid signature cannot print local file
-contents.
+URI schemes, and parent-directory traversal are rejected for local-file
+fallback, and detached bytes are redacted from verifier debug output so an
+invalid signature cannot print local file contents.
 
 You should always check that the signature covers the element you intend to
 consume. For example, a SAML Service Provider should verify that one of the
