@@ -13,6 +13,8 @@
 - XML-DSig signing and verification now reject scheme, absolute, and parent-traversing local `<Reference URI>` fallback values, and verifier debug output redacts detached reference bytes. Simple relative detached files remain supported for XML-DSig compatibility; use `DsigContext::add_url_map()` or CLI `--url-map URL=FILE` for explicit external URI mappings. URL maps match exactly, with only same-resource `#fragment` suffixes accepted as non-exact matches.
 - XML-DSig verification now rejects raw inline `<KeyValue>`/`<DEREncodedKeyValue>` signing keys when trust anchors are configured. Inline `<X509Data>` remains supported, but its chain must validate to a configured anchor. Library compatibility cases can opt back into raw inline keys by chaining `.with_allow_raw_inline_keyinfo_with_trust_anchors(true)` on a `DsigContext`.
 - API note: this release adds `DsigContext::allow_raw_inline_keyinfo_with_trust_anchors`; downstream code constructing `DsigContext { .. }` must set the new field (or switch to the `DsigContext::new` constructor and builder methods).
+- `XmlDocument::build_id_map()` now rejects duplicate ID values across default and caller-registered ID attributes instead of silently overwriting earlier entries.
+- API note: `XmlDocument::build_id_map()` now returns `Result<HashMap<String, NodeId>, Error>`; callers must handle duplicate-ID errors before using the returned map.
 
 ### Added
 

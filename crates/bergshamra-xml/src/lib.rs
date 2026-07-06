@@ -4,6 +4,11 @@
 //!
 //! Provides a DOM-like interface over `uppsala`, plus `NodeSet` operations
 //! needed for canonicalization and signature transforms.
+//!
+//! `XmlDocument::build_id_map` rejects duplicate ID values across the default
+//! XML Signature ID attributes and any caller-registered ID attributes. This
+//! prevents public helper consumers from accidentally resolving an attacker
+//! supplied duplicate element after a silent map overwrite.
 
 pub mod document;
 pub mod nodeset;
