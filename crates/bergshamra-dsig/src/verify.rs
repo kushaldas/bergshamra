@@ -163,13 +163,37 @@ fn reference_digest_policy_failure(
 /// may not be the first in the document.
 pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
     let doc = uppsala::parse(xml).map_err(|e| Error::XmlParse(e.to_string()))?;
+    verify_document_with_source(ctx, &doc, Some(xml))
+}
+
+/// Verify the first `<Signature>` element in an already-parsed document.
+///
+/// This avoids reparsing XML for callers that already hold an `uppsala::Document`.
+/// Same-document C14N reference paths operate directly on the DOM. Less common
+/// transform paths serialize the current document lazily only when the generic
+/// transform pipeline requires XML text.
+pub fn verify_document(ctx: &DsigContext, doc: &Document<'_>) -> Result<VerifyResult, Error> {
+    verify_document_with_source(ctx, doc, None)
+}
+
+/// Verify the first `<Signature>` element using an already-parsed document and
+/// the source XML text it was parsed from.
+///
+/// Supplying `source_xml` lets generic transform fallbacks borrow the original
+/// input instead of serializing the document. Call this only when `source_xml`
+/// represents the current document state.
+pub fn verify_document_with_source(
+    ctx: &DsigContext,
+    doc: &Document<'_>,
+    source_xml: Option<&str>,
+) -> Result<VerifyResult, Error> {
     let id_map = build_verify_id_map(ctx, &doc)?;
 
     // Find the first <Signature> element.
     let sig_node = find_element(&doc, ns::DSIG, ns::node::SIGNATURE)
         .ok_or_else(|| Error::MissingElement("Signature".into()))?;
 
-    verify_signature_node(ctx, &doc, xml, sig_node, &id_map)
+    verify_signature_node(ctx, doc, source_xml, sig_node, &id_map)
 }
 
 /// Verify **every** `<Signature>` element in the document, returning one
@@ -196,9 +220,27 @@ pub fn verify(ctx: &DsigContext, xml: &str) -> Result<VerifyResult, Error> {
 /// [`VerifyResult::Invalid`].
 pub fn verify_all(ctx: &DsigContext, xml: &str) -> Result<Vec<VerifyResult>, Error> {
     let doc = uppsala::parse(xml).map_err(|e| Error::XmlParse(e.to_string()))?;
-    let id_map = build_verify_id_map(ctx, &doc)?;
+    verify_all_document_with_source(ctx, &doc, Some(xml))
+}
 
-    let sig_nodes = find_all_elements(&doc, ns::DSIG, ns::node::SIGNATURE);
+/// Verify every `<Signature>` element in an already-parsed document.
+pub fn verify_all_document(
+    ctx: &DsigContext,
+    doc: &Document<'_>,
+) -> Result<Vec<VerifyResult>, Error> {
+    verify_all_document_with_source(ctx, doc, None)
+}
+
+/// Verify every `<Signature>` element using an already-parsed document and,
+/// optionally, the source XML text it was parsed from.
+pub fn verify_all_document_with_source(
+    ctx: &DsigContext,
+    doc: &Document<'_>,
+    source_xml: Option<&str>,
+) -> Result<Vec<VerifyResult>, Error> {
+    let id_map = build_verify_id_map(ctx, doc)?;
+
+    let sig_nodes = find_all_elements(doc, ns::DSIG, ns::node::SIGNATURE);
     if sig_nodes.is_empty() {
         return Err(Error::MissingElement("Signature".into()));
     }
@@ -208,7 +250,7 @@ pub fn verify_all(ctx: &DsigContext, xml: &str) -> Result<Vec<VerifyResult>, Err
         // A per-signature error must not abort verification of the rest: report
         // it as Invalid for this signature and continue. Document-level errors
         // are handled above, before the loop.
-        let result = match verify_signature_node(ctx, &doc, xml, sig_node, &id_map) {
+        let result = match verify_signature_node(ctx, doc, source_xml, sig_node, &id_map) {
             Ok(result) => result,
             Err(e) => VerifyResult::Invalid {
                 reason: format!("signature could not be processed: {e}"),
@@ -237,7 +279,7 @@ fn build_verify_id_map(
 fn verify_signature_node(
     ctx: &DsigContext,
     doc: &Document<'_>,
-    xml: &str,
+    xml: Option<&str>,
     sig_node: NodeId,
     id_map: &std::collections::HashMap<String, NodeId>,
 ) -> Result<VerifyResult, Error> {
@@ -658,7 +700,7 @@ fn verify_reference(
     reference: NodeId,
     doc: &Document<'_>,
     id_map: &HashMap<String, NodeId>,
-    xml: &str,
+    xml: Option<&str>,
     sig_node: NodeId,
     url_maps: &[(String, String)],
     debug: bool,
@@ -735,7 +777,15 @@ fn verify_reference(
         (bytes, resolved_node, true)
     } else {
         // Resolve URI and get initial data for the generic transform pipeline.
-        let resolved = resolve_reference_uri(uri, doc, id_map, xml, url_maps, base_dir)?;
+        let owned_xml;
+        let xml_text = match xml {
+            Some(xml) => xml,
+            None => {
+                owned_xml = doc.to_xml();
+                &owned_xml
+            }
+        };
+        let resolved = resolve_reference_uri(uri, doc, id_map, xml_text, url_maps, base_dir)?;
         let (mut data, resolved_node, debug_pre_digest_bytes) = match resolved {
             ResolvedUri::Xml {
                 xml_text,
@@ -4249,9 +4299,17 @@ mod tests {
         assert_eq!(refs.len(), 1);
 
         let id_map = HashMap::new();
-        let (mismatch, vref) =
-            verify_reference(refs[0], &doc, &id_map, xml, sig_node, &[], false, None)
-                .expect("verify_reference failed");
+        let (mismatch, vref) = verify_reference(
+            refs[0],
+            &doc,
+            &id_map,
+            Some(xml),
+            sig_node,
+            &[],
+            false,
+            None,
+        )
+        .expect("verify_reference failed");
         assert!(
             mismatch.is_none(),
             "cid: reference should be skipped and reported as Valid"
@@ -4283,9 +4341,17 @@ mod tests {
         assert_eq!(refs.len(), 1);
 
         let id_map = build_id_map(&doc, &["Id", "ID", "id"]).expect("no duplicate IDs");
-        let (mismatch, vref) =
-            verify_reference(refs[0], &doc, &id_map, xml, sig_node, &[], false, None)
-                .expect("verify_reference failed");
+        let (mismatch, vref) = verify_reference(
+            refs[0],
+            &doc,
+            &id_map,
+            Some(xml),
+            sig_node,
+            &[],
+            false,
+            None,
+        )
+        .expect("verify_reference failed");
         // The digest will not match since AAAA is bogus, so we expect Some(reason).
         assert!(
             mismatch.is_some(),

@@ -1,6 +1,24 @@
 # Changelog
 
 
+## 0.7.1 [Unreleased]
+
+### Added
+
+- Added document-native XML-DSig signing APIs: `sign_document()` fills an
+  existing signature template in an `uppsala::Document`, while
+  `sign_enveloped_document()` builds and signs a standard enveloped signature
+  directly in the caller's DOM.
+- Added `verify_document()`, `verify_document_with_source()`,
+  `verify_all_document()`, and `verify_all_document_with_source()` for verifying
+  already-parsed Uppsala documents without an unconditional reparse.
+
+### Changed
+
+- Document-native signing and verification use direct same-document C14N paths
+  where supported and serialize lazily only for generic transform fallbacks.
+
+
 ## 0.7.0 [2026-07-05]
 
 ### Security
