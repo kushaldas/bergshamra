@@ -21,6 +21,14 @@ use bergshamra_xml::xpath;
 use std::collections::HashMap;
 use uppsala::{Document, NodeId, NodeKind, XmlWriter};
 
+/// Max `<Reference>` elements per `<SignedInfo>`, bounding the work a malicious
+/// document can force. Real signatures use only a handful.
+const MAX_REFERENCES: usize = 128;
+
+/// Max `<Transform>` elements per `<Reference>`. Each transform can re-parse its
+/// input, so an unbounded chain is a denial-of-service amplifier.
+const MAX_TRANSFORMS_PER_REFERENCE: usize = 32;
+
 /// Metadata about a single verified `<Reference>`.
 ///
 /// Marked `#[non_exhaustive]`: construct it via the verifier rather than a
@@ -385,6 +393,14 @@ fn verify_signature_node(
 
     // 3. Verify each Reference
     let references = find_child_elements(doc, signed_info, ns::DSIG, ns::node::REFERENCE);
+    if references.len() > MAX_REFERENCES {
+        return Ok(VerifyResult::Invalid {
+            reason: format!(
+                "too many References ({}, maximum {MAX_REFERENCES})",
+                references.len()
+            ),
+        });
+    }
     let mut verified_refs = Vec::with_capacity(references.len());
     for reference in &references {
         let (mismatch, vref) = verify_reference(
@@ -807,6 +823,19 @@ fn verify_reference(
         };
 
         if let Some(transforms) = transforms_node {
+            let transform_count = doc
+                .children(transforms)
+                .into_iter()
+                .filter(|&n| {
+                    doc.element(n)
+                        .is_some_and(|e| e.name.local_name.as_ref() == ns::node::TRANSFORM)
+                })
+                .count();
+            if transform_count > MAX_TRANSFORMS_PER_REFERENCE {
+                return Err(Error::Transform(format!(
+                    "too many Transforms in Reference ({transform_count}, maximum {MAX_TRANSFORMS_PER_REFERENCE})"
+                )));
+            }
             for transform_node in doc.children(transforms) {
                 let is_transform_elem = doc
                     .element(transform_node)
@@ -1450,6 +1479,48 @@ fn apply_xslt_transform<'a>(
     apply_minimal_xslt(data, stylesheet, &templates, outer_doc)
 }
 
+/// Work budget for the minimal XSLT processor.
+///
+/// A template with several `<xsl:apply-templates/>` over nested input expands
+/// exponentially, and transforms run before the signature is checked, so this is
+/// a pre-authentication denial of service. Bounds node applications and output
+/// size, failing closed when either limit is hit.
+struct XsltBudget {
+    /// Remaining node-application operations.
+    ops: u64,
+    /// Maximum total output size in bytes.
+    max_output: usize,
+    /// Set once either limit is exceeded.
+    aborted: bool,
+}
+
+/// Max node applications per XSLT transform. Real stylesheets need a few hundred.
+const MAX_XSLT_OPS: u64 = 5_000_000;
+
+/// Maximum output size for a single XSLT transform (16 MiB).
+const MAX_XSLT_OUTPUT: usize = 16 * 1024 * 1024;
+
+impl XsltBudget {
+    fn new() -> Self {
+        Self {
+            ops: MAX_XSLT_OPS,
+            max_output: MAX_XSLT_OUTPUT,
+            aborted: false,
+        }
+    }
+
+    /// Charge one node application. Returns `false` once either limit is hit,
+    /// after which callers must stop.
+    fn charge(&mut self, out_len: usize) -> bool {
+        if self.aborted || self.ops == 0 || out_len > self.max_output {
+            self.aborted = true;
+            return false;
+        }
+        self.ops -= 1;
+        true
+    }
+}
+
 /// Minimal XSLT processor for simple template-based transforms.
 ///
 /// Supports a subset of XSLT 1.0:
@@ -1528,6 +1599,7 @@ fn apply_minimal_xslt<'a>(
     // Process root element
     let root = input_doc.document_element().unwrap();
     let mut output = String::new();
+    let mut budget = XsltBudget::new();
     xslt_apply_templates_to_node(
         root,
         templates,
@@ -1536,7 +1608,13 @@ fn apply_minimal_xslt<'a>(
         &default_ns,
         &strip_set,
         &mut output,
+        &mut budget,
     );
+    if budget.aborted {
+        return Err(Error::Transform(
+            "XSLT transform exceeded work/output budget (possible denial-of-service input)".into(),
+        ));
+    }
 
     Ok(bergshamra_transforms::TransformData::Binary(
         output.into_bytes(),
@@ -1544,6 +1622,7 @@ fn apply_minimal_xslt<'a>(
 }
 
 /// Apply templates to a node.
+#[allow(clippy::too_many_arguments)]
 fn xslt_apply_templates_to_node(
     node: NodeId,
     templates: &[NodeId],
@@ -1552,12 +1631,16 @@ fn xslt_apply_templates_to_node(
     default_ns: &Option<String>,
     strip_set: &std::collections::HashSet<String>,
     out: &mut String,
+    budget: &mut XsltBudget,
 ) {
+    if !budget.charge(out.len()) {
+        return;
+    }
     // Find matching template
     if let Some(tmpl) = find_matching_template(node, templates, tmpl_doc, input_doc) {
         // Execute template body
         xslt_execute_body(
-            tmpl, node, templates, tmpl_doc, input_doc, default_ns, strip_set, out,
+            tmpl, node, templates, tmpl_doc, input_doc, default_ns, strip_set, out, budget,
         );
     } else {
         // Default: for elements, apply templates to children; for text, copy text
@@ -1585,7 +1668,7 @@ fn xslt_apply_templates_to_node(
         } else if input_doc.element(node).is_some() {
             for child in input_doc.children(node) {
                 xslt_apply_templates_to_node(
-                    child, templates, tmpl_doc, input_doc, default_ns, strip_set, out,
+                    child, templates, tmpl_doc, input_doc, default_ns, strip_set, out, budget,
                 );
             }
         }
@@ -1606,7 +1689,11 @@ fn xslt_execute_body(
     default_ns: &Option<String>,
     strip_set: &std::collections::HashSet<String>,
     out: &mut String,
+    budget: &mut XsltBudget,
 ) {
+    if !budget.charge(out.len()) {
+        return;
+    }
     const XSL_NS: &str = "http://www.w3.org/1999/XSL/Transform";
 
     for child in tmpl_doc.children(body) {
@@ -1631,7 +1718,7 @@ fn xslt_execute_body(
                                 {
                                     xslt_apply_templates_to_node(
                                         ch, templates, tmpl_doc, input_doc, default_ns, strip_set,
-                                        out,
+                                        out, budget,
                                     );
                                 }
                             }
@@ -1640,6 +1727,7 @@ fn xslt_execute_body(
                             for ch in input_doc.children(context_node) {
                                 xslt_apply_templates_to_node(
                                     ch, templates, tmpl_doc, input_doc, default_ns, strip_set, out,
+                                    budget,
                                 );
                             }
                         }
@@ -1686,6 +1774,7 @@ fn xslt_execute_body(
                                 default_ns,
                                 strip_set,
                                 out,
+                                budget,
                             );
                             out.push_str("</");
                             out.push_str(local);
@@ -1731,6 +1820,7 @@ fn xslt_execute_body(
                     default_ns,
                     strip_set,
                     out,
+                    budget,
                 );
                 out.push_str("</");
                 out.push_str(local);
@@ -3746,11 +3836,9 @@ fn try_resolve_retrieval_method(
             continue;
         }
 
-        // Resolve URI to a file path
-        let file_path = resolve_retrieval_uri(uri, base_dir, url_maps)?;
-
-        // Load DER certificate
-        let cert_der = std::fs::read(&file_path).ok()?;
+        // Resolve to certificate bytes under the hardened local-file policy
+        // (no absolute paths, schemes, traversal, or network access).
+        let cert_der = resolve_retrieval_uri(uri, base_dir, url_maps)?;
 
         // Try to parse as DER X.509 certificate
         use der::Decode;
@@ -3842,52 +3930,45 @@ fn resolve_retrieval_uri(
     uri: &str,
     base_dir: Option<&str>,
     url_maps: &[(String, String)],
-) -> Option<std::path::PathBuf> {
-    // Check url-maps first (prefix replacement)
+) -> Option<Vec<u8>> {
+    // Caller-configured url-maps are trusted: match exactly, by `#fragment`, or
+    // by directory prefix. The joined remainder is attacker-influenced, so
+    // reject parent-directory traversal.
     for (url, path) in url_maps {
         if uri == url {
-            return Some(std::path::PathBuf::from(path));
+            return std::fs::read(path).ok();
         }
-        if uri.starts_with(url) {
-            let suffix = &uri[url.len()..];
-            let full = std::path::Path::new(path).join(suffix.trim_start_matches('/'));
+        if let Some(suffix) = uri.strip_prefix(url.as_str()) {
+            if suffix.starts_with('#') {
+                return std::fs::read(path).ok();
+            }
+            let rel = std::path::Path::new(suffix.trim_start_matches('/'));
+            if rel
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                continue;
+            }
+            let full = std::path::Path::new(path).join(rel);
             if full.exists() {
-                return Some(full);
+                return std::fs::read(full).ok();
             }
         }
     }
 
-    // Treat as relative path from base_dir
+    // Otherwise the URI is from the untrusted document. Same policy as
+    // `<Reference>` resolution: only simple relative paths (no scheme, absolute
+    // path, or traversal), resolved within the base or current directory.
+    let rel = local_reference_relative_path(uri).ok()??;
     if let Some(base) = base_dir {
-        let full = std::path::Path::new(base).join(uri);
-        if full.exists() {
-            return Some(full);
-        }
-        // Walk up ancestors of base_dir and try each
-        let mut ancestor = std::path::Path::new(base);
-        while let Some(parent) = ancestor.parent() {
-            let full = parent.join(uri);
-            if full.exists() {
-                return Some(full);
-            }
-            ancestor = parent;
+        if let Ok(Some(data)) = read_existing_relative_file(std::path::Path::new(base), rel, uri) {
+            return Some(data);
         }
     }
-
-    // Try CWD-relative
-    {
-        let p = std::path::PathBuf::from(uri);
-        if p.exists() {
-            return Some(p);
-        }
+    let cwd = std::env::current_dir().ok()?;
+    if let Ok(Some(data)) = read_existing_relative_file(&cwd, rel, uri) {
+        return Some(data);
     }
-
-    // Try as absolute path
-    let p = std::path::PathBuf::from(uri);
-    if p.exists() {
-        return Some(p);
-    }
-
     None
 }
 
@@ -3931,6 +4012,32 @@ fn key_data_from_spki(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xslt_transform_work_budget_rejects_exponential_blowup() {
+        // Two `<xsl:apply-templates/>` over nested input expand as 2^depth
+        // without a budget. The budget must abort with an error, not hang.
+        let outer = r#"<Transform xmlns:xsl="http://www.w3.org/1999/XSL/Transform"><xsl:stylesheet><xsl:template match="a"><xsl:apply-templates/><xsl:apply-templates/></xsl:template></xsl:stylesheet></Transform>"#;
+        let outer_doc = uppsala::parse(outer).expect("parse stylesheet");
+        let transform_node = outer_doc.document_element().expect("transform root");
+
+        let depth = 40;
+        let mut input = String::from("<a>");
+        for _ in 0..depth {
+            input.push_str("<a>");
+        }
+        for _ in 0..depth {
+            input.push_str("</a>");
+        }
+        input.push_str("</a>");
+
+        let data = bergshamra_transforms::TransformData::xml_owned(input, None);
+        let result = apply_xslt_transform(data, transform_node, &outer_doc);
+        assert!(
+            result.is_err(),
+            "exponential XSLT blow-up must be rejected by the work budget"
+        );
+    }
 
     /// Runtime-owned file used by resolver tests.
     ///
