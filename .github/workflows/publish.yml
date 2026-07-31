@@ -9,12 +9,6 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
-# Note on crates.io publishing
-# -----------------------------
-# The workspace resolves all dependencies from crates.io — including
-# kryptering (>=0.3) and tsp-ltv (>=0.2), which were previously local `path`
-# deps that blocked `cargo publish`.
-#
 # We publish each member crate individually, in dependency order, rather than
 # with a single workspace `cargo publish`. The coordinated workspace publish
 # can deadlock in cargo's publish planner ("no packages ready to publish but N
@@ -57,18 +51,6 @@ jobs:
             exit 1
           fi
 
-      - name: Verify release prerequisites
-        run: |
-          set -euo pipefail
-          for requirement in kryptering@0.5.0 tsp-ltv@0.4.0; do
-            crate="${requirement%@*}"
-            version="${requirement#*@}"
-            if ! curl --fail --silent --show-error \
-              "https://crates.io/api/v1/crates/${crate}/${version}" >/dev/null; then
-              echo "::error::${crate} ${version} must be published before Bergshamra" >&2
-              exit 1
-            fi
-          done
       - name: Build workspace
         run: cargo build --locked --workspace --no-default-features --features rustcrypto,legacy-algorithms,post-quantum,pkcs11
 
@@ -90,7 +72,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -184,7 +166,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0
 
