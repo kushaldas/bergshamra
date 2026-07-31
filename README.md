@@ -1,10 +1,11 @@
 # Bergshamra
 
-Pure Rust XML Security library implementing the W3C XML Digital Signatures
+XML Security library implementing the W3C XML Digital Signatures
 (XML-DSig), XML Encryption (XML-Enc), and XML Canonicalization (C14N)
-specifications. Built entirely on the RustCrypto ecosystem with
-[Uppsala](https://crates.io/crates/uppsala) for XML parsing — no FFI, no
-unsafe code, no libxml2.
+specifications. Document cryptography is selectable between RustCrypto and
+AWS-LC through Kryptering; XML parsing uses
+[Uppsala](https://crates.io/crates/uppsala). Version 0.8.0 was released on
+July 31, 2026, and requires Rust 1.88.
 
 ## Features
 
@@ -25,7 +26,7 @@ unsafe code, no libxml2.
 - **OPC Relationship Transform** — for Office Open XML signatures (ECMA-376 Part 2)
 - **Key formats** — PEM, DER, PKCS#8 (plain and encrypted), PKCS#12, X.509 (PEM and DER), xmlsec keys.xml, raw symmetric keys
 - **KeyInfo resolution** — KeyName, X509Certificate (multi-cert chain with leaf detection), X509IssuerSerial, RSA/EC/DSA KeyValue, DEREncodedKeyValue, RetrievalMethod, EncryptedKey, KeyInfoReference
-- **`#![forbid(unsafe_code)]`** across every crate
+- **`#![forbid(unsafe_code)]`** in each Bergshamra workspace crate; dependencies may use unsafe Rust
 
 ### Supported algorithms
 
@@ -47,23 +48,46 @@ unsafe code, no libxml2.
 
 † MD5 and RIPEMD-160 are behind the `legacy-algorithms` feature flag.
 
+Exact support depends on the selected provider. See the
+[provider capability table](docs/provider-capabilities.md); unsupported
+parameter combinations fail deterministically and never fall back to another
+provider.
+
+## Cryptographic provider features
+
+The default feature set is `rustcrypto`, `legacy-algorithms`, `post-quantum`,
+and `pkcs11`, preserving the 0.7 software/PQ/HSM surface. Select alternate
+document providers with `--no-default-features`:
+
+```bash
+cargo build
+cargo build --no-default-features --features aws-lc,legacy-algorithms,pkcs11
+```
+
+Exactly one of `rustcrypto` or `aws-lc` is required. The `fips` feature
+selects AWS-LC, is incompatible with RustCrypto, and requires explicit
+`initialize_backend()` before cryptographic use. `--all-features` is
+intentionally invalid. AWS-LC builds are initially supported on Linux
+x86_64/aarch64.
+
 ## xmlsec test suite compatibility
 
-Bergshamra is tested against the full
-[xmlsec](https://www.aleksey.com/xmlsec/) interoperability test suite
-(1157 test steps across DSig and Enc). These are the same tests used by
-the xmlsec1 C library, covering test vectors from the W3C, Merlin, Aleksey,
-IAIK, NIST, and Phaos interop suites.
+Bergshamra's default RustCrypto configuration is tested against the full
+[xmlsec](https://www.aleksey.com/xmlsec/) interoperability test suite. These
+are the same tests used by the xmlsec1 C library, covering test vectors from
+the W3C, Merlin, Aleksey, IAIK, NIST, and Phaos interop suites.
 
-| Suite | Passed | Failed | Total | Pass Rate |
-|-------|--------|--------|-------|-----------|
-| Enc   | 701    | 0      | 701   | 100%      |
-| DSig  | 447    | 9      | 456   | 98%       |
-| **Total** | **1148** | **9** | **1157** | **99.2%** |
+| Suite | Passed | Failed | Skipped |
+|-------|--------|--------|---------|
+| Enc   | 701    | 0      | 0       |
+| DSig  | 447    | 0      | 3       |
+| **Total** | **1148** | **0** | **3** |
 
-The 9 DSig failures are GOST algorithm tests (GOST R 34.10-2001,
-GOST R 34.10-2012-256, GOST R 34.10-2012-512) which require special
-OS cryptographic libraries not available in the RustCrypto ecosystem.
+The three skipped DSig cases are GOST signature transform fixtures (GOST R
+34.10-2001, GOST R 34.10-2012-256, GOST R 34.10-2012-512) which require special
+OS cryptographic libraries not available in the RustCrypto ecosystem, thus
+outside Kryptering's algorithm contract. Alternate providers use focused
+capability and policy tests rather than this XMLSEC compatibility gate.
 
 A Python shim (`tests/xmlsec1-shim.py`) translates xmlsec1 CLI flags to
 bergshamra flags, so the unmodified xmlsec test scripts run directly against
@@ -88,7 +112,7 @@ Dependency flow: `core → xml → c14n → crypto → keys → transforms → d
 ## Build & test
 
 ```bash
-cargo build                    # Debug build
+cargo build                    # Default RustCrypto build
 cargo build --release          # Release build (needed for integration tests)
 cargo test                     # Run all unit tests
 cargo clippy --workspace       # Lint
@@ -139,6 +163,9 @@ let signed = bergshamra::dsig::sign::sign_owned(&ctx, template_xml_string)?;
 Use `sign_owned` when the caller already owns a generated template `String` and
 wants to avoid the initial clone that the borrowed `sign` convenience wrapper
 performs.
+
+The 0.8.0 key, digest, and client changes are summarized in the
+[migration guide](docs/migration-0.8.md).
 
 ## Security hardening
 

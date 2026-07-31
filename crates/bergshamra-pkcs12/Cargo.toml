@@ -8,14 +8,16 @@ readme.workspace = true
 rust-version.workspace = true
 description = "PKCS#12 parser for Bergshamra XML Security library"
 
+[features]
+default = ["rustcrypto", "legacy-algorithms"]
+rustcrypto = ["kryptering/rustcrypto"]
+aws-lc = ["kryptering/aws-lc"]
+fips = ["aws-lc", "kryptering/fips"]
+legacy-algorithms = ["kryptering/legacy"]
+
 [dependencies]
 bergshamra-core.workspace = true
+kryptering.workspace = true
+zeroize.workspace = true
 yasna.workspace = true
-aes.workspace = true
-cbc.workspace = true
-des.workspace = true
-hmac.workspace = true
-pbkdf2.workspace = true
-sha1.workspace = true
-sha2.workspace = true
 cipher = { version = "0.5", features = ["block-padding", "alloc"] }

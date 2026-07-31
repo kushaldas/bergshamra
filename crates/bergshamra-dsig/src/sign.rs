@@ -11,8 +11,9 @@ use bergshamra_c14n::C14nMode;
 use bergshamra_core::{algorithm, ns, Error};
 use bergshamra_crypto::digest;
 use bergshamra_xml::nodeset::NodeSet;
+use std::borrow::Cow;
 use std::collections::HashMap;
-use uppsala::{Document, NodeId, XmlWriter};
+use uppsala::{Document, NodeId, QName, XmlWriter};
 
 /// Sign an XML template document.
 ///
@@ -292,7 +293,7 @@ pub fn sign_owned(ctx: &DsigContext, mut result_xml: String) -> Result<String, E
         // Software key path (existing behaviour)
         let key_ref = ctx.keys_manager.first_key()?;
         let signing_key = key_ref
-            .to_signing_key()
+            .to_signing_key()?
             .ok_or_else(|| Error::Key("no signing key".into()))?;
 
         // Re-find sig_method in the updated doc for PQ context / HMAC length extraction
@@ -355,7 +356,7 @@ pub fn sign_owned(ctx: &DsigContext, mut result_xml: String) -> Result<String, E
                 let len_text_owned = updated_doc.text_content_deep(hmac_len_id);
                 let len_text = len_text_owned.trim();
                 if let Ok(bits) = len_text.parse::<usize>() {
-                    if bits % 8 == 0 {
+                    if bits.is_multiple_of(8) {
                         let bytes = bits / 8;
                         if bytes < sig.len() {
                             sig.truncate(bytes);
@@ -420,6 +421,480 @@ pub fn sign_owned(ctx: &DsigContext, mut result_xml: String) -> Result<String, E
     }
 
     Ok(result_xml)
+}
+
+/// Options for building a standard enveloped XML-DSig template directly inside
+/// an already parsed document.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct EnvelopedSignatureOptions<'a> {
+    /// Raw ID value to reference. `None` signs the whole document with URI="".
+    pub reference_id: Option<&'a str>,
+    /// SignatureMethod algorithm URI.
+    pub signature_method: &'a str,
+    /// DigestMethod algorithm URI.
+    pub digest_method: &'a str,
+    /// CanonicalizationMethod algorithm URI.
+    pub c14n_method: &'a str,
+    /// Optional pre-built `<ds:KeyInfo>` fragment.
+    pub key_info_xml: Option<&'a str>,
+}
+
+impl Default for EnvelopedSignatureOptions<'_> {
+    fn default() -> Self {
+        Self {
+            reference_id: None,
+            signature_method: algorithm::RSA_SHA256,
+            digest_method: algorithm::SHA256,
+            c14n_method: algorithm::EXC_C14N,
+            key_info_xml: None,
+        }
+    }
+}
+
+impl<'a> EnvelopedSignatureOptions<'a> {
+    /// Build enveloped-signature options with explicit algorithms and optional
+    /// KeyInfo XML.
+    pub fn new(
+        reference_id: Option<&'a str>,
+        signature_method: &'a str,
+        digest_method: &'a str,
+        c14n_method: &'a str,
+        key_info_xml: Option<&'a str>,
+    ) -> Self {
+        Self {
+            reference_id,
+            signature_method,
+            digest_method,
+            c14n_method,
+            key_info_xml,
+        }
+    }
+}
+
+/// Build a standard enveloped `<ds:Signature>` as the document element's first
+/// child, then sign it in place.
+///
+/// This is the document-native companion to bindings that already hold an
+/// `uppsala::Document`: it avoids serializing the caller's tree and reparsing it
+/// just to add and fill the signature template.
+pub fn sign_enveloped_document(
+    ctx: &DsigContext,
+    doc: &mut Document<'static>,
+    options: EnvelopedSignatureOptions<'_>,
+) -> Result<(), Error> {
+    let sig_method = validate_signature_method(options.signature_method)?;
+    let dig_method = validate_digest_method(options.digest_method)?;
+    let c14n = validate_c14n_method(options.c14n_method)?;
+    let ref_uri = match options.reference_id {
+        Some("") => {
+            return Err(Error::InvalidUri(
+                "reference_id must be a non-empty ID value; pass None to sign the whole document"
+                    .into(),
+            ));
+        }
+        Some(id) if id.starts_with('#') => {
+            return Err(Error::InvalidUri(
+                "reference_id must be a raw ID value without a leading '#'".into(),
+            ));
+        }
+        Some(id) => format!("#{}", escape_xml_attr(id)),
+        None => String::new(),
+    };
+    let key_info = options
+        .key_info_xml
+        .unwrap_or("<ds:KeyInfo><ds:X509Data/></ds:KeyInfo>");
+
+    let signature = format!(
+        "<ds:Signature xmlns:ds=\"http://www.w3.org/2000/09/xmldsig#\">\
+<ds:SignedInfo>\
+<ds:CanonicalizationMethod Algorithm=\"{c14n}\"/>\
+<ds:SignatureMethod Algorithm=\"{sig_method}\"/>\
+<ds:Reference URI=\"{ref_uri}\">\
+<ds:Transforms>\
+<ds:Transform Algorithm=\"{enveloped}\"/>\
+<ds:Transform Algorithm=\"{c14n}\"/>\
+</ds:Transforms>\
+<ds:DigestMethod Algorithm=\"{dig_method}\"/>\
+<ds:DigestValue></ds:DigestValue>\
+</ds:Reference>\
+</ds:SignedInfo>\
+<ds:SignatureValue></ds:SignatureValue>\
+{key_info}\
+</ds:Signature>",
+        enveloped = algorithm::ENVELOPED_SIGNATURE,
+    );
+
+    let sig_doc = uppsala::parse(&signature)
+        .map_err(|e| Error::XmlParse(format!("generated signature template: {e}")))?;
+    let sig_root = sig_doc
+        .document_element()
+        .ok_or_else(|| Error::MissingElement("Signature".into()))?;
+    let imported_sig = doc
+        .import_subtree(&sig_doc, sig_root)
+        .ok_or_else(|| Error::XmlStructure("cannot import generated Signature template".into()))?;
+    let root = doc
+        .document_element()
+        .ok_or_else(|| Error::MissingElement("document element".into()))?;
+    if let Some(first_child) = doc.first_child(root) {
+        doc.insert_before(root, imported_sig, first_child);
+    } else {
+        doc.append_child(root, imported_sig);
+    }
+
+    sign_document(ctx, doc)
+}
+
+/// Sign a parsed XML template document in place.
+///
+/// The document must contain a `<Signature>` skeleton with empty
+/// `<DigestValue>` and `<SignatureValue>` elements. Common same-document C14N
+/// transform chains are processed directly against the live DOM. Less common
+/// transform chains serialize the current DOM only for that transform pipeline,
+/// preserving behavior while still avoiding the caller-visible serialize/parse
+/// round trip.
+pub fn sign_document(ctx: &DsigContext, doc: &mut Document<'static>) -> Result<(), Error> {
+    let mut id_attrs: Vec<&str> = vec!["Id", "ID", "id", "AssertionID"];
+    let extra: Vec<&str> = ctx.id_attrs.iter().map(|s| s.as_str()).collect();
+    id_attrs.extend(extra);
+    let id_map = build_id_map(doc, &id_attrs)?;
+
+    let sig_node = find_element(doc, ns::DSIG, ns::node::SIGNATURE)
+        .ok_or_else(|| Error::MissingElement("Signature".into()))?;
+    let signed_info = find_child_element(doc, sig_node, ns::DSIG, ns::node::SIGNED_INFO)
+        .ok_or_else(|| Error::MissingElement("SignedInfo".into()))?;
+
+    let c14n_method = find_child_element(
+        doc,
+        signed_info,
+        ns::DSIG,
+        ns::node::CANONICALIZATION_METHOD,
+    )
+    .ok_or_else(|| Error::MissingElement("CanonicalizationMethod".into()))?;
+    let c14n_uri = doc
+        .element(c14n_method)
+        .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
+        .ok_or_else(|| Error::MissingAttribute("Algorithm on CanonicalizationMethod".into()))?
+        .to_owned();
+    let c14n_mode = C14nMode::from_uri(&c14n_uri)
+        .ok_or_else(|| Error::UnsupportedAlgorithm(format!("C14N: {c14n_uri}")))?;
+    let inclusive_prefixes = read_inclusive_prefixes(doc, c14n_method);
+
+    let sig_method = find_child_element(doc, signed_info, ns::DSIG, ns::node::SIGNATURE_METHOD)
+        .ok_or_else(|| Error::MissingElement("SignatureMethod".into()))?;
+    let sig_method_uri = doc
+        .element(sig_method)
+        .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
+        .ok_or_else(|| Error::MissingAttribute("Algorithm on SignatureMethod".into()))?
+        .to_owned();
+
+    let references = find_child_elements(doc, signed_info, ns::DSIG, ns::node::REFERENCE);
+    for reference in references {
+        let uri = doc
+            .element(reference)
+            .and_then(|e| e.get_attribute(ns::attr::URI))
+            .unwrap_or("")
+            .to_owned();
+        if uri.starts_with("cid:") {
+            continue;
+        }
+
+        let digest_method = find_child_element(doc, reference, ns::DSIG, ns::node::DIGEST_METHOD)
+            .ok_or_else(|| Error::MissingElement("DigestMethod".into()))?;
+        let digest_uri = doc
+            .element(digest_method)
+            .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
+            .ok_or_else(|| Error::MissingAttribute("Algorithm on DigestMethod".into()))?
+            .to_owned();
+        let transforms_node = find_child_element(doc, reference, ns::DSIG, ns::node::TRANSFORMS);
+
+        let fast_digest = reference_node_set_for_fast(doc, &id_map, &uri)?
+            .and_then(|node_set| {
+                try_fast_reference_digest(doc, sig_node, node_set, transforms_node, &digest_uri)
+                    .transpose()
+            })
+            .transpose()?;
+
+        let computed = if let Some(computed) = fast_digest {
+            computed
+        } else {
+            compute_reference_digest_via_transform_pipeline(
+                ctx,
+                doc,
+                sig_node,
+                &id_map,
+                &uri,
+                transforms_node,
+                &digest_uri,
+            )?
+        };
+
+        use base64::Engine;
+        let digest_b64 = base64::engine::general_purpose::STANDARD.encode(&computed);
+        let digest_value_id = find_child_element(doc, reference, ns::DSIG, ns::node::DIGEST_VALUE)
+            .ok_or_else(|| Error::MissingElement("DigestValue".into()))?;
+        let digest_value_text = doc.text_content_deep(digest_value_id);
+        if digest_value_text.trim().is_empty() {
+            replace_element_text(doc, digest_value_id, digest_b64);
+        }
+    }
+
+    let signed_info_ns = NodeSet::tree_without_comments(signed_info, doc);
+    let c14n_signed_info = bergshamra_c14n::canonicalize_doc(
+        doc,
+        c14n_mode,
+        Some(&signed_info_ns),
+        &inclusive_prefixes,
+    )?;
+
+    let signature = if let Some(ref hsm_signer) = ctx.hsm_signer {
+        let signer_uri = bergshamra_crypto::sign::kryptering_algorithm_uri(hsm_signer.algorithm());
+        if signer_uri != Some(sig_method_uri.as_str()) {
+            return Err(Error::UnsupportedAlgorithm(format!(
+                "HSM signer algorithm {:?} (URI {}) does not match the template's SignatureMethod {sig_method_uri}",
+                hsm_signer.algorithm(),
+                signer_uri.unwrap_or("<unmapped>"),
+            )));
+        }
+        hsm_signer
+            .sign(&c14n_signed_info)
+            .map_err(crate::map_kryptering_err)?
+    } else {
+        let key_ref = ctx.keys_manager.first_key()?;
+        let signing_key = key_ref
+            .to_signing_key()?
+            .ok_or_else(|| Error::Key("no signing key".into()))?;
+
+        let pq_context: Option<Vec<u8>> =
+            if bergshamra_crypto::sign::is_pq_algorithm(&sig_method_uri) {
+                let ctx_node = find_child_element(
+                    doc,
+                    sig_method,
+                    ns::XMLSEC_PQ,
+                    ns::node::MLDSA_CONTEXT_STRING,
+                )
+                .or_else(|| {
+                    find_child_element(
+                        doc,
+                        sig_method,
+                        ns::XMLSEC_PQ,
+                        ns::node::SLHDSA_CONTEXT_STRING,
+                    )
+                });
+                if let Some(cn) = ctx_node {
+                    let b64_text = doc.text_content_deep(cn);
+                    let b64 = b64_text.trim();
+                    if b64.is_empty() {
+                        None
+                    } else {
+                        use base64::Engine as _;
+                        let decoded = base64::engine::general_purpose::STANDARD
+                            .decode(b64)
+                            .map_err(|e| Error::Base64(format!("PQ context string: {e}")))?;
+                        Some(decoded)
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+        let sig_alg = bergshamra_crypto::sign::from_uri_with_context(&sig_method_uri, pq_context)?;
+        let mut sig = sig_alg.sign(&signing_key, &c14n_signed_info)?;
+
+        if bergshamra_crypto::sign::is_hmac_algorithm(&sig_method_uri) {
+            if let Some(hmac_len_id) =
+                find_child_element(doc, sig_method, ns::DSIG, ns::node::HMAC_OUTPUT_LENGTH)
+            {
+                let len_text_owned = doc.text_content_deep(hmac_len_id);
+                let len_text = len_text_owned.trim();
+                if let Ok(bits) = len_text.parse::<usize>() {
+                    if bits.is_multiple_of(8) {
+                        let bytes = bits / 8;
+                        if bytes < sig.len() {
+                            sig.truncate(bytes);
+                        }
+                    }
+                }
+            }
+        }
+        sig
+    };
+
+    use base64::Engine;
+    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(&signature);
+    let sig_value_id = find_child_element(doc, sig_node, ns::DSIG, ns::node::SIGNATURE_VALUE)
+        .ok_or_else(|| Error::MissingElement("SignatureValue".into()))?;
+    let sig_value_text = doc.text_content_deep(sig_value_id);
+    if sig_value_text.trim().is_empty() {
+        replace_element_text(doc, sig_value_id, sig_b64);
+    }
+
+    if ctx.hsm_signer.is_none() {
+        let key = ctx.keys_manager.first_key()?;
+        if !key.x509_chain.is_empty() {
+            populate_x509_data_document(doc, &key.x509_chain);
+        }
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_reference_digest_via_transform_pipeline(
+    ctx: &DsigContext,
+    doc: &Document<'_>,
+    sig_node: NodeId,
+    id_map: &HashMap<String, NodeId>,
+    uri: &str,
+    transforms_node: Option<NodeId>,
+    digest_uri: &str,
+) -> Result<Vec<u8>, Error> {
+    let current_xml = doc.to_xml();
+    let mut data = if uri.is_empty() {
+        let ns = NodeSet::all_without_comments(doc);
+        bergshamra_transforms::TransformData::xml_borrowed(&current_xml, Some(ns))
+    } else if let Some(fragment) = bergshamra_xml::xpath::parse_same_document_ref(uri) {
+        if fragment == "xpointer(/)" {
+            bergshamra_transforms::TransformData::xml_borrowed(&current_xml, None)
+        } else {
+            let is_xpointer = bergshamra_xml::xpath::parse_xpointer_id(fragment).is_some();
+            let frag_id = bergshamra_xml::xpath::parse_xpointer_id(fragment).unwrap_or(fragment);
+            let resolved_id = bergshamra_xml::xpath::resolve_id(doc, id_map, frag_id)?;
+            let ns = if is_xpointer {
+                NodeSet::tree_with_comments(resolved_id, doc)
+            } else {
+                NodeSet::tree_without_comments(resolved_id, doc)
+            };
+            bergshamra_transforms::TransformData::xml_borrowed(&current_xml, Some(ns))
+        }
+    } else {
+        let mut resolved = None;
+        for (map_url, file_path) in &ctx.url_maps {
+            if url_map_matches(uri, map_url) {
+                let bytes = std::fs::read(file_path)
+                    .map_err(|e| Error::Other(format!("url-map {file_path}: {e}")))?;
+                resolved = Some(bergshamra_transforms::TransformData::Binary(bytes));
+                break;
+            }
+        }
+        if resolved.is_none() {
+            if let Some(bytes) = read_signing_relative_reference_uri(uri, ctx.base_dir.as_deref())?
+            {
+                resolved = Some(bergshamra_transforms::TransformData::Binary(bytes));
+            }
+        }
+        resolved.ok_or_else(|| Error::InvalidUri(format!("unsupported URI: {uri}")))?
+    };
+
+    if let Some(transforms_id) = transforms_node {
+        for t_node in doc.children(transforms_id) {
+            let is_transform = doc
+                .element(t_node)
+                .is_some_and(|e| &*e.name.local_name == ns::node::TRANSFORM);
+            if !is_transform {
+                continue;
+            }
+            let t_uri = doc
+                .element(t_node)
+                .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
+                .unwrap_or("");
+            data = crate::verify::apply_transform(t_uri, data, t_node, sig_node, doc)?;
+        }
+    }
+
+    let bytes = data.to_binary()?;
+    digest::digest(digest_uri, &bytes)
+}
+
+fn replace_element_text(doc: &mut Document<'static>, element: NodeId, content: String) {
+    for child in doc.children(element) {
+        doc.detach(child);
+    }
+    let text = doc.create_text(content);
+    doc.append_child(element, text);
+}
+
+fn populate_x509_data_document(doc: &mut Document<'static>, x509_chain: &[Vec<u8>]) {
+    let Some(x509_data_id) = doc.descendants(doc.root()).into_iter().find(|&id| {
+        doc.element(id).is_some_and(|elem| {
+            &*elem.name.local_name == ns::node::X509_DATA
+                && elem.name.namespace_uri.as_deref().unwrap_or("") == ns::DSIG
+        })
+    }) else {
+        return;
+    };
+
+    let has_element_children = doc
+        .children(x509_data_id)
+        .iter()
+        .any(|&child| doc.element(child).is_some());
+    if has_element_children {
+        return;
+    }
+
+    for child in doc.children(x509_data_id) {
+        doc.detach(child);
+    }
+
+    use base64::Engine;
+    let prefix = doc
+        .element(x509_data_id)
+        .and_then(|elem| elem.name.prefix.as_ref().map(|p| p.to_string()));
+    for cert_der in x509_chain {
+        let cert_b64 = base64::engine::general_purpose::STANDARD.encode(cert_der);
+        let qname = match prefix.as_deref() {
+            Some(prefix) => QName::full(
+                Cow::Owned(prefix.to_string()),
+                Cow::Borrowed(ns::DSIG),
+                Cow::Borrowed(ns::node::X509_CERTIFICATE),
+            ),
+            None => QName::with_namespace(
+                Cow::Borrowed(ns::DSIG),
+                Cow::Borrowed(ns::node::X509_CERTIFICATE),
+            ),
+        };
+        let cert_node = doc.create_element(qname);
+        let text_node = doc.create_text(cert_b64);
+        doc.append_child(cert_node, text_node);
+        doc.append_child(x509_data_id, cert_node);
+    }
+}
+
+fn validate_signature_method(uri: &str) -> Result<&str, Error> {
+    bergshamra_crypto::sign::from_uri(uri)?;
+    Ok(uri)
+}
+
+fn validate_digest_method(uri: &str) -> Result<&str, Error> {
+    bergshamra_crypto::digest::from_uri(uri)?;
+    Ok(uri)
+}
+
+fn validate_c14n_method(uri: &str) -> Result<&str, Error> {
+    if bergshamra_c14n::C14nMode::from_uri(uri).is_some() {
+        Ok(uri)
+    } else {
+        Err(Error::UnsupportedAlgorithm(format!(
+            "canonicalization algorithm: {uri}"
+        )))
+    }
+}
+
+fn escape_xml_attr(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 /// Read local detached bytes for signing when `uri` is a safe relative path.
@@ -572,7 +1047,7 @@ impl ReferenceDigestSink {
     }
 
     /// Finalize the digest stream and return the computed digest bytes.
-    fn finalize(self) -> Vec<u8> {
+    fn finalize(self) -> Result<Vec<u8>, Error> {
         self.inner.finalize()
     }
 }
@@ -613,7 +1088,7 @@ fn try_fast_reference_digest(
         &inclusive_prefixes,
         &mut sink,
     )?;
-    Ok(Some(sink.finalize()))
+    Ok(Some(sink.finalize()?))
 }
 
 /// Parse the fast-path transform list and return canonicalization parameters.
@@ -1537,7 +2012,11 @@ mod tests {
     fn hmac_keys_manager() -> bergshamra_keys::KeysManager {
         let mut keys = bergshamra_keys::KeysManager::new();
         keys.add_key(bergshamra_keys::Key::new(
-            bergshamra_keys::KeyData::Hmac(b"signing-reference-secret".to_vec()),
+            bergshamra_keys::KeyData::from_symmetric_bytes(
+                kryptering::KeyAlgorithm::Hmac,
+                b"signing-reference-secret",
+            )
+            .unwrap(),
             bergshamra_keys::KeyUsage::Any,
         ));
         keys
@@ -1649,5 +2128,32 @@ mod tests {
             ),
             other => panic!("unexpected traversal error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn sign_enveloped_document_mutates_and_verifies_document() {
+        let ctx = hmac_signing_context();
+        let mut doc = uppsala::parse(r#"<Root ID="abc"><Data>hello</Data></Root>"#)
+            .expect("test XML must parse")
+            .into_static();
+        let options = EnvelopedSignatureOptions::new(
+            Some("abc"),
+            algorithm::HMAC_SHA256,
+            algorithm::SHA256,
+            algorithm::EXC_C14N,
+            None,
+        );
+
+        sign_enveloped_document(&ctx, &mut doc, options)
+            .expect("document-native enveloped signing should succeed");
+
+        let signed = doc.to_xml();
+        assert!(signed.contains("<ds:Signature"));
+        assert!(!signed.contains("<ds:DigestValue></ds:DigestValue>"));
+        assert!(!signed.contains("<ds:SignatureValue></ds:SignatureValue>"));
+
+        let result = crate::verify::verify_document(&ctx, &doc)
+            .expect("document-native verify should not error");
+        assert!(result.is_valid(), "signed document must verify: {result:?}");
     }
 }

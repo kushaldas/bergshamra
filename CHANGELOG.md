@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.8.0 [2026-07-31]
+
+### Added
+
+- Selectable RustCrypto and AWS-LC document cryptography via Kryptering 0.5,
+  with provider identity, initialization, capability, and FIPS status
+  re-exports. FIPS mode currently selects AWS-LC exclusively.
+- Provider-backed RSA transport, AES, key wrapping, agreement/KDF, PKCS#12,
+  XML-DSig, and document-native signing/verification test coverage.
+- Provider-wide xmlsec and SoftHSM matrices plus active FIPS document-provider
+  attestation on x86_64 and aarch64 CI runners.
+
+### Changed
+
+- **Breaking:** workspace crates are version 0.8.0 and require Rust 1.88.
+- **Breaking:** signature keys and digest contexts use opaque Kryptering-backed
+  handles and provider failures are propagated.
+- PKCS#12 KDF, MAC, and decryption use the selected document provider and
+  private outputs are returned in zeroizing, redacted wrappers.
+- Defaults explicitly preserve RustCrypto, legacy algorithms, post-quantum
+  algorithms, and PKCS#11. Alternate provider builds use
+  `--no-default-features`; `--all-features` is intentionally invalid.
+- Post-quantum API selection with an alternate provider no longer pulls
+  RustCrypto PQ primitives; unsupported PQ operations fail at the selected
+  provider boundary.
+- Finite-field DH agreement retains the private exponent inside Kryptering's
+  opaque key handle.
+
+## 0.7.1
+
+### Added
+
+- Added document-native XML-DSig signing APIs: `sign_document()` fills an
+  existing signature template in an `uppsala::Document`, while
+  `sign_enveloped_document()` builds and signs a standard enveloped signature
+  directly in the caller's DOM.
+- Added `verify_document()`, `verify_document_with_source()`,
+  `verify_all_document()`, and `verify_all_document_with_source()` for verifying
+  already-parsed Uppsala documents without an unconditional reparse.
+
+### Changed
+
+- Document-native signing and verification use direct same-document C14N paths
+  where supported and serialize lazily only for generic transform fallbacks.
+
 
 ## 0.7.0 [2026-07-05]
 

@@ -14,24 +14,24 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 license = "BSD-2-Clause"
 repository = "https://github.com/kushaldas/bergshamra"
 readme = "README.md"
-rust-version = "1.75"
+rust-version = "1.88"
 
 [workspace.dependencies]
 # Internal crates
-bergshamra-core = { version = "0.7.0", path = "crates/bergshamra-core" }
-bergshamra-xml = { version = "0.7.0", path = "crates/bergshamra-xml" }
-bergshamra-c14n = { version = "0.7.0", path = "crates/bergshamra-c14n" }
-bergshamra-crypto = { version = "0.7.0", path = "crates/bergshamra-crypto" }
-bergshamra-keys = { version = "0.7.0", path = "crates/bergshamra-keys" }
-bergshamra-transforms = { version = "0.7.0", path = "crates/bergshamra-transforms" }
-bergshamra-dsig = { version = "0.7.0", path = "crates/bergshamra-dsig" }
-bergshamra-enc = { version = "0.7.0", path = "crates/bergshamra-enc" }
-bergshamra-pkcs12 = { version = "0.7.0", path = "crates/bergshamra-pkcs12" }
+bergshamra-core = { version = "0.8.0", path = "crates/bergshamra-core", default-features = false }
+bergshamra-xml = { version = "0.8.0", path = "crates/bergshamra-xml", default-features = false }
+bergshamra-c14n = { version = "0.8.0", path = "crates/bergshamra-c14n", default-features = false }
+bergshamra-crypto = { version = "0.8.0", path = "crates/bergshamra-crypto", default-features = false }
+bergshamra-keys = { version = "0.8.0", path = "crates/bergshamra-keys", default-features = false }
+bergshamra-transforms = { version = "0.8.0", path = "crates/bergshamra-transforms", default-features = false }
+bergshamra-dsig = { version = "0.8.0", path = "crates/bergshamra-dsig", default-features = false }
+bergshamra-enc = { version = "0.8.0", path = "crates/bergshamra-enc", default-features = false }
+bergshamra-pkcs12 = { version = "0.8.0", path = "crates/bergshamra-pkcs12", default-features = false }
 
 # XML parsing
 uppsala = "0.9"
@@ -62,6 +62,7 @@ des = "0.9"
 aes-kw = "0.3"
 ed25519-dalek = { version = "2.1", features = ["pkcs8", "rand_core"] }
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+zeroize = "1.8"
 hkdf = "0.12"
 signature = "2"
 rand = "0.8"
@@ -89,7 +90,7 @@ memchr = "2"
 criterion = "0.5"
 
 # Shared crypto backend
-kryptering = { version = "0.4.1", default-features = false, features = ["legacy", "post-quantum", "pkcs11"] }
+kryptering = { version = "0.5.0", default-features = false }
 
 # Shared trust/validation infrastructure
-tsp-ltv = { version = "0.3.1", default-features = false }
+tsp-ltv = { version = "0.4", default-features = false }

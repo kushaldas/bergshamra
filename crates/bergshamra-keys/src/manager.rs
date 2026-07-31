@@ -54,52 +54,51 @@ impl KeysManager {
     pub fn find_rsa(&self) -> Option<&Key> {
         self.keys
             .iter()
-            .find(|k| matches!(&k.data, crate::key::KeyData::Rsa { .. }))
+            .find(|key| key.data.algorithm() == kryptering::KeyAlgorithm::Rsa)
     }
 
     /// Find the first key that has an EC P-256 key.
     pub fn find_ec_p256(&self) -> Option<&Key> {
-        self.keys
-            .iter()
-            .find(|k| matches!(&k.data, crate::key::KeyData::EcP256 { .. }))
+        self.keys.iter().find(|key| {
+            key.data.algorithm() == kryptering::KeyAlgorithm::Ec(kryptering::EcCurve::P256)
+        })
     }
 
     /// Find the first key that has an EC P-384 key.
     pub fn find_ec_p384(&self) -> Option<&Key> {
-        self.keys
-            .iter()
-            .find(|k| matches!(&k.data, crate::key::KeyData::EcP384 { .. }))
+        self.keys.iter().find(|key| {
+            key.data.algorithm() == kryptering::KeyAlgorithm::Ec(kryptering::EcCurve::P384)
+        })
     }
 
     /// Find the first key that has an EC P-521 key.
     pub fn find_ec_p521(&self) -> Option<&Key> {
-        self.keys
-            .iter()
-            .find(|k| matches!(&k.data, crate::key::KeyData::EcP521 { .. }))
+        self.keys.iter().find(|key| {
+            key.data.algorithm() == kryptering::KeyAlgorithm::Ec(kryptering::EcCurve::P521)
+        })
     }
 
     /// Find the first HMAC key.
     pub fn find_hmac(&self) -> Option<&Key> {
         self.keys
             .iter()
-            .find(|k| matches!(&k.data, crate::key::KeyData::Hmac(_)))
+            .find(|key| key.data.algorithm() == kryptering::KeyAlgorithm::Hmac)
     }
 
     /// Find the first AES key.
     pub fn find_aes(&self) -> Option<&Key> {
         self.keys
             .iter()
-            .find(|k| matches!(&k.data, crate::key::KeyData::Aes(_)))
+            .find(|key| key.data.algorithm() == kryptering::KeyAlgorithm::Aes)
     }
 
     /// Find an AES key with the specified byte length.
     pub fn find_aes_by_size(&self, size_bytes: usize) -> Option<&Key> {
-        self.keys.iter().find(|k| {
-            if let crate::key::KeyData::Aes(ref bytes) = k.data {
-                bytes.len() == size_bytes
-            } else {
-                false
-            }
+        self.keys.iter().find(|key| {
+            key.data.algorithm() == kryptering::KeyAlgorithm::Aes
+                && key
+                    .symmetric_key_bytes()
+                    .is_some_and(|bytes| bytes.len() == size_bytes)
         })
     }
 
@@ -107,47 +106,42 @@ impl KeysManager {
     pub fn find_des3(&self) -> Option<&Key> {
         self.keys
             .iter()
-            .find(|k| matches!(&k.data, crate::key::KeyData::Des3(_)))
+            .find(|key| key.data.algorithm_name() == "3DES")
     }
 
     /// Find the first post-quantum key.
     pub fn find_pq(&self) -> Option<&Key> {
-        self.keys
-            .iter()
-            .find(|k| matches!(&k.data, crate::key::KeyData::PostQuantum { .. }))
+        self.keys.iter().find(|key| {
+            key.data.algorithm_name().starts_with("ML-")
+                || key.data.algorithm_name().starts_with("SLH-")
+        })
     }
 
     /// Find the first DH key.
     pub fn find_dh(&self) -> Option<&Key> {
         self.keys
             .iter()
-            .find(|k| matches!(&k.data, crate::key::KeyData::Dh { .. }))
+            .find(|key| key.data.algorithm() == kryptering::KeyAlgorithm::Dh)
     }
 
     /// Find the first Ed25519 key.
     pub fn find_ed25519(&self) -> Option<&Key> {
         self.keys
             .iter()
-            .find(|k| matches!(&k.data, crate::key::KeyData::Ed25519 { .. }))
+            .find(|key| key.data.algorithm() == kryptering::KeyAlgorithm::Ed25519)
     }
 
     /// Find the first X25519 key.
     pub fn find_x25519(&self) -> Option<&Key> {
         self.keys
             .iter()
-            .find(|k| matches!(&k.data, crate::key::KeyData::X25519 { .. }))
+            .find(|key| key.data.algorithm() == kryptering::KeyAlgorithm::X25519)
     }
 
     /// Find an RSA key with a private key component.
     pub fn find_rsa_private(&self) -> Option<&Key> {
-        self.keys.iter().find(|k| {
-            matches!(
-                &k.data,
-                crate::key::KeyData::Rsa {
-                    private: Some(_),
-                    ..
-                }
-            )
+        self.keys.iter().find(|key| {
+            key.data.algorithm() == kryptering::KeyAlgorithm::Rsa && key.has_private_key()
         })
     }
 

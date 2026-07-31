@@ -8,6 +8,15 @@ readme.workspace = true
 rust-version.workspace = true
 description = "Transform pipeline for Bergshamra XML Security library"
 
+[features]
+default = ["rustcrypto", "legacy-algorithms", "post-quantum", "pkcs11"]
+rustcrypto = ["bergshamra-crypto/rustcrypto", "bergshamra-keys/rustcrypto"]
+aws-lc = ["bergshamra-crypto/aws-lc", "bergshamra-keys/aws-lc"]
+fips = ["aws-lc", "bergshamra-crypto/fips", "bergshamra-keys/fips"]
+legacy-algorithms = ["bergshamra-crypto/legacy-algorithms", "bergshamra-keys/legacy-algorithms"]
+post-quantum = ["bergshamra-crypto/post-quantum", "bergshamra-keys/post-quantum"]
+pkcs11 = ["bergshamra-crypto/pkcs11", "bergshamra-keys/pkcs11"]
+
 [dependencies]
 bergshamra-core.workspace = true
 bergshamra-xml.workspace = true

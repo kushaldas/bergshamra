@@ -10,7 +10,7 @@ pub trait DigestAlgorithm: Send {
     /// Feed data into the hash.
     fn update(&mut self, data: &[u8]);
     /// Finalize and return the hash value.
-    fn finalize(self: Box<Self>) -> Vec<u8>;
+    fn finalize(self: Box<Self>) -> Result<Vec<u8>, Error>;
     /// Algorithm URI.
     fn uri(&self) -> &'static str;
 }
@@ -72,7 +72,7 @@ pub fn from_uri(uri: &str) -> Result<Box<dyn DigestAlgorithm>, Error> {
 /// Compute a digest in one shot.
 pub fn digest(uri: &str, data: &[u8]) -> Result<Vec<u8>, Error> {
     let algo = uri_to_hash(uri)?;
-    Ok(kryptering::digest::digest(algo, data))
+    kryptering::digest::digest(algo, data).map_err(crate::map_kryptering_err)
 }
 
 // ── Wrapper that delegates to kryptering ────────────────────────────
@@ -87,8 +87,8 @@ impl DigestAlgorithm for KrypteringDigest {
         self.inner.update(data);
     }
 
-    fn finalize(self: Box<Self>) -> Vec<u8> {
-        self.inner.finalize()
+    fn finalize(self: Box<Self>) -> Result<Vec<u8>, Error> {
+        self.inner.finalize().map_err(crate::map_kryptering_err)
     }
 
     fn uri(&self) -> &'static str {

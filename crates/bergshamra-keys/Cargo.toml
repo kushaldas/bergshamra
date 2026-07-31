@@ -9,45 +9,82 @@ rust-version.workspace = true
 description = "Key management for Bergshamra XML Security library"
 
 [features]
-default = []
+default = ["rustcrypto", "legacy-algorithms", "post-quantum", "pkcs11"]
+rustcrypto = [
+    "kryptering/rustcrypto",
+    "bergshamra-crypto/rustcrypto",
+    "bergshamra-pkcs12/rustcrypto",
+    "tsp-ltv/rustcrypto",
+    "dep:ed25519-dalek",
+    "dep:x25519-dalek",
+    "dep:rsa",
+    "dep:ecdsa",
+    "dep:dsa",
+    "dep:p256",
+    "dep:p384",
+    "dep:p521",
+    "dep:pkcs1",
+    "dep:num-bigint-dig",
+    "dep:num-traits",
+    "dep:signature",
+    # These crates are only used to derive public components while importing
+    # PQ private keys into the RustCrypto adapter.  Merely enabling the
+    # provider-neutral `post-quantum` URI/API surface with another provider
+    # must not pull RustCrypto primitive implementations into that build.
+    "dep:ml-dsa",
+    "dep:slh-dsa",
+    "dep:pkcs8-pq",
+    "dep:const-oid-pq",
+    "pkcs8/encryption",
+    "pkcs8/3des",
+    "pkcs8/sha1-insecure",
+]
+aws-lc = ["kryptering/aws-lc", "bergshamra-crypto/aws-lc", "bergshamra-pkcs12/aws-lc", "tsp-ltv/aws-lc"]
+fips = ["aws-lc", "kryptering/fips", "bergshamra-crypto/fips", "bergshamra-pkcs12/fips", "tsp-ltv/fips"]
+post-quantum = [
+    "kryptering/post-quantum",
+    "bergshamra-crypto/post-quantum",
+]
+pkcs11 = ["kryptering/pkcs11", "bergshamra-crypto/pkcs11"]
 # Accept weak/legacy digests (MD5/SHA-1/SHA-224) in X.509 certificate-chain
 # verification, for historical XML-DSig interop material. Off by default
 # (strict, fail-closed). See `x509::cert_signature_policy`.
-legacy-algorithms = []
+legacy-algorithms = [
+    "bergshamra-crypto/legacy-algorithms",
+    "bergshamra-pkcs12/legacy-algorithms",
+    "tsp-ltv/legacy-algorithms",
+]
 
 [dependencies]
 bergshamra-core.workspace = true
 bergshamra-crypto.workspace = true
-ed25519-dalek.workspace = true
-x25519-dalek.workspace = true
-rsa.workspace = true
-ecdsa.workspace = true
-dsa.workspace = true
-ml-dsa.workspace = true
-slh-dsa.workspace = true
-p256 = { workspace = true, features = ["ecdsa"] }
-p384 = { workspace = true, features = ["ecdsa"] }
-p521 = { workspace = true, features = ["ecdsa"] }
-pkcs1.workspace = true
-pkcs5.workspace = true
-pkcs8.workspace = true
-pkcs8-pq.workspace = true
-const-oid-pq.workspace = true
+kryptering.workspace = true
+ed25519-dalek = { workspace = true, optional = true }
+x25519-dalek = { workspace = true, optional = true }
+rsa = { workspace = true, optional = true }
+ecdsa = { workspace = true, optional = true }
+dsa = { workspace = true, optional = true }
+ml-dsa = { workspace = true, optional = true }
+slh-dsa = { workspace = true, optional = true }
+p256 = { workspace = true, features = ["ecdsa"], optional = true }
+p384 = { workspace = true, features = ["ecdsa"], optional = true }
+p521 = { workspace = true, features = ["ecdsa"], optional = true }
+pkcs1 = { workspace = true, optional = true }
+pkcs8 = { version = "0.10", features = ["std", "pem"] }
+pkcs8-pq = { workspace = true, optional = true }
+const-oid-pq = { workspace = true, optional = true }
 spki.workspace = true
 der.workspace = true
 pem-rfc7468.workspace = true
 x509-cert.workspace = true
 bergshamra-pkcs12.workspace = true
 base64.workspace = true
-num-bigint-dig.workspace = true
-num-traits.workspace = true
-signature.workspace = true
-sha1.workspace = true
-sha2.workspace = true
-digest.workspace = true
-md-5.workspace = true
+num-bigint-dig = { workspace = true, optional = true }
+num-traits = { workspace = true, optional = true }
+signature = { workspace = true, optional = true }
 uppsala.workspace = true
 tsp-ltv.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 rand.workspace = true

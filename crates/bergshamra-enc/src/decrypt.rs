@@ -286,10 +286,13 @@ fn decrypt_encrypted_key(
                     .find_rsa_private()
                     .or_else(|| ctx.keys_manager.find_rsa())
                     .ok_or_else(|| Error::Key("no RSA key for EncryptedKey decryption".into()))?;
-                let private_key = rsa_key.rsa_private_key().ok_or_else(|| {
-                    Error::Key("RSA private key required for key transport".into())
-                })?;
-                transport.decrypt(private_key, &cipher_bytes)
+                let private_key = required_software_key(rsa_key)?;
+                if !private_key.has_private_key() {
+                    return Err(Error::Key(
+                        "RSA private key required for key transport".into(),
+                    ));
+                }
+                transport.decrypt(&private_key, &cipher_bytes)
             }
         }
 
@@ -426,61 +429,30 @@ fn resolve_agreement_method_kek(
             let originator_public_bytes = extract_ec_public_key_bytes(doc, originator_ki_id)?;
             let recipient_key = resolve_recipient_key(ctx, doc, agreement_id)?;
 
-            match &recipient_key.data {
-                bergshamra_keys::key::KeyData::EcP256 {
-                    private: Some(sk), ..
-                } => {
-                    let secret = p256::SecretKey::from_bytes(&sk.to_bytes())
-                        .map_err(|e| Error::Key(format!("P-256 secret key: {e}")))?;
-                    bergshamra_crypto::keyagreement::ecdh_p256(&originator_public_bytes, &secret)?
-                }
-                bergshamra_keys::key::KeyData::EcP384 {
-                    private: Some(sk), ..
-                } => {
-                    let secret = p384::SecretKey::from_bytes(&sk.to_bytes())
-                        .map_err(|e| Error::Key(format!("P-384 secret key: {e}")))?;
-                    bergshamra_crypto::keyagreement::ecdh_p384(&originator_public_bytes, &secret)?
-                }
-                bergshamra_keys::key::KeyData::EcP521 {
-                    private: Some(sk), ..
-                } => {
-                    use p521::elliptic_curve::generic_array::GenericArray;
-                    let bytes = sk.to_bytes();
-                    let secret = p521::SecretKey::from_bytes(GenericArray::from_slice(&bytes))
-                        .map_err(|e| Error::Key(format!("P-521 secret key: {e}")))?;
-                    bergshamra_crypto::keyagreement::ecdh_p521(&originator_public_bytes, &secret)?
-                }
+            let curve = match recipient_key.data.algorithm() {
+                kryptering::KeyAlgorithm::Ec(curve) if recipient_key.has_private_key() => curve,
                 _ => {
                     return Err(Error::Key("recipient key is not an EC private key".into()));
                 }
-            }
+            };
+            let private_key = required_software_key(recipient_key)?;
+            bergshamra_crypto::keyagreement::ecdh(curve, &originator_public_bytes, &private_key)?
         }
         algorithm::DH_ES => {
             // Finite-field Diffie-Hellman key agreement
             let originator_dh = extract_dh_public_key_from_xml(doc, originator_ki_id)?;
             let recipient_key = resolve_recipient_key(ctx, doc, agreement_id)?;
 
-            match &recipient_key.data {
-                bergshamra_keys::key::KeyData::Dh {
-                    p,
-                    q,
-                    private_key: Some(x),
-                    ..
-                } => {
-                    let q_bytes = q.as_deref().ok_or_else(|| {
-                        Error::Key("DH subgroup order q is required for DH-ES".into())
-                    })?;
-                    bergshamra_crypto::keyagreement::dh_compute(
-                        &originator_dh.public_key,
-                        x,
-                        p,
-                        Some(q_bytes),
-                    )?
-                }
-                _ => {
-                    return Err(Error::Key("recipient key is not a DH private key".into()));
-                }
+            let recipient = recipient_key
+                .dh_parameters()?
+                .ok_or_else(|| Error::Key("recipient key is not a DH private key".into()))?;
+            if recipient.subgroup_order().is_none() {
+                return Err(Error::Key(
+                    "DH subgroup order q is required for DH-ES".into(),
+                ));
             }
+            let private_key = required_software_key(recipient_key)?;
+            bergshamra_crypto::keyagreement::dh_compute(&originator_dh.public_key, &private_key)?
         }
         algorithm::X25519 => {
             // X25519 key agreement (ECDH over Curve25519)
@@ -493,20 +465,15 @@ fn resolve_agreement_method_kek(
             }
             let recipient_key = resolve_recipient_key(ctx, doc, agreement_id)?;
 
-            match &recipient_key.data {
-                bergshamra_keys::key::KeyData::X25519 {
-                    private: Some(priv_bytes),
-                    ..
-                } => bergshamra_crypto::keyagreement::ecdh_x25519(
-                    &originator_public_bytes,
-                    priv_bytes,
-                )?,
-                _ => {
-                    return Err(Error::Key(
-                        "recipient key is not an X25519 private key".into(),
-                    ));
-                }
+            if recipient_key.data.algorithm() != kryptering::KeyAlgorithm::X25519
+                || !recipient_key.has_private_key()
+            {
+                return Err(Error::Key(
+                    "recipient key is not an X25519 private key".into(),
+                ));
             }
+            let private_key = required_software_key(recipient_key)?;
+            bergshamra_crypto::keyagreement::x25519(&originator_public_bytes, &private_key)?
         }
         _ => {
             return Err(Error::UnsupportedAlgorithm(format!(
@@ -626,61 +593,40 @@ fn resolve_recipient_key<'a>(
 
     // Fallback: try first DH key, then X25519 key, then EC key with a private key
     if let Some(dh_key) = ctx.keys_manager.find_dh() {
-        if matches!(
-            &dh_key.data,
-            bergshamra_keys::key::KeyData::Dh {
-                private_key: Some(_),
-                ..
-            }
-        ) {
+        if dh_key.has_private_key() {
             return Ok(dh_key);
         }
     }
     if let Some(x25519_key) = ctx.keys_manager.find_x25519() {
-        if matches!(
-            &x25519_key.data,
-            bergshamra_keys::key::KeyData::X25519 {
-                private: Some(_),
-                ..
-            }
-        ) {
+        if x25519_key.has_private_key() {
             return Ok(x25519_key);
         }
     }
     ctx.keys_manager
         .find_ec_p256()
-        .filter(|k| {
-            matches!(
-                &k.data,
-                bergshamra_keys::key::KeyData::EcP256 {
-                    private: Some(_),
-                    ..
-                }
-            )
+        .filter(|key| key.has_private_key())
+        .or_else(|| {
+            ctx.keys_manager
+                .find_ec_p384()
+                .filter(|key| key.has_private_key())
         })
         .or_else(|| {
-            ctx.keys_manager.find_ec_p384().filter(|k| {
-                matches!(
-                    &k.data,
-                    bergshamra_keys::key::KeyData::EcP384 {
-                        private: Some(_),
-                        ..
-                    }
-                )
-            })
-        })
-        .or_else(|| {
-            ctx.keys_manager.find_ec_p521().filter(|k| {
-                matches!(
-                    &k.data,
-                    bergshamra_keys::key::KeyData::EcP521 {
-                        private: Some(_),
-                        ..
-                    }
-                )
-            })
+            ctx.keys_manager
+                .find_ec_p521()
+                .filter(|key| key.has_private_key())
         })
         .ok_or_else(|| Error::Key("no private key for key agreement".into()))
+}
+
+fn required_software_key(
+    key: &bergshamra_keys::key::Key,
+) -> Result<kryptering::SoftwareKey, Error> {
+    key.software_key()?.ok_or_else(|| {
+        Error::Key(format!(
+            "{} key has no software representation",
+            key.algorithm_name()
+        ))
+    })
 }
 
 /// Parsed DH public key parameters from XML DHKeyValue.
@@ -1051,7 +997,7 @@ fn hex_decode(s: &str) -> Result<Vec<u8>, Error> {
     let s = s.trim();
     let hex_str = s.strip_prefix("0x").unwrap_or(s);
     // Ensure even length
-    let hex_str = if hex_str.len() % 2 != 0 {
+    let hex_str = if !hex_str.len().is_multiple_of(2) {
         format!("0{hex_str}")
     } else {
         hex_str.to_owned()
@@ -1718,10 +1664,13 @@ fn build_id_map(doc: &Document<'_>, attr_names: &[&str]) -> HashMap<String, Node
 fn map_kryptering_err(e: kryptering::Error) -> Error {
     match e {
         kryptering::Error::Crypto(s) => Error::Crypto(s),
-        kryptering::Error::UnsupportedAlgorithm(s) => Error::UnsupportedAlgorithm(s),
+        err @ kryptering::Error::UnsupportedAlgorithm { .. } => {
+            Error::UnsupportedAlgorithm(err.to_string())
+        }
         kryptering::Error::Key(s) => Error::Key(s),
         kryptering::Error::Io(e) => Error::Io(e),
-        kryptering::Error::Pkcs11(s) => Error::Crypto(format!("PKCS#11: {s}")),
+        #[allow(unreachable_patterns)]
+        other => Error::Crypto(other.to_string()),
     }
 }
 
@@ -1854,7 +1803,11 @@ mod tests {
         // configured symmetric key before parsing the KeyDerivationMethod.
         let mut keys = bergshamra_keys::KeysManager::new();
         keys.add_key(bergshamra_keys::Key::new(
-            bergshamra_keys::KeyData::Aes(vec![0x42; 32]),
+            bergshamra_keys::KeyData::from_symmetric_bytes(
+                kryptering::KeyAlgorithm::Aes,
+                &[0x42; 32],
+            )
+            .unwrap(),
             bergshamra_keys::KeyUsage::Any,
         ));
         let ctx = EncContext::new(keys).with_max_pbkdf2_iterations(4096);

@@ -973,7 +973,6 @@ fn write_output(path: Option<PathBuf>, data: &[u8]) -> Result<(), Error> {
 
 /// Generate a random session key from a spec like "hmac-192", "aes-128", "des-192".
 fn generate_session_key(spec: &str) -> Result<Key, Error> {
-    use rand::RngCore;
     let parts: Vec<&str> = spec.splitn(2, '-').collect();
     if parts.len() != 2 {
         return Err(Error::Other(format!(
@@ -984,19 +983,21 @@ fn generate_session_key(spec: &str) -> Result<Key, Error> {
     let bits: usize = parts[1]
         .parse()
         .map_err(|_| Error::Other(format!("invalid bit size in session-key spec: {spec}")))?;
-    if bits % 8 != 0 || bits == 0 {
+    if !bits.is_multiple_of(8) || bits == 0 {
         return Err(Error::Other(format!(
             "session-key bit size must be a positive multiple of 8: {bits}"
         )));
     }
     let byte_len = bits / 8;
-    let mut key_bytes = vec![0u8; byte_len];
-    rand::thread_rng().fill_bytes(&mut key_bytes);
+    let key_bytes =
+        kryptering::random_bytes(byte_len).map_err(|err| Error::Crypto(err.to_string()))?;
 
     let key_data = match key_type {
-        "hmac" => KeyData::Hmac(key_bytes),
-        "aes" => KeyData::Aes(key_bytes),
-        "des" | "des3" | "tripledes" => KeyData::Des3(key_bytes),
+        "hmac" => KeyData::from_symmetric_bytes(kryptering::KeyAlgorithm::Hmac, &key_bytes)?,
+        "aes" => KeyData::from_symmetric_bytes(kryptering::KeyAlgorithm::Aes, &key_bytes)?,
+        "des" | "des3" | "tripledes" => {
+            KeyData::from_symmetric_bytes(kryptering::KeyAlgorithm::TripleDes, &key_bytes)?
+        }
         _ => {
             return Err(Error::Other(format!(
                 "unsupported session-key type: {key_type}"
@@ -1040,13 +1041,32 @@ fn build_keys_manager(
             let path = PathBuf::from(file_str);
             let mut key =
                 match bergshamra_keys::loader::load_key_file_with_password(&path, password) {
-                    Ok(k) => k,
-                    Err(_) => {
-                        // Fallback: load as raw symmetric key (for concatkdf/pbkdf2 master keys)
-                        let bytes = std::fs::read(&path)
-                            .map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
-                        Key::new(KeyData::Aes(bytes), KeyUsage::Any)
-                    }
+                    Ok(key) => key,
+                    Err(error) => match path.extension().and_then(|value| value.to_str()) {
+                        Some("bin") => {
+                            let bytes = std::fs::read(&path)
+                                .map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
+                            Key::new(
+                                KeyData::from_symmetric_bytes(
+                                    kryptering::KeyAlgorithm::Hmac,
+                                    &bytes,
+                                )?,
+                                KeyUsage::Any,
+                            )
+                        }
+                        Some("key") => {
+                            let bytes = std::fs::read(&path)
+                                .map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
+                            Key::new(
+                                KeyData::from_symmetric_bytes(
+                                    kryptering::KeyAlgorithm::Aes,
+                                    &bytes,
+                                )?,
+                                KeyUsage::Any,
+                            )
+                        }
+                        _ => return Err(error),
+                    },
                 };
             key.name = Some(name.to_owned());
             mgr.add_key(key);
@@ -1092,7 +1112,10 @@ fn build_keys_manager(
         };
         let bytes =
             std::fs::read(&path).map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
-        let mut key = Key::new(KeyData::Hmac(bytes), KeyUsage::Any);
+        let mut key = Key::new(
+            KeyData::from_symmetric_bytes(kryptering::KeyAlgorithm::Hmac, &bytes)?,
+            KeyUsage::Any,
+        );
         key.name = name;
         mgr.add_key(key);
     }
@@ -1101,7 +1124,10 @@ fn build_keys_manager(
     if let Some(path) = aes_key_path {
         let bytes =
             std::fs::read(&path).map_err(|e| Error::Other(format!("{}: {e}", path.display())))?;
-        let key = Key::new(KeyData::Aes(bytes), KeyUsage::Any);
+        let key = Key::new(
+            KeyData::from_symmetric_bytes(kryptering::KeyAlgorithm::Aes, &bytes)?,
+            KeyUsage::Any,
+        );
         mgr.add_key(key);
     }
 

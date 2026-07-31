@@ -8,67 +8,29 @@
 
 use bergshamra_core::Error;
 
-/// Compute an ECDH shared secret for P-256.
-///
-/// Takes the originator's (ephemeral) public key as uncompressed SEC1 bytes
-/// and the recipient's (static) private key.
-pub fn ecdh_p256(
-    originator_public: &[u8],
-    recipient_private: &p256::SecretKey,
+/// Compute an ECDH shared secret through the selected provider.
+pub fn ecdh(
+    curve: kryptering::EcCurve,
+    peer_public: &[u8],
+    private_key: &kryptering::SoftwareKey,
 ) -> Result<Vec<u8>, Error> {
-    kryptering::keyagreement::ecdh_p256(originator_public, recipient_private)
+    kryptering::keyagreement::agree(curve, peer_public, private_key)
         .map_err(crate::map_kryptering_err)
 }
 
-/// Compute an ECDH shared secret for P-384.
-pub fn ecdh_p384(
-    originator_public: &[u8],
-    recipient_private: &p384::SecretKey,
-) -> Result<Vec<u8>, Error> {
-    kryptering::keyagreement::ecdh_p384(originator_public, recipient_private)
+/// Compute an X25519 shared secret through the selected provider.
+pub fn x25519(peer_public: &[u8], private_key: &kryptering::SoftwareKey) -> Result<Vec<u8>, Error> {
+    kryptering::keyagreement::agree_x25519(peer_public, private_key)
         .map_err(crate::map_kryptering_err)
 }
 
-/// Compute an ECDH shared secret for P-521.
-pub fn ecdh_p521(
-    originator_public: &[u8],
-    recipient_private: &p521::SecretKey,
-) -> Result<Vec<u8>, Error> {
-    kryptering::keyagreement::ecdh_p521(originator_public, recipient_private)
-        .map_err(crate::map_kryptering_err)
-}
-
-/// Compute an X25519 Diffie-Hellman shared secret (RFC 7748).
-///
-/// Takes the originator's (ephemeral) public key as raw 32 bytes
-/// and the recipient's (static) private key as raw 32 bytes.
-/// Returns the 32-byte shared secret.
-pub fn ecdh_x25519(originator_public: &[u8], recipient_private: &[u8]) -> Result<Vec<u8>, Error> {
-    kryptering::keyagreement::ecdh_x25519(originator_public, recipient_private)
-        .map_err(crate::map_kryptering_err)
-}
-
-/// Compute a finite-field Diffie-Hellman shared secret (X9.42 DH).
-///
-/// shared_secret = other_public ^ my_private mod p
-///
-/// All values are big-endian byte arrays. The result is zero-padded on the left
-/// to the byte-length of p (as required by the DH-ES specification). Requires
-/// `q` for subgroup validation.
-///
-/// Backed by `kryptering::hazmat::dh::compute`, which uses
-/// `crypto-bigint 0.7`'s `BoxedMontyForm::pow` for constant-time-on-pattern
-/// modular exponentiation (bit-length leak closed by padding the exponent
-/// to `p.bits()`). See the hazmat module's doc for residual side-channel
-/// caveats.
+/// Compute finite-field Diffie-Hellman agreement through the selected
+/// provider. The private exponent stays inside the opaque key handle.
 pub fn dh_compute(
     other_public: &[u8],
-    my_private: &[u8],
-    p: &[u8],
-    q: Option<&[u8]>,
+    private_key: &kryptering::SoftwareKey,
 ) -> Result<Vec<u8>, Error> {
-    kryptering::hazmat::dh::compute(other_public, my_private, p, q)
-        .map_err(crate::map_kryptering_err)
+    kryptering::keyagreement::agree_dh(other_public, private_key).map_err(crate::map_kryptering_err)
 }
 
 #[cfg(test)]
@@ -85,10 +47,20 @@ mod tests {
         let bob_public = x25519_dalek::PublicKey::from(&bob_secret);
 
         // Alice computes shared secret with Bob's public key
-        let shared_alice = ecdh_x25519(bob_public.as_bytes(), alice_secret.as_bytes()).unwrap();
+        let alice_key = kryptering::SoftwareKey::from_x25519(
+            Some(alice_secret.as_bytes()),
+            alice_public.as_bytes(),
+        )
+        .unwrap();
+        let shared_alice = x25519(bob_public.as_bytes(), &alice_key).unwrap();
 
         // Bob computes shared secret with Alice's public key
-        let shared_bob = ecdh_x25519(alice_public.as_bytes(), bob_secret.as_bytes()).unwrap();
+        let bob_key = kryptering::SoftwareKey::from_x25519(
+            Some(bob_secret.as_bytes()),
+            bob_public.as_bytes(),
+        )
+        .unwrap();
+        let shared_bob = x25519(alice_public.as_bytes(), &bob_key).unwrap();
 
         assert_eq!(shared_alice, shared_bob);
         assert_eq!(shared_alice.len(), 32);
@@ -96,23 +68,24 @@ mod tests {
 
     #[test]
     fn x25519_invalid_public_key_length() {
-        let secret = [0u8; 32];
+        let secret = [7u8; 32];
+        let public = x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(secret));
+        let key = kryptering::SoftwareKey::from_x25519(Some(&secret), public.as_bytes()).unwrap();
         let short_pub = [0u8; 16];
-        let err = ecdh_x25519(&short_pub, &secret).unwrap_err();
+        let err = x25519(&short_pub, &key).unwrap_err();
         assert!(
-            err.to_string().contains("invalid X25519 public key length"),
+            err.to_string().contains("X25519 public key") && err.to_string().contains("32"),
             "unexpected error: {err}"
         );
     }
 
     #[test]
     fn x25519_invalid_private_key_length() {
-        let pub_key = [0u8; 32];
+        let pub_key = [9u8; 32];
         let short_priv = [0u8; 16];
-        let err = ecdh_x25519(&pub_key, &short_priv).unwrap_err();
+        let err = kryptering::SoftwareKey::from_x25519(Some(&short_priv), &pub_key).unwrap_err();
         assert!(
-            err.to_string()
-                .contains("invalid X25519 private key length"),
+            err.to_string().contains("X25519") && err.to_string().contains("32 bytes"),
             "unexpected error: {err}"
         );
     }
@@ -124,8 +97,14 @@ mod tests {
         let bob_secret = x25519_dalek::StaticSecret::random_from_rng(rand::thread_rng());
         let bob_public = x25519_dalek::PublicKey::from(&bob_secret);
 
-        let shared1 = ecdh_x25519(bob_public.as_bytes(), alice_secret.as_bytes()).unwrap();
-        let shared2 = ecdh_x25519(bob_public.as_bytes(), alice_secret.as_bytes()).unwrap();
+        let alice_public = x25519_dalek::PublicKey::from(&alice_secret);
+        let alice_key = kryptering::SoftwareKey::from_x25519(
+            Some(alice_secret.as_bytes()),
+            alice_public.as_bytes(),
+        )
+        .unwrap();
+        let shared1 = x25519(bob_public.as_bytes(), &alice_key).unwrap();
+        let shared2 = x25519(bob_public.as_bytes(), &alice_key).unwrap();
 
         assert_eq!(shared1, shared2);
     }

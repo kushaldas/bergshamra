@@ -13,11 +13,18 @@ pub trait KeyTransportAlgorithm: Send {
     fn uri(&self) -> &'static str;
 
     /// Encrypt a content-encryption key or key-wrapping key for `public_key`.
-    fn encrypt(&self, public_key: &rsa::RsaPublicKey, key_data: &[u8]) -> Result<Vec<u8>, Error>;
+    fn encrypt(
+        &self,
+        public_key: &kryptering::SoftwareKey,
+        key_data: &[u8],
+    ) -> Result<Vec<u8>, Error>;
 
     /// Decrypt transported key bytes with `private_key`.
-    fn decrypt(&self, private_key: &rsa::RsaPrivateKey, encrypted: &[u8])
-        -> Result<Vec<u8>, Error>;
+    fn decrypt(
+        &self,
+        private_key: &kryptering::SoftwareKey,
+        encrypted: &[u8],
+    ) -> Result<Vec<u8>, Error>;
 }
 
 /// RSA-OAEP configuration parameters.
@@ -42,11 +49,18 @@ pub fn from_uri_with_params(
     params: OaepParams,
 ) -> Result<Box<dyn KeyTransportAlgorithm>, Error> {
     match uri {
-        algorithm::RSA_PKCS1 => Ok(Box::new(KrypteringKeyTransport {
-            uri: algorithm::RSA_PKCS1,
-            algo: KKeyTransportAlgorithm::RsaPkcs1v15,
-            label: None,
-        })),
+        algorithm::RSA_PKCS1 => {
+            #[cfg(feature = "legacy-algorithms")]
+            return Ok(Box::new(KrypteringKeyTransport {
+                uri: algorithm::RSA_PKCS1,
+                algo: KKeyTransportAlgorithm::RsaPkcs1v15,
+                label: None,
+            }));
+            #[cfg(not(feature = "legacy-algorithms"))]
+            return Err(Error::UnsupportedAlgorithm(
+                "RSA PKCS#1 v1.5 transport requires legacy-algorithms".into(),
+            ));
+        }
         algorithm::RSA_OAEP | algorithm::RSA_OAEP_ENC11 => {
             let static_uri = if uri == algorithm::RSA_OAEP {
                 algorithm::RSA_OAEP
@@ -151,14 +165,18 @@ impl KeyTransportAlgorithm for KrypteringKeyTransport {
         self.uri
     }
 
-    fn encrypt(&self, public_key: &rsa::RsaPublicKey, key_data: &[u8]) -> Result<Vec<u8>, Error> {
+    fn encrypt(
+        &self,
+        public_key: &kryptering::SoftwareKey,
+        key_data: &[u8],
+    ) -> Result<Vec<u8>, Error> {
         kryptering::keytransport::kt_encrypt(self.algo, public_key, key_data, self.label.as_deref())
             .map_err(crate::map_kryptering_err)
     }
 
     fn decrypt(
         &self,
-        private_key: &rsa::RsaPrivateKey,
+        private_key: &kryptering::SoftwareKey,
         encrypted: &[u8],
     ) -> Result<Vec<u8>, Error> {
         kryptering::keytransport::kt_decrypt(
@@ -209,5 +227,65 @@ mod tests {
         };
 
         assert!(from_uri_with_params(algorithm::RSA_OAEP_ENC11, params).is_err());
+    }
+
+    #[test]
+    fn rsa_oaep_sha256_round_trip_uses_selected_provider() {
+        use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
+        let mut rng = rand::rngs::OsRng;
+        let private = rsa::RsaPrivateKey::new(&mut rng, 2048).unwrap();
+        let public = rsa::RsaPublicKey::from(&private);
+        let private_der = private.to_pkcs8_der().unwrap();
+        let public_der = public.to_public_key_der().unwrap();
+        let private = kryptering::SoftwareKey::from_pkcs8_der(
+            kryptering::KeyAlgorithm::Rsa,
+            private_der.as_bytes(),
+        )
+        .unwrap();
+        let public = kryptering::SoftwareKey::from_spki_der(
+            kryptering::KeyAlgorithm::Rsa,
+            public_der.as_bytes(),
+        )
+        .unwrap();
+        let transport = from_uri_with_params(
+            algorithm::RSA_OAEP_ENC11,
+            OaepParams {
+                digest_uri: Some(algorithm::SHA256.to_owned()),
+                mgf_uri: Some(algorithm::MGF1_SHA256.to_owned()),
+                oaep_params: Some(b"bergshamra-provider-test".to_vec()),
+            },
+        )
+        .unwrap();
+        let plaintext = b"document content-encryption key";
+
+        let encrypted = transport.encrypt(&public, plaintext).unwrap();
+        assert_ne!(encrypted, plaintext);
+        assert_eq!(transport.decrypt(&private, &encrypted).unwrap(), plaintext);
+    }
+
+    #[cfg(feature = "legacy-algorithms")]
+    #[test]
+    fn rsa_pkcs1_round_trip_uses_selected_provider() {
+        use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
+        let mut rng = rand::rngs::OsRng;
+        let private = rsa::RsaPrivateKey::new(&mut rng, 2048).unwrap();
+        let public = rsa::RsaPublicKey::from(&private);
+        let private_der = private.to_pkcs8_der().unwrap();
+        let public_der = public.to_public_key_der().unwrap();
+        let private = kryptering::SoftwareKey::from_pkcs8_der(
+            kryptering::KeyAlgorithm::Rsa,
+            private_der.as_bytes(),
+        )
+        .unwrap();
+        let public = kryptering::SoftwareKey::from_spki_der(
+            kryptering::KeyAlgorithm::Rsa,
+            public_der.as_bytes(),
+        )
+        .unwrap();
+        let transport = from_uri_with_params(algorithm::RSA_PKCS1, OaepParams::default()).unwrap();
+        let plaintext = b"legacy document content-encryption key";
+
+        let encrypted = transport.encrypt(&public, plaintext).unwrap();
+        assert_eq!(transport.decrypt(&private, &encrypted).unwrap(), plaintext);
     }
 }

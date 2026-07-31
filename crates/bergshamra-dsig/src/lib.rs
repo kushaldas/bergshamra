@@ -153,8 +153,8 @@ pub use verify::{VerifiedKeyInfo, VerifiedReference, VerifyResult};
 fn map_kryptering_err(e: kryptering::Error) -> bergshamra_core::Error {
     match e {
         kryptering::Error::Crypto(s) => bergshamra_core::Error::Crypto(s),
-        kryptering::Error::UnsupportedAlgorithm(s) => {
-            bergshamra_core::Error::UnsupportedAlgorithm(s)
+        err @ kryptering::Error::UnsupportedAlgorithm { .. } => {
+            bergshamra_core::Error::UnsupportedAlgorithm(err.to_string())
         }
         kryptering::Error::Key(s) => bergshamra_core::Error::Key(s),
         kryptering::Error::Io(e) => bergshamra_core::Error::Io(e),

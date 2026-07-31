@@ -37,7 +37,7 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
       - name: Verify tag matches workspace version
         run: |
@@ -57,11 +57,23 @@ jobs:
             exit 1
           fi
 
+      - name: Verify release prerequisites
+        run: |
+          set -euo pipefail
+          for requirement in kryptering@0.5.0 tsp-ltv@0.4.0; do
+            crate="${requirement%@*}"
+            version="${requirement#*@}"
+            if ! curl --fail --silent --show-error \
+              "https://crates.io/api/v1/crates/${crate}/${version}" >/dev/null; then
+              echo "::error::${crate} ${version} must be published before Bergshamra" >&2
+              exit 1
+            fi
+          done
       - name: Build workspace
-        run: cargo build --locked --workspace --all-features
+        run: cargo build --locked --workspace --no-default-features --features rustcrypto,legacy-algorithms,post-quantum,pkcs11
 
       - name: Test workspace
-        run: cargo test --locked --workspace --all-features --lib
+        run: cargo test --locked --workspace --no-default-features --features rustcrypto,legacy-algorithms,post-quantum,pkcs11 --lib
 
   # Publish to crates.io via OIDC trusted publishing. No long-lived
   # CARGO_REGISTRY_TOKEN secret is needed — `crates-io-auth-action`
@@ -99,10 +111,32 @@ jobs:
             exit 1
           fi
 
+      - name: Verify release prerequisites
+        run: |
+          set -euo pipefail
+          for requirement in kryptering@0.5.0 tsp-ltv@0.4.0; do
+            crate="${requirement%@*}"
+            version="${requirement#*@}"
+            if ! curl --fail --silent --show-error \
+              "https://crates.io/api/v1/crates/${crate}/${version}" >/dev/null; then
+              echo "::error::${crate} ${version} must be published before Bergshamra" >&2
+              exit 1
+            fi
+          done
+
       # `--dry-run` always; real `publish` only on tag push so manual
       # workflow runs can sanity-check the workflow without uploading.
-      - name: Verify publishable package
-        run: cargo publish --dry-run
+      - name: Verify publishable packages
+        run: |
+          set -euo pipefail
+          crates=(
+            bergshamra-core bergshamra-xml bergshamra-crypto
+            bergshamra-pkcs12 bergshamra-c14n bergshamra-keys
+            bergshamra-transforms bergshamra-dsig bergshamra-enc bergshamra
+          )
+          for crate in "${crates[@]}"; do
+            cargo publish --locked --dry-run -p "${crate}"
+          done
 
       - name: Publish to crates.io
         if: github.event_name == 'push'
