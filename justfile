@@ -6,6 +6,8 @@ _default:
 # Paths
 shim := justfile_directory() / "tests/xmlsec1-shim.py"
 topfolder := justfile_directory() / "test-data"
+dsig_expected := "--- TOTAL OK: 447; OK (percent): 99; TOTAL FAILED: 0; TOTAL SKIPPED: 3"
+enc_expected := "--- TOTAL OK: 701; OK (percent): 100; TOTAL FAILED: 0; TOTAL SKIPPED: 0"
 
 # Build
 build:
@@ -38,13 +40,13 @@ fmt:
 test-dsig: build-release
     bash {{topfolder}}/testrun.sh {{topfolder}}/testDSig.sh openssl "{{topfolder}}" "{{shim}}" pem \
         > /tmp/dsig-results.txt 2>&1
-    grep 'TOTAL OK' /tmp/dsig-results.txt
+    grep -F -- '{{dsig_expected}}' /tmp/dsig-results.txt
 
 # Run Enc integration tests, log to /tmp
 test-enc: build-release
     bash {{topfolder}}/testrun.sh {{topfolder}}/testEnc.sh openssl "{{topfolder}}" "{{shim}}" pem \
         > /tmp/enc-results.txt 2>&1
-    grep 'TOTAL OK' /tmp/enc-results.txt
+    grep -F -- '{{enc_expected}}' /tmp/enc-results.txt
 
 # Run both DSig and Enc integration tests
 test-all: test-dsig test-enc

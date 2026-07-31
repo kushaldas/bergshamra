@@ -6,14 +6,19 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 rust-version.workspace = true
-description = "Bergshamra — Pure Rust XML Security library (XML-DSig, XML-Enc, C14N)"
+description = "Bergshamra XML Security library with selectable cryptographic providers"
 
 [[bin]]
 name = "bergshamra"
 path = "src/main.rs"
 
 [features]
-default = ["legacy-algorithms"]
+default = ["rustcrypto", "legacy-algorithms", "post-quantum", "pkcs11"]
+rustcrypto = ["bergshamra-crypto/rustcrypto", "bergshamra-keys/rustcrypto", "bergshamra-transforms/rustcrypto", "bergshamra-dsig/rustcrypto", "bergshamra-enc/rustcrypto", "kryptering/rustcrypto"]
+aws-lc = ["bergshamra-crypto/aws-lc", "bergshamra-keys/aws-lc", "bergshamra-transforms/aws-lc", "bergshamra-dsig/aws-lc", "bergshamra-enc/aws-lc", "kryptering/aws-lc"]
+fips = ["aws-lc", "bergshamra-crypto/fips", "bergshamra-keys/fips", "bergshamra-transforms/fips", "bergshamra-dsig/fips", "bergshamra-enc/fips", "kryptering/fips"]
+post-quantum = ["bergshamra-crypto/post-quantum", "bergshamra-keys/post-quantum", "bergshamra-transforms/post-quantum", "bergshamra-dsig/post-quantum", "bergshamra-enc/post-quantum", "kryptering/post-quantum"]
+pkcs11 = ["bergshamra-crypto/pkcs11", "bergshamra-keys/pkcs11", "bergshamra-transforms/pkcs11", "bergshamra-dsig/pkcs11", "bergshamra-enc/pkcs11", "kryptering/pkcs11"]
 legacy-algorithms = [
     "bergshamra-crypto/legacy-algorithms",
     "bergshamra-dsig/legacy-algorithms",
@@ -31,4 +36,4 @@ bergshamra-enc.workspace = true
 clap.workspace = true
 base64.workspace = true
 uppsala.workspace = true
-rand.workspace = true
+kryptering.workspace = true

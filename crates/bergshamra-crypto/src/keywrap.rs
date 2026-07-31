@@ -35,7 +35,12 @@ fn uri_to_keywrap(uri: &str) -> Result<(KKeyWrapAlgorithm, &'static str), Error>
             KKeyWrapAlgorithm::AesKw(AesKeySize::Aes256),
             algorithm::KW_AES256,
         )),
+        #[cfg(feature = "legacy-algorithms")]
         algorithm::KW_TRIPLEDES => Ok((KKeyWrapAlgorithm::TripleDesKw, algorithm::KW_TRIPLEDES)),
+        #[cfg(not(feature = "legacy-algorithms"))]
+        algorithm::KW_TRIPLEDES => Err(Error::UnsupportedAlgorithm(
+            "3DES key wrap requires legacy-algorithms".into(),
+        )),
         _ => Err(Error::UnsupportedAlgorithm(format!("key wrap: {uri}"))),
     }
 }
@@ -79,6 +84,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(feature = "rustcrypto")]
     fn test_tdes_key_wrap_roundtrip() {
         // 24-byte KEK
         let kek = b"\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18";
@@ -89,6 +95,14 @@ mod tests {
         let wrapped = kw.wrap(kek, key_data).expect("wrap");
         let unwrapped = kw.unwrap(kek, &wrapped).expect("unwrap");
         assert_eq!(unwrapped, key_data);
+    }
+
+    #[test]
+    #[cfg(feature = "aws-lc")]
+    fn test_tdes_key_wrap_is_explicitly_unsupported() {
+        let kw = from_uri(algorithm::KW_TRIPLEDES).unwrap();
+        let error = kw.wrap(&[0u8; 24], &[0u8; 24]).unwrap_err();
+        assert!(matches!(error, Error::UnsupportedAlgorithm(_)));
     }
 
     // ── RFC 3394 / NIST SP 800-38F AES Key Wrap test vectors ─────────
@@ -120,6 +134,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "aws-lc"))]
     fn test_nist_aes192_kw_128bit_data() {
         // RFC 3394 Section 4.2: 192-bit KEK, 128-bit data
         let kek = hex::decode("000102030405060708090A0B0C0D0E0F1011121314151617").unwrap();
@@ -139,6 +154,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "aws-lc"))]
     fn test_nist_aes192_kw_192bit_data() {
         // RFC 3394 Section 4.4: 192-bit KEK, 192-bit data
         let kek = hex::decode("000102030405060708090A0B0C0D0E0F1011121314151617").unwrap();
@@ -199,6 +215,12 @@ mod tests {
         let data_sizes = [16, 24, 32, 40, 48, 64, 128];
 
         for &(kek_size, uri) in kek_sizes {
+            if cfg!(feature = "aws-lc") && kek_size == 24 {
+                let kw = from_uri(uri).unwrap();
+                let error = kw.wrap(&vec![0u8; kek_size], &[0u8; 16]).unwrap_err();
+                assert!(matches!(error, Error::UnsupportedAlgorithm(_)));
+                continue;
+            }
             let kw = from_uri(uri).unwrap();
             for &data_size in &data_sizes {
                 let kek: Vec<u8> = (0..kek_size).map(|i| (i * 7 + 3) as u8).collect();

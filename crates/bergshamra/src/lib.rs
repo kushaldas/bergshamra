@@ -37,6 +37,11 @@ pub use bergshamra_dsig::{DsigContext, VerifiedKeyInfo, VerifiedReference, Verif
 pub use bergshamra_enc::EncContext;
 /// Key types and the in-memory key manager.
 pub use bergshamra_keys::{Key, KeyData, KeyUsage, KeysManager};
+/// Compile-time provider metadata, capabilities, and explicit initialization.
+pub use kryptering::{
+    backend_info, capabilities, initialize_backend, supports, BackendId, BackendInfo, Capability,
+    FipsStatus, Operation, SoftwareKey, TlsBackendId,
+};
 
 /// Sign an XML signature template.
 pub use bergshamra_dsig::sign::sign;

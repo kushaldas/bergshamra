@@ -32,40 +32,147 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
 
+      - name: Install AWS-LC native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential cmake clang libclang-dev perl pkg-config
+
       - name: Cargo cache
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
 
-      # Build + clippy across every feature combination so conditional
-      # cfg(feature = "…") blocks don't bit-rot. Bergshamra's feature
-      # surface is modest: `bergshamra-crypto` gates MD5/RIPEMD-160 via
-      # `legacy-algorithms`; the top-level `bergshamra` crate re-exports
-      # that gate and enables it by default.
-      - name: cargo clippy (no-default-features)
-        run: cargo clippy --locked --workspace --no-default-features --all-targets -- -D warnings
-
       - name: cargo clippy (default)
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
-      - name: cargo clippy (all-features)
-        run: cargo clippy --locked --workspace --all-features --all-targets -- -D warnings
+      - name: cargo clippy (RustCrypto complete)
+        run: cargo clippy --locked --workspace --no-default-features --features rustcrypto,legacy-algorithms,post-quantum,pkcs11 --all-targets -- -D warnings
+
+      - name: cargo clippy (AWS-LC)
+        run: cargo clippy --locked --workspace --no-default-features --features aws-lc,legacy-algorithms,pkcs11 --all-targets -- -D warnings
 
       # Unit tests — pure XML-DSig / XML-Enc / C14N paths. The xmlsec
       # interop suite (test-data/testDSig.sh via Python shim) is not run
       # here; it requires xmlsec1 + OpenSSL at runtime and lives under
       # `tests/` as an integration harness, not a cargo test.
-      - name: cargo test (no-default-features)
-        run: cargo test --locked --workspace --no-default-features --lib
-
       - name: cargo test (default)
         run: cargo test --locked --workspace --lib
 
-      - name: cargo test (all-features)
-        run: cargo test --locked --workspace --all-features --lib
+      - name: cargo test (RustCrypto complete)
+        run: cargo test --locked --workspace --no-default-features --features rustcrypto,legacy-algorithms,post-quantum,pkcs11 --lib
+
+      - name: cargo test (AWS-LC)
+        run: cargo test --locked --workspace --no-default-features --features aws-lc,legacy-algorithms,pkcs11 --lib
+
+      - name: AWS-LC excludes RustCrypto primitives
+        run: |
+          cargo tree --workspace --no-default-features --features aws-lc,legacy-algorithms,pkcs11 -e normal --prefix none > /tmp/bergshamra-aws-tree.txt
+          forbidden='^(rsa|dsa|ecdsa|p256|p384|p521|ed25519-dalek|x25519-dalek|aes |aes-gcm|cbc |des |sha1 |sha2 |sha3 |hmac |ml-dsa|slh-dsa|ml-kem) v'
+          if rg "$forbidden" /tmp/bergshamra-aws-tree.txt; then
+            echo "::error::AWS-LC build includes a RustCrypto primitive implementation"
+            exit 1
+          fi
 
       - name: cargo doc
-        run: cargo doc --locked --workspace --all-features --no-deps
+        run: cargo doc --locked --workspace --no-default-features --features rustcrypto,legacy-algorithms,post-quantum,pkcs11 --no-deps
         env:
           RUSTDOCFLAGS: "-D warnings"
+
+      - name: Invalid provider combinations fail closed
+        run: |
+          if cargo check --locked --workspace --no-default-features; then
+            echo "::error::a document crypto provider is mandatory"
+            exit 1
+          fi
+          if cargo check --locked --workspace --no-default-features --features rustcrypto,aws-lc; then
+            echo "::error::multiple document providers must be rejected"
+            exit 1
+          fi
+
+  msrv:
+    name: Rust 1.88 MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - name: Install Rust 1.88
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch
+        with:
+          toolchain: 1.88.0
+      - name: Check default workspace at MSRV
+        run: cargo check --locked --workspace
+
+  xmlsec-interop:
+    name: xmlsec interoperability (default RustCrypto)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Preserve default RustCrypto DSig and XML Encryption parity
+        run: bash tests/run-provider-interop.sh
+
+  softhsm:
+    name: SoftHSM (${{ matrix.provider }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [rustcrypto, aws-lc]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+      - name: Install AWS-LC native build dependencies
+        if: matrix.provider == 'aws-lc'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential cmake clang libclang-dev perl pkg-config
+      - name: Install SoftHSM and PKCS#11 tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes softhsm2 opensc
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Initialize isolated token fixture
+        run: bash hsm-test/setup.sh
+      - name: Exercise token operations with selected document provider
+        run: >-
+          cargo test --locked -p bergshamra-dsig --test hsm_sign_verify
+          --no-default-features
+          --features "${{ matrix.provider }},legacy-algorithms,pkcs11"
+          -- --ignored --test-threads=1 --skip test_hsm_ed25519_sign_verify
+
+  fips:
+    name: FIPS document crypto (AWS-LC, ${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+      - name: Install AWS-LC native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential cmake clang libclang-dev perl pkg-config
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Compile document provider in FIPS mode
+        run: cargo check --locked --workspace --no-default-features --features fips,pkcs11
+      - name: Verify explicit initialization and provider attestation
+        run: cargo test --locked -p bergshamra --no-default-features --features fips,pkcs11 --test fips_attestation
+      - name: RustCrypto cannot be combined with FIPS
+        run: |
+          if cargo check --locked --workspace --no-default-features --features rustcrypto,fips; then
+            echo "::error::FIPS unexpectedly compiled with RustCrypto document crypto"
+            exit 1
+          fi

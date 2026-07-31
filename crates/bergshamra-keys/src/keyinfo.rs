@@ -5,6 +5,7 @@
 use crate::key::{Key, KeyData, KeyUsage};
 use crate::manager::KeysManager;
 use bergshamra_core::{ns, Error};
+use der::{Decode, Encode};
 use uppsala::{Document, NodeId};
 
 /// Decode a CryptoBinary value that may be base64 or hex encoded.
@@ -29,7 +30,7 @@ fn decode_crypto_binary(text: &str, engine: &impl base64::Engine) -> Result<Vec<
     // including a single hex digit, before chunking so malformed KeyInfo stays
     // a recoverable parse error.
     if clean.chars().all(|c| c.is_ascii_hexdigit()) {
-        if clean.len() % 2 != 0 {
+        if !clean.len().is_multiple_of(2) {
             return Err("odd-length hex CryptoBinary value".into());
         }
 
@@ -529,16 +530,17 @@ pub fn parse_rsa_key_value(key_value_node: NodeId, doc: &Document<'_>) -> Result
     let exponent_bytes = decode_crypto_binary(&exponent_b64, &engine)
         .map_err(|e| Error::Base64(format!("Exponent: {e}")))?;
 
-    let n = rsa::BigUint::from_bytes_be(&modulus_bytes);
-    let e = rsa::BigUint::from_bytes_be(&exponent_bytes);
-    let public = rsa::RsaPublicKey::new(n, e)
-        .map_err(|err| Error::Key(format!("invalid RSA public key: {err}")))?;
-
+    let rsa_public = der_sequence(&[
+        der_positive_integer(&modulus_bytes)?,
+        der_positive_integer(&exponent_bytes)?,
+    ]);
+    let spki = encode_spki(
+        der::oid::db::rfc5912::RSA_ENCRYPTION,
+        Some(der::Any::null()),
+        &rsa_public,
+    )?;
     Ok(Key::new(
-        KeyData::Rsa {
-            private: None,
-            public,
-        },
+        KeyData::from_spki_der(kryptering::KeyAlgorithm::Rsa, &spki)?,
         KeyUsage::Verify,
     ))
 }
@@ -585,21 +587,17 @@ pub fn parse_dsa_key_value(key_value_node: NodeId, doc: &Document<'_>) -> Result
     let g_bytes = decode_elem(ns::node::DSA_G)?;
     let y_bytes = decode_elem(ns::node::DSA_Y)?;
 
-    let p = dsa::BigUint::from_bytes_be(&p_bytes);
-    let q = dsa::BigUint::from_bytes_be(&q_bytes);
-    let g = dsa::BigUint::from_bytes_be(&g_bytes);
-    let y = dsa::BigUint::from_bytes_be(&y_bytes);
-
-    let components = dsa::Components::from_components(p, q, g)
-        .map_err(|e| Error::Key(format!("invalid DSA components: {e}")))?;
-    let vk = dsa::VerifyingKey::from_components(components, y)
-        .map_err(|e| Error::Key(format!("invalid DSA public key: {e}")))?;
-
+    let params_der = der_sequence(&[
+        der_positive_integer(&p_bytes)?,
+        der_positive_integer(&q_bytes)?,
+        der_positive_integer(&g_bytes)?,
+    ]);
+    let params = der::Any::from_der(&params_der)
+        .map_err(|err| Error::Key(format!("invalid DSA parameters: {err}")))?;
+    let public_der = der_positive_integer(&y_bytes)?;
+    let spki = encode_spki(der::oid::db::rfc5912::ID_DSA, Some(params), &public_der)?;
     Ok(Key::new(
-        KeyData::Dsa {
-            private: None,
-            public: vk,
-        },
+        KeyData::from_spki_der(kryptering::KeyAlgorithm::Dsa, &spki)?,
         KeyUsage::Verify,
     ))
 }
@@ -659,65 +657,100 @@ pub fn parse_ec_key_value(key_value_node: NodeId, doc: &Document<'_>) -> Result<
         .decode(public_key_b64.trim().replace(['\n', '\r', ' '], ""))
         .map_err(|e| Error::Base64(format!("EC PublicKey: {e}")))?;
 
-    match &*curve_uri {
-        "urn:oid:1.2.840.10045.3.1.7" => {
-            // P-256
-            use p256::elliptic_curve::sec1::FromEncodedPoint;
-            let encoded = p256::EncodedPoint::from_bytes(&point_bytes)
-                .map_err(|e| Error::Key(format!("invalid P-256 point: {e}")))?;
-            let point = p256::PublicKey::from_encoded_point(&encoded);
-            if point.is_none().into() {
-                return Err(Error::Key("invalid P-256 public key point".into()));
-            }
-            let vk = p256::ecdsa::VerifyingKey::from(point.unwrap());
-            Ok(Key::new(
-                KeyData::EcP256 {
-                    private: None,
-                    public: vk,
-                },
-                KeyUsage::Verify,
-            ))
+    let (curve_oid, curve, expected_len) = match &*curve_uri {
+        "urn:oid:1.2.840.10045.3.1.7" => (
+            der::oid::db::rfc5912::SECP_256_R_1,
+            kryptering::EcCurve::P256,
+            65,
+        ),
+        "urn:oid:1.3.132.0.34" => (
+            der::oid::db::rfc5912::SECP_384_R_1,
+            kryptering::EcCurve::P384,
+            97,
+        ),
+        "urn:oid:1.3.132.0.35" => (
+            der::oid::db::rfc5912::SECP_521_R_1,
+            kryptering::EcCurve::P521,
+            133,
+        ),
+        _ => {
+            return Err(Error::UnsupportedAlgorithm(format!(
+                "EC curve: {curve_uri}"
+            )))
         }
-        "urn:oid:1.3.132.0.34" => {
-            // P-384
-            use p384::elliptic_curve::sec1::FromEncodedPoint;
-            let encoded = p384::EncodedPoint::from_bytes(&point_bytes)
-                .map_err(|e| Error::Key(format!("invalid P-384 point: {e}")))?;
-            let point = p384::PublicKey::from_encoded_point(&encoded);
-            if point.is_none().into() {
-                return Err(Error::Key("invalid P-384 public key point".into()));
-            }
-            let vk = p384::ecdsa::VerifyingKey::from(point.unwrap());
-            Ok(Key::new(
-                KeyData::EcP384 {
-                    private: None,
-                    public: vk,
-                },
-                KeyUsage::Verify,
-            ))
-        }
-        "urn:oid:1.3.132.0.35" => {
-            // P-521
-            use p521::elliptic_curve::sec1::FromEncodedPoint;
-            let encoded = p521::EncodedPoint::from_bytes(&point_bytes)
-                .map_err(|e| Error::Key(format!("invalid P-521 point: {e}")))?;
-            let point = p521::PublicKey::from_encoded_point(&encoded);
-            if point.is_none().into() {
-                return Err(Error::Key("invalid P-521 public key point".into()));
-            }
-            let vk = p521::ecdsa::VerifyingKey::from(ecdsa::VerifyingKey::from(point.unwrap()));
-            Ok(Key::new(
-                KeyData::EcP521 {
-                    private: None,
-                    public: vk,
-                },
-                KeyUsage::Verify,
-            ))
-        }
-        _ => Err(Error::UnsupportedAlgorithm(format!(
-            "EC curve: {curve_uri}"
-        ))),
+    };
+    if point_bytes.len() != expected_len || point_bytes.first() != Some(&4) {
+        return Err(Error::Key(format!(
+            "invalid uncompressed {curve:?} public point"
+        )));
     }
+    let curve_params = der::Any::from_der(
+        &curve_oid
+            .to_der()
+            .map_err(|err| Error::Key(format!("EC curve parameter encoding failed: {err}")))?,
+    )
+    .map_err(|err| Error::Key(format!("invalid EC curve parameters: {err}")))?;
+    let spki = encode_spki(
+        der::oid::db::rfc5912::ID_EC_PUBLIC_KEY,
+        Some(curve_params),
+        &point_bytes,
+    )?;
+    Ok(Key::new(
+        KeyData::from_spki_der(kryptering::KeyAlgorithm::Ec(curve), &spki)?,
+        KeyUsage::Verify,
+    ))
+}
+
+fn encode_spki(
+    oid: der::asn1::ObjectIdentifier,
+    parameters: Option<der::Any>,
+    public: &[u8],
+) -> Result<Vec<u8>, Error> {
+    use der::Encode;
+    let spki = x509_cert::spki::SubjectPublicKeyInfoOwned {
+        algorithm: x509_cert::spki::AlgorithmIdentifierOwned { oid, parameters },
+        subject_public_key: der::asn1::BitString::from_bytes(public)
+            .map_err(|err| Error::Key(format!("invalid public key bit string: {err}")))?,
+    };
+    spki.to_der()
+        .map_err(|err| Error::Key(format!("SPKI encoding failed: {err}")))
+}
+
+fn der_positive_integer(bytes: &[u8]) -> Result<Vec<u8>, Error> {
+    let bytes = bytes
+        .iter()
+        .position(|byte| *byte != 0)
+        .map(|start| &bytes[start..])
+        .ok_or_else(|| Error::Key("public integer must be non-zero".into()))?;
+    let mut value = Vec::with_capacity(bytes.len() + 1);
+    if bytes[0] & 0x80 != 0 {
+        value.push(0);
+    }
+    value.extend_from_slice(bytes);
+    Ok(der_tlv(0x02, &value))
+}
+
+fn der_sequence(elements: &[Vec<u8>]) -> Vec<u8> {
+    let value: Vec<u8> = elements.iter().flatten().copied().collect();
+    der_tlv(0x30, &value)
+}
+
+fn der_tlv(tag: u8, value: &[u8]) -> Vec<u8> {
+    let mut encoded = Vec::with_capacity(value.len() + 6);
+    encoded.push(tag);
+    if value.len() < 128 {
+        encoded.push(value.len() as u8);
+    } else {
+        let bytes = value.len().to_be_bytes();
+        let start = bytes
+            .iter()
+            .position(|byte| *byte != 0)
+            .unwrap_or(bytes.len() - 1);
+        encoded.push(0x80 | (bytes.len() - start) as u8);
+        encoded.extend_from_slice(&bytes[start..]);
+    }
+    encoded.extend_from_slice(value);
+    encoded
 }
 
 // ── KeyInfo XML construction ─────────────────────────────────────────

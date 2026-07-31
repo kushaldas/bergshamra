@@ -293,7 +293,7 @@ pub fn sign_owned(ctx: &DsigContext, mut result_xml: String) -> Result<String, E
         // Software key path (existing behaviour)
         let key_ref = ctx.keys_manager.first_key()?;
         let signing_key = key_ref
-            .to_signing_key()
+            .to_signing_key()?
             .ok_or_else(|| Error::Key("no signing key".into()))?;
 
         // Re-find sig_method in the updated doc for PQ context / HMAC length extraction
@@ -356,7 +356,7 @@ pub fn sign_owned(ctx: &DsigContext, mut result_xml: String) -> Result<String, E
                 let len_text_owned = updated_doc.text_content_deep(hmac_len_id);
                 let len_text = len_text_owned.trim();
                 if let Ok(bits) = len_text.parse::<usize>() {
-                    if bits % 8 == 0 {
+                    if bits.is_multiple_of(8) {
                         let bytes = bits / 8;
                         if bytes < sig.len() {
                             sig.truncate(bytes);
@@ -662,7 +662,7 @@ pub fn sign_document(ctx: &DsigContext, doc: &mut Document<'static>) -> Result<(
     } else {
         let key_ref = ctx.keys_manager.first_key()?;
         let signing_key = key_ref
-            .to_signing_key()
+            .to_signing_key()?
             .ok_or_else(|| Error::Key("no signing key".into()))?;
 
         let pq_context: Option<Vec<u8>> =
@@ -710,7 +710,7 @@ pub fn sign_document(ctx: &DsigContext, doc: &mut Document<'static>) -> Result<(
                 let len_text_owned = doc.text_content_deep(hmac_len_id);
                 let len_text = len_text_owned.trim();
                 if let Ok(bits) = len_text.parse::<usize>() {
-                    if bits % 8 == 0 {
+                    if bits.is_multiple_of(8) {
                         let bytes = bits / 8;
                         if bytes < sig.len() {
                             sig.truncate(bytes);
@@ -1047,7 +1047,7 @@ impl ReferenceDigestSink {
     }
 
     /// Finalize the digest stream and return the computed digest bytes.
-    fn finalize(self) -> Vec<u8> {
+    fn finalize(self) -> Result<Vec<u8>, Error> {
         self.inner.finalize()
     }
 }
@@ -1088,7 +1088,7 @@ fn try_fast_reference_digest(
         &inclusive_prefixes,
         &mut sink,
     )?;
-    Ok(Some(sink.finalize()))
+    Ok(Some(sink.finalize()?))
 }
 
 /// Parse the fast-path transform list and return canonicalization parameters.
@@ -2012,7 +2012,11 @@ mod tests {
     fn hmac_keys_manager() -> bergshamra_keys::KeysManager {
         let mut keys = bergshamra_keys::KeysManager::new();
         keys.add_key(bergshamra_keys::Key::new(
-            bergshamra_keys::KeyData::Hmac(b"signing-reference-secret".to_vec()),
+            bergshamra_keys::KeyData::from_symmetric_bytes(
+                kryptering::KeyAlgorithm::Hmac,
+                b"signing-reference-secret",
+            )
+            .unwrap(),
             bergshamra_keys::KeyUsage::Any,
         ));
         keys

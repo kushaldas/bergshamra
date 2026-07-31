@@ -9,39 +9,20 @@ rust-version.workspace = true
 description = "Cryptographic algorithm implementations for Bergshamra XML Security library"
 
 [features]
-default = []
-legacy-algorithms = ["dep:md-5", "dep:ripemd"]
+default = ["rustcrypto", "legacy-algorithms", "post-quantum"]
+rustcrypto = ["kryptering/rustcrypto"]
+aws-lc = ["kryptering/aws-lc"]
+fips = ["aws-lc", "kryptering/fips"]
+legacy-algorithms = ["kryptering/legacy"]
+post-quantum = ["kryptering/post-quantum"]
+pkcs11 = ["kryptering/pkcs11"]
 
 [dependencies]
 bergshamra-core.workspace = true
 kryptering.workspace = true
-digest.workspace = true
-sha1.workspace = true
-sha2.workspace = true
-sha3.workspace = true
-md-5 = { workspace = true, optional = true }
-ripemd = { workspace = true, optional = true }
-hmac.workspace = true
-rsa.workspace = true
-ecdsa.workspace = true
-dsa.workspace = true
-ml-dsa.workspace = true
-slh-dsa.workspace = true
-getrandom.workspace = true
-pkcs8-pq.workspace = true
-p256 = { workspace = true, features = ["ecdsa"] }
-p384 = { workspace = true, features = ["ecdsa"] }
-p521 = { workspace = true, features = ["ecdsa"] }
-signature.workspace = true
-ed25519-dalek.workspace = true
-x25519-dalek.workspace = true
-hkdf.workspace = true
-rand.workspace = true
-pkcs1.workspace = true
-pkcs8.workspace = true
-pbkdf2.workspace = true
-num-bigint-dig.workspace = true
-num-traits.workspace = true
 
 [dev-dependencies]
 hex = "0.4"
+rand.workspace = true
+rsa.workspace = true
+x25519-dalek.workspace = true

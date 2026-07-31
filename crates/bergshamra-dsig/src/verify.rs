@@ -187,10 +187,10 @@ pub fn verify_document_with_source(
     doc: &Document<'_>,
     source_xml: Option<&str>,
 ) -> Result<VerifyResult, Error> {
-    let id_map = build_verify_id_map(ctx, &doc)?;
+    let id_map = build_verify_id_map(ctx, doc)?;
 
     // Find the first <Signature> element.
-    let sig_node = find_element(&doc, ns::DSIG, ns::node::SIGNATURE)
+    let sig_node = find_element(doc, ns::DSIG, ns::node::SIGNATURE)
         .ok_or_else(|| Error::MissingElement("Signature".into()))?;
 
     verify_signature_node(ctx, doc, source_xml, sig_node, &id_map)
@@ -322,7 +322,7 @@ fn verify_signature_node(
                     .parse()
                     .map_err(|_| Error::XmlStructure("invalid HMACOutputLength value".into()))?;
                 // Validate: must be a multiple of 8
-                if bits % 8 != 0 {
+                if !bits.is_multiple_of(8) {
                     return Ok(VerifyResult::Invalid {
                         reason: "HMACOutputLength must be a multiple of 8".into(),
                     });
@@ -654,7 +654,7 @@ fn verify_signature_node(
     }
 
     let signing_key = key
-        .to_signing_key()
+        .to_signing_key()?
         .ok_or_else(|| Error::Key("no signing key available".into()))?;
 
     let sig_alg = bergshamra_crypto::sign::from_uri_with_context(sig_method_uri, pq_context)?;
@@ -915,7 +915,7 @@ impl ReferenceDigestSink {
     }
 
     /// Finalize the digest stream and return the computed digest bytes.
-    fn finalize(self) -> Vec<u8> {
+    fn finalize(self) -> Result<Vec<u8>, Error> {
         self.inner.finalize()
     }
 }
@@ -966,7 +966,7 @@ fn try_fast_reference_digest(
         &inclusive_prefixes,
         &mut sink,
     )?;
-    Ok(Some((sink.finalize(), resolved_node)))
+    Ok(Some((sink.finalize()?, resolved_node)))
 }
 
 /// Return canonicalized reference bytes through the fast path.
@@ -3430,9 +3430,14 @@ fn try_unwrap_encrypted_key(
                 .or_else(|| manager.find_rsa())
                 .ok_or_else(|| Error::Key("no RSA key for EncryptedKey decryption".into()))?;
             let private_key = rsa_key
-                .rsa_private_key()
-                .ok_or_else(|| Error::Key("RSA private key required for key transport".into()))?;
-            transport.decrypt(private_key, &cipher_bytes)?
+                .software_key()?
+                .ok_or_else(|| Error::Key("RSA key has no software representation".into()))?;
+            if !private_key.has_private_key() {
+                return Err(Error::Key(
+                    "RSA private key required for key transport".into(),
+                ));
+            }
+            transport.decrypt(&private_key, &cipher_bytes)?
         }
         _ => {
             return Err(Error::UnsupportedAlgorithm(format!(
@@ -3443,7 +3448,10 @@ fn try_unwrap_encrypted_key(
 
     // Create an HMAC key from the unwrapped session key
     Ok(bergshamra_keys::Key::new(
-        bergshamra_keys::key::KeyData::Hmac(session_key_bytes),
+        bergshamra_keys::key::KeyData::from_symmetric_bytes(
+            kryptering::KeyAlgorithm::Hmac,
+            &session_key_bytes,
+        )?,
         bergshamra_keys::key::KeyUsage::Any,
     ))
 }
@@ -3718,7 +3726,7 @@ fn try_resolve_retrieval_method(
     base_dir: Option<&str>,
     url_maps: &[(String, String)],
 ) -> Option<bergshamra_keys::Key> {
-    use bergshamra_keys::key::{Key, KeyData, KeyUsage};
+    use bergshamra_keys::key::{Key, KeyUsage};
 
     for child in doc.children(key_info_node) {
         let elem = match doc.element(child) {
@@ -3750,35 +3758,7 @@ fn try_resolve_retrieval_method(
 
         // Extract public key from certificate
         let spki = &cert.tbs_certificate.subject_public_key_info;
-        let alg_oid = spki.algorithm.oid;
-        let pub_key_bytes = spki.subject_public_key.raw_bytes();
-
-        // Dispatch on algorithm OID
-        let key_data = if alg_oid == der::oid::db::rfc5912::RSA_ENCRYPTION {
-            // RSA public key
-            use rsa::pkcs1::DecodeRsaPublicKey;
-            let rsa_pub = rsa::RsaPublicKey::from_pkcs1_der(pub_key_bytes).ok()?;
-            KeyData::Rsa {
-                public: rsa_pub,
-                private: None,
-            }
-        } else if alg_oid == der::oid::db::rfc5912::ID_DSA {
-            // DSA public key — extract parameters from algorithm params
-            extract_dsa_key_from_cert(&cert)?
-        } else if alg_oid == der::oid::db::rfc5912::ID_EC_PUBLIC_KEY {
-            // EC public key — determine curve from parameters
-            extract_ec_key_from_spki(spki)?
-        } else if alg_oid == der::oid::db::rfc8410::ID_ED_25519 {
-            // Ed25519 public key — raw 32-byte key
-            let vk =
-                ed25519_dalek::VerifyingKey::from_bytes(pub_key_bytes.try_into().ok()?).ok()?;
-            KeyData::Ed25519 {
-                public: vk,
-                private: None,
-            }
-        } else {
-            continue;
-        };
+        let key_data = key_data_from_spki(spki)?;
 
         let mut key = Key::new(key_data, KeyUsage::Verify);
         key.x509_chain.push(cert_der);
@@ -3797,7 +3777,7 @@ fn try_resolve_retrieval_method_inline(
     key_info_node: NodeId,
     id_map: &HashMap<String, NodeId>,
 ) -> Option<bergshamra_keys::Key> {
-    use bergshamra_keys::key::{Key, KeyData, KeyUsage};
+    use bergshamra_keys::key::{Key, KeyUsage};
 
     for child in doc.children(key_info_node) {
         let elem = match doc.element(child) {
@@ -3848,31 +3828,7 @@ fn try_resolve_retrieval_method_inline(
         use der::Decode;
         let cert = x509_cert::Certificate::from_der(&cert_der).ok()?;
         let spki = &cert.tbs_certificate.subject_public_key_info;
-        let alg_oid = spki.algorithm.oid;
-        let pub_key_bytes = spki.subject_public_key.raw_bytes();
-
-        let key_data = if alg_oid == der::oid::db::rfc5912::RSA_ENCRYPTION {
-            use rsa::pkcs1::DecodeRsaPublicKey;
-            let rsa_pub = rsa::RsaPublicKey::from_pkcs1_der(pub_key_bytes).ok()?;
-            KeyData::Rsa {
-                public: rsa_pub,
-                private: None,
-            }
-        } else if alg_oid == der::oid::db::rfc5912::ID_DSA {
-            extract_dsa_key_from_cert(&cert)?
-        } else if alg_oid == der::oid::db::rfc5912::ID_EC_PUBLIC_KEY {
-            extract_ec_key_from_spki(spki)?
-        } else if alg_oid == der::oid::db::rfc8410::ID_ED_25519 {
-            // Ed25519 public key — raw 32-byte key
-            let vk =
-                ed25519_dalek::VerifyingKey::from_bytes(pub_key_bytes.try_into().ok()?).ok()?;
-            KeyData::Ed25519 {
-                public: vk,
-                private: None,
-            }
-        } else {
-            continue;
-        };
+        let key_data = key_data_from_spki(spki)?;
 
         let mut key = Key::new(key_data, KeyUsage::Verify);
         key.x509_chain.push(cert_der);
@@ -3935,80 +3891,41 @@ fn resolve_retrieval_uri(
     None
 }
 
-/// Extract a DSA public key from an X.509 certificate.
-fn extract_dsa_key_from_cert(
-    cert: &x509_cert::Certificate,
-) -> Option<bergshamra_keys::key::KeyData> {
-    use bergshamra_keys::key::KeyData;
-    use der::Decode;
-
-    let spki = &cert.tbs_certificate.subject_public_key_info;
-    let params_any = spki.algorithm.parameters.as_ref()?;
-
-    // DSA params are a SEQUENCE { p INTEGER, q INTEGER, g INTEGER }
-    // params_any.value() gives the inner content (V of TLV) which for a SEQUENCE
-    // is the concatenated TLV encodings of p, q, g
-    let params_value = params_any.value();
-
-    // Parse p, q, g from the sequence content
-    use der::Reader;
-    let mut reader = der::SliceReader::new(params_value).ok()?;
-    let p_int: der::asn1::UintRef = reader.decode().ok()?;
-    let q_int: der::asn1::UintRef = reader.decode().ok()?;
-    let g_int: der::asn1::UintRef = reader.decode().ok()?;
-
-    let p = dsa::BigUint::from_bytes_be(p_int.as_bytes());
-    let q = dsa::BigUint::from_bytes_be(q_int.as_bytes());
-    let g = dsa::BigUint::from_bytes_be(g_int.as_bytes());
-
-    // Public key y is in the SubjectPublicKey as an INTEGER
-    let pub_key_der = spki.subject_public_key.raw_bytes();
-    let y_int = der::asn1::UintRef::from_der(pub_key_der).ok()?;
-    let y = dsa::BigUint::from_bytes_be(y_int.as_bytes());
-
-    let components = dsa::Components::from_components(p, q, g).ok()?;
-    let verifying_key = dsa::VerifyingKey::from_components(components, y).ok()?;
-
-    Some(KeyData::Dsa {
-        public: verifying_key,
-        private: None,
-    })
-}
-
-/// Extract an EC public key from SPKI (owned types from Certificate).
-fn extract_ec_key_from_spki(
+/// Import an X.509 subject public key without exposing a concrete crypto type.
+fn key_data_from_spki(
     spki: &x509_cert::spki::SubjectPublicKeyInfoOwned,
 ) -> Option<bergshamra_keys::key::KeyData> {
     use bergshamra_keys::key::KeyData;
+    use der::Encode;
 
-    let params_any = spki.algorithm.parameters.as_ref()?;
-    let curve_oid: der::asn1::ObjectIdentifier = params_any.decode_as().ok()?;
-    let pub_bytes = spki.subject_public_key.raw_bytes();
-
-    // P-256 (prime256v1)
-    if curve_oid == der::oid::db::rfc5912::SECP_256_R_1 {
-        let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(pub_bytes).ok()?;
-        Some(KeyData::EcP256 {
-            public: vk,
-            private: None,
-        })
-    // P-384 (secp384r1)
-    } else if curve_oid == der::oid::db::rfc5912::SECP_384_R_1 {
-        let vk = p384::ecdsa::VerifyingKey::from_sec1_bytes(pub_bytes).ok()?;
-        Some(KeyData::EcP384 {
-            public: vk,
-            private: None,
-        })
-    // P-521 (secp521r1)
-    } else if curve_oid == der::oid::db::rfc5912::SECP_521_R_1 {
-        let vk = p521::ecdsa::VerifyingKey::from_sec1_bytes(pub_bytes).ok()?;
-        Some(KeyData::EcP521 {
-            public: vk,
-            private: None,
-        })
+    let oid = spki.algorithm.oid;
+    let algorithm = if oid == der::oid::db::rfc5912::RSA_ENCRYPTION
+        || oid == der::oid::db::rfc5912::ID_RSASSA_PSS
+    {
+        kryptering::KeyAlgorithm::Rsa
+    } else if oid == der::oid::db::rfc5912::ID_DSA {
+        kryptering::KeyAlgorithm::Dsa
+    } else if oid == der::oid::db::rfc5912::ID_EC_PUBLIC_KEY {
+        let params = spki.algorithm.parameters.as_ref()?;
+        let curve_oid: der::asn1::ObjectIdentifier = params.decode_as().ok()?;
+        let curve = if curve_oid == der::oid::db::rfc5912::SECP_256_R_1 {
+            kryptering::EcCurve::P256
+        } else if curve_oid == der::oid::db::rfc5912::SECP_384_R_1 {
+            kryptering::EcCurve::P384
+        } else if curve_oid == der::oid::db::rfc5912::SECP_521_R_1 {
+            kryptering::EcCurve::P521
+        } else {
+            return None;
+        };
+        kryptering::KeyAlgorithm::Ec(curve)
+    } else if oid == der::oid::db::rfc8410::ID_ED_25519 {
+        kryptering::KeyAlgorithm::Ed25519
     } else {
-        None
-    }
+        return None;
+    };
+
+    let der = spki.to_der().ok()?;
+    KeyData::from_spki_der(algorithm, &der).ok()
 }
 
 #[cfg(test)]
@@ -4145,7 +4062,11 @@ mod tests {
     fn hmac_keys_manager() -> bergshamra_keys::KeysManager {
         let mut keys = bergshamra_keys::KeysManager::new();
         keys.add_key(bergshamra_keys::Key::new(
-            bergshamra_keys::KeyData::Hmac(b"reference-policy-secret".to_vec()),
+            bergshamra_keys::KeyData::from_symmetric_bytes(
+                kryptering::KeyAlgorithm::Hmac,
+                b"reference-policy-secret",
+            )
+            .unwrap(),
             bergshamra_keys::KeyUsage::Any,
         ));
         keys
@@ -4898,6 +4819,21 @@ mod tests {
         DsigContext::new_permissive(bergshamra_keys::KeysManager::new())
     }
 
+    #[cfg(feature = "aws-lc")]
+    fn assert_aws_lc_rejects_1024_bit_rsa_fixture(
+        result: std::result::Result<VerifyResult, Error>,
+        fixture: &str,
+    ) {
+        let error = result.expect_err("AWS-LC must reject the fixture's 1024-bit RSA key");
+        let message = error.to_string();
+        assert!(
+            matches!(error, Error::UnsupportedAlgorithm(_))
+                && message.contains("1024-bit RSA key")
+                && message.contains("at least 2048 bits"),
+            "expected deterministic AWS-LC key-size rejection for {fixture}, got: {message}"
+        );
+    }
+
     #[test]
     fn test_validate_bbauth_metadata() {
         // Blackbaud Auth SAML metadata with enveloped signature and embedded X509.
@@ -4939,11 +4875,20 @@ mod tests {
             return;
         }
         let ctx = default_ctx();
-        let result = verify(&ctx, &xml).expect("verify should not return Err");
-        assert!(
-            result.is_valid(),
-            "signature-with-inclusivenamespaces.xml should verify: {result:?}"
+        let result = verify(&ctx, &xml);
+        #[cfg(feature = "aws-lc")]
+        assert_aws_lc_rejects_1024_bit_rsa_fixture(
+            result,
+            "signature-with-inclusivenamespaces.xml",
         );
+        #[cfg(not(feature = "aws-lc"))]
+        {
+            let result = result.expect("verify should not return Err");
+            assert!(
+                result.is_valid(),
+                "signature-with-inclusivenamespaces.xml should verify: {result:?}"
+            );
+        }
     }
 
     #[test]
@@ -4955,11 +4900,17 @@ mod tests {
             return;
         }
         let ctx = default_ctx();
-        let result = verify(&ctx, &xml).expect("verify should not return Err");
-        assert!(
-            result.is_valid(),
-            "valid-saml.xml should verify: {result:?}"
-        );
+        let result = verify(&ctx, &xml);
+        #[cfg(feature = "aws-lc")]
+        assert_aws_lc_rejects_1024_bit_rsa_fixture(result, "valid-saml.xml");
+        #[cfg(not(feature = "aws-lc"))]
+        {
+            let result = result.expect("verify should not return Err");
+            assert!(
+                result.is_valid(),
+                "valid-saml.xml should verify: {result:?}"
+            );
+        }
     }
 
     #[test]
@@ -4993,11 +4944,17 @@ mod tests {
             .expect("load rootxmlns.crt");
         mgr.add_key(key);
         let ctx = DsigContext::new_permissive(mgr);
-        let result = verify(&ctx, &xml).expect("verify should not return Err");
-        assert!(
-            result.is_valid(),
-            "rootxmlns.xml should verify with external cert: {result:?}"
-        );
+        let result = verify(&ctx, &xml);
+        #[cfg(feature = "aws-lc")]
+        assert_aws_lc_rejects_1024_bit_rsa_fixture(result, "rootxmlns.xml");
+        #[cfg(not(feature = "aws-lc"))]
+        {
+            let result = result.expect("verify should not return Err");
+            assert!(
+                result.is_valid(),
+                "rootxmlns.xml should verify with external cert: {result:?}"
+            );
+        }
     }
 
     #[test]
@@ -5222,11 +5179,11 @@ mod tests {
         <ds:DigestValue>NnrYodGkHwDR1Au09pcVBeLCVckmVGQVYP5qol5SFaw=</ds:DigestValue>
       </ds:Reference>
     </ds:SignedInfo>
-    <ds:SignatureValue>X3wPBPjRdCiRnpu8h1+Y0/IzMvd7+34v7KXHsxTZ6vc4Abs840GfEnYm5bpM8cAJM6hMI0vdglwtZSyZROZLHA==</ds:SignatureValue>
+    <ds:SignatureValue>yDhDCGUg/3X3BQVbl2tglSfRxtUC0aabIdFMz67nJX8sGDsK/GqkLhh1WB9YV0RCnmDuGSa8sG1UXdQVgjDi60qd9I7YdXeER+soh1g0RrouI01osI/QL+jaMJ/1nq5Vkwh0dBIGgxFKOtBVdGNQ6CSg21ZbRK0ODF7mStq+Clo=</ds:SignatureValue>
     <ds:KeyInfo>
       <ds:KeyValue>
         <ds:RSAKeyValue>
-          <ds:Modulus>srryidgrlDw994IT7eEPDIpXrB8VW26cin5mm62FaQxlQ5jiiqd9+6iVGWfeSn8JV20do9M8iliZr0cVMfj7Ew==</ds:Modulus>
+          <ds:Modulus>+dcpo4biTE96poyE0JcUkfF8Mvs5SUotRd95KJIQ5uQ7nsxLIMn4cs3MwF70WI0gCCkIwTK8Nj//zJFeIxJanlziNAgrMIjBuYXWbeJPmjTpTO1IEDaXEpfgtZtgmOFvt1e8ytauqpVZF2kQlBLuBZMGgbPlBxOlI3VHVBIXnDk=</ds:Modulus>
           <ds:Exponent>AQAB</ds:Exponent>
         </ds:RSAKeyValue>
       </ds:KeyValue>
@@ -5241,7 +5198,7 @@ mod tests {
     #[cfg(feature = "legacy-algorithms")]
     const UNRELATED_RSA_KEYVALUE_XML: &str = r#"<KeyValue>
         <RSAKeyValue>
-          <Modulus>srryidgrlDw994IT7eEPDIpXrB8VW26cin5mm62FaQxlQ5jiiqd9+6iVGWfeSn8JV20do9M8iliZr0cVMfj7Ew==</Modulus>
+          <Modulus>+dcpo4biTE96poyE0JcUkfF8Mvs5SUotRd95KJIQ5uQ7nsxLIMn4cs3MwF70WI0gCCkIwTK8Nj//zJFeIxJanlziNAgrMIjBuYXWbeJPmjTpTO1IEDaXEpfgtZtgmOFvt1e8ytauqpVZF2kQlBLuBZMGgbPlBxOlI3VHVBIXnDk=</Modulus>
           <Exponent>AQAB</Exponent>
         </RSAKeyValue>
       </KeyValue>"#;
@@ -5294,11 +5251,17 @@ mod tests {
     #[test]
     fn test_raw_inline_keyvalue_verifies_without_anchors() {
         let ctx = permissive_ctx_with_anchor(None);
-        let result = verify(&ctx, RAW_KEYVALUE_SIGNED_XML).expect("verify should not error");
-        assert!(
-            result.is_valid(),
-            "raw inline KeyValue should remain valid in permissive no-anchor mode"
-        );
+        let result = verify(&ctx, RAW_KEYVALUE_SIGNED_XML);
+        #[cfg(feature = "aws-lc")]
+        assert_aws_lc_rejects_1024_bit_rsa_fixture(result, "raw inline KeyValue");
+        #[cfg(not(feature = "aws-lc"))]
+        {
+            let result = result.expect("verify should not error");
+            assert!(
+                result.is_valid(),
+                "raw inline KeyValue should remain valid in permissive no-anchor mode"
+            );
+        }
     }
 
     /// Enforcement: once trust anchors are configured, a raw inline `KeyValue`
@@ -5323,11 +5286,17 @@ mod tests {
     fn test_raw_inline_keyvalue_allowed_by_explicit_compatibility_policy() {
         let ctx = permissive_ctx_with_anchor(Some(WRONG_CA_PEM))
             .with_allow_raw_inline_keyinfo_with_trust_anchors(true);
-        let result = verify(&ctx, RAW_KEYVALUE_SIGNED_XML).expect("verify should not error");
-        assert!(
-            result.is_valid(),
-            "explicit compatibility policy should allow raw inline KeyValue"
-        );
+        let result = verify(&ctx, RAW_KEYVALUE_SIGNED_XML);
+        #[cfg(feature = "aws-lc")]
+        assert_aws_lc_rejects_1024_bit_rsa_fixture(result, "raw inline KeyValue");
+        #[cfg(not(feature = "aws-lc"))]
+        {
+            let result = result.expect("verify should not error");
+            assert!(
+                result.is_valid(),
+                "explicit compatibility policy should allow raw inline KeyValue"
+            );
+        }
     }
 
     /// Anchored verification must not fail just because a raw `KeyValue`
@@ -5344,11 +5313,24 @@ mod tests {
             &format!("<KeyInfo>\n      {UNRELATED_RSA_KEYVALUE_XML}\n      <X509Data>"),
         );
         let ctx = permissive_ctx_with_anchor(Some(CACERT_PEM));
-        let result = verify(&ctx, &mixed_keyinfo_xml).expect("verify should not error");
-        assert!(
-            result.is_valid(),
-            "anchored verification should use the later X509Data instead of the raw KeyValue"
-        );
+        #[cfg(feature = "aws-lc")]
+        {
+            let error = verify(&ctx, &mixed_keyinfo_xml)
+                .expect_err("AWS-LC must reject the fixture's 512-bit intermediate RSA key");
+            let message = error.to_string();
+            assert!(
+                message.contains("512-bit RSA key") && message.contains("unsupported"),
+                "expected deterministic AWS-LC key-size rejection, got: {message}"
+            );
+        }
+        #[cfg(not(feature = "aws-lc"))]
+        {
+            let result = verify(&ctx, &mixed_keyinfo_xml).expect("verify should not error");
+            assert!(
+                result.is_valid(),
+                "anchored verification should use the later X509Data instead of the raw KeyValue"
+            );
+        }
     }
 
     /// Baseline: with NO trust anchors, the inline-certificate signature
@@ -5391,10 +5373,23 @@ mod tests {
     #[test]
     fn test_inline_x509_accepted_when_chain_reaches_anchor() {
         let ctx = permissive_ctx_with_anchor(Some(CACERT_PEM));
-        let result = verify(&ctx, X509DATA_TEST_XML).expect("verify should not error");
-        assert!(
-            result.is_valid(),
-            "inline cert should verify when it chains to the configured anchor"
-        );
+        #[cfg(feature = "aws-lc")]
+        {
+            let error = verify(&ctx, X509DATA_TEST_XML)
+                .expect_err("AWS-LC must reject the fixture's 512-bit intermediate RSA key");
+            let message = error.to_string();
+            assert!(
+                message.contains("512-bit RSA key") && message.contains("unsupported"),
+                "expected deterministic AWS-LC key-size rejection, got: {message}"
+            );
+        }
+        #[cfg(not(feature = "aws-lc"))]
+        {
+            let result = verify(&ctx, X509DATA_TEST_XML).expect("verify should not error");
+            assert!(
+                result.is_valid(),
+                "inline cert should verify when it chains to the configured anchor"
+            );
+        }
     }
 }

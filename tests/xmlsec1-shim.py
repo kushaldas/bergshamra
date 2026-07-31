@@ -34,6 +34,7 @@ def parse_xmlsec1_args(args):
         "output": None,
         "hmac_key": None,  # (name, path) or (None, path)
         "aes_keys": [],  # (name, file) or (None, file)
+        "kdf_keys": [],  # arbitrary-length master secrets
         "priv_keys": [],  # (name, file)
         "pub_keys": [],  # (name, file)
         "pub_cert_keys": [],  # (name, file)
@@ -63,7 +64,7 @@ def parse_xmlsec1_args(args):
         "verification_gmt_time": None,
         "verify_keys": False,
         "crl_files": [],
-        # Unsupported flags we silently ignore
+        # Unsupported flags collected for a deterministic, visible failure.
         "skipped_flags": [],
     }
 
@@ -224,6 +225,11 @@ def parse_xmlsec1_args(args):
             ctx["debug"] = True
         elif arg == "--pkcs12-persist":
             pass  # silently ignore
+        elif arg == "--enable-asn1-signatures-hack":
+            # Bergshamra detects XMLDSig raw ECDSA values and ASN.1 DER values
+            # without a compatibility switch, so this xmlsec1 flag is an
+            # explicit, semantics-preserving no-op.
+            pass
         elif arg == "--repeat":
             i += 1  # silently skip
         elif arg.startswith("--enabled-reference-uris"):
@@ -242,7 +248,7 @@ def parse_xmlsec1_args(args):
             name = arg.split(":", 1)[1] if ":" in arg else None
             i += 1
             file_path = args[i]
-            ctx["aes_keys"].append((name, file_path))
+            ctx["kdf_keys"].append((name, file_path))
         elif arg.startswith("--privkey-openssl"):
             i += 1
             ctx["skipped_flags"].append(arg)
@@ -251,7 +257,8 @@ def parse_xmlsec1_args(args):
         elif not arg.startswith("-"):
             ctx["input_file"] = arg
         else:
-            # Unknown flag — skip it, and consume next arg if it looks like a value
+            # Unknown flag — retain it (and a likely value) so main can fail
+            # visibly instead of turning an unimplemented fixture into a pass.
             ctx["skipped_flags"].append(arg)
             if i + 1 < len(args) and not args[i + 1].startswith("-"):
                 i += 1
@@ -317,6 +324,9 @@ def build_bergshamra_cmd(ctx):
         else:
             cmd.extend(["--aes-key", _abs(path)])
 
+    for name, path in ctx["kdf_keys"]:
+        cmd.extend(["-K", f"{name or '__kdf_master'}:{_abs(path)}"])
+
     # Private keys -> -k or -K name:file
     for name, path in ctx["priv_keys"]:
         if name:
@@ -338,7 +348,6 @@ def build_bergshamra_cmd(ctx):
         else:
             cmd.extend(["--cert", _abs(path)])
 
-    # PKCS#12 keys -> --pkcs12 (with name if available via -K)
     for name, path in ctx["pkcs12_keys"]:
         if name:
             cmd.extend(["-K", f"{name}:{_abs(path)}"])
@@ -453,6 +462,10 @@ def main():
         sys.exit(1)
 
     ctx = parse_xmlsec1_args(args)
+    if ctx["skipped_flags"]:
+        flags = " ".join(ctx["skipped_flags"])
+        print(f"xmlsec1-shim: unsupported xmlsec1 flags: {flags}", file=sys.stderr)
+        sys.exit(2)
     cmd = build_bergshamra_cmd(ctx)
 
     if cmd is None:

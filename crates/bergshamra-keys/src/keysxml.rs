@@ -91,7 +91,7 @@ fn parse_key_info_entry(key_info_node: NodeId, doc: &Document<'_>) -> Result<Opt
                 let b64 = doc.text_content_deep(child);
                 let b64 = b64.trim();
                 let bytes = decode_b64(b64, "HMACKeyValue")?;
-                loader::load_hmac_key(&bytes)
+                loader::load_hmac_key(&bytes)?
             }
             (ALEKSEY_NS, "AESKeyValue") => {
                 let b64 = doc.text_content_deep(child);
@@ -139,7 +139,6 @@ pub fn load_keys_file(path: &std::path::Path) -> Result<Vec<Key>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::key::KeyData;
 
     #[test]
     fn test_parse_keys_xml() {
@@ -148,56 +147,63 @@ mod tests {
             eprintln!("skipping test: {keys_path:?} not found");
             return;
         }
-        let keys = load_keys_file(keys_path).expect("parse keys.xml");
+        #[cfg(feature = "aws-lc")]
+        {
+            let error = load_keys_file(keys_path)
+                .expect_err("AWS-LC must reject the fixture's 3DES key entry");
+            let message = error.to_string();
+            assert!(
+                message.contains("aws-lc")
+                    && message.contains("KeyImport(TripleDes)")
+                    && message.contains("unsupported"),
+                "expected deterministic AWS-LC 3DES rejection, got: {message}"
+            );
+        }
 
-        // Should have: test-hmac-sha1, test-dsa (skipped), test-rsa, test-des, test-aes128/192/256
-        // DSA is unsupported so 6 keys
-        assert!(
-            keys.len() >= 6,
-            "expected at least 6 keys, got {}",
-            keys.len()
-        );
+        #[cfg(not(feature = "aws-lc"))]
+        {
+            let keys = load_keys_file(keys_path).expect("parse keys.xml");
 
-        // Check HMAC key
-        let hmac = keys
-            .iter()
-            .find(|k| k.name.as_deref() == Some("test-hmac-sha1"))
-            .unwrap();
-        assert!(matches!(&hmac.data, KeyData::Hmac(v) if v == b"secret"));
+            // Should have: test-hmac-sha1, test-dsa (skipped), test-rsa,
+            // test-des, and test-aes128/192/256. DSA is unsupported, so 6 keys.
+            assert!(
+                keys.len() >= 6,
+                "expected at least 6 keys, got {}",
+                keys.len()
+            );
 
-        // Check AES-128 key
-        let aes128 = keys
-            .iter()
-            .find(|k| k.name.as_deref() == Some("test-aes128"))
-            .unwrap();
-        assert!(matches!(&aes128.data, KeyData::Aes(v) if v.len() == 16));
+            let hmac = keys
+                .iter()
+                .find(|k| k.name.as_deref() == Some("test-hmac-sha1"))
+                .unwrap();
+            assert_eq!(hmac.data.algorithm(), kryptering::KeyAlgorithm::Hmac);
+            assert_eq!(hmac.symmetric_key_bytes(), Some(b"secret".as_slice()));
 
-        // Check AES-192 key
-        let aes192 = keys
-            .iter()
-            .find(|k| k.name.as_deref() == Some("test-aes192"))
-            .unwrap();
-        assert!(matches!(&aes192.data, KeyData::Aes(v) if v.len() == 24));
+            for (name, length) in [
+                ("test-aes128", 16),
+                ("test-aes192", 24),
+                ("test-aes256", 32),
+            ] {
+                let key = keys
+                    .iter()
+                    .find(|key| key.name.as_deref() == Some(name))
+                    .unwrap();
+                assert_eq!(key.data.algorithm(), kryptering::KeyAlgorithm::Aes);
+                assert_eq!(key.symmetric_key_bytes().map(<[u8]>::len), Some(length));
+            }
 
-        // Check AES-256 key
-        let aes256 = keys
-            .iter()
-            .find(|k| k.name.as_deref() == Some("test-aes256"))
-            .unwrap();
-        assert!(matches!(&aes256.data, KeyData::Aes(v) if v.len() == 32));
+            let des = keys
+                .iter()
+                .find(|k| k.name.as_deref() == Some("test-des"))
+                .unwrap();
+            assert_eq!(des.data.algorithm(), kryptering::KeyAlgorithm::TripleDes);
+            assert_eq!(des.symmetric_key_bytes().map(<[u8]>::len), Some(24));
 
-        // Check 3DES key
-        let des = keys
-            .iter()
-            .find(|k| k.name.as_deref() == Some("test-des"))
-            .unwrap();
-        assert!(matches!(&des.data, KeyData::Des3(v) if v.len() == 24));
-
-        // Check RSA key
-        let rsa_key = keys
-            .iter()
-            .find(|k| k.name.as_deref() == Some("test-rsa"))
-            .unwrap();
-        assert!(matches!(&rsa_key.data, KeyData::Rsa { .. }));
+            let rsa_key = keys
+                .iter()
+                .find(|k| k.name.as_deref() == Some("test-rsa"))
+                .unwrap();
+            assert_eq!(rsa_key.data.algorithm(), kryptering::KeyAlgorithm::Rsa);
+        }
     }
 }

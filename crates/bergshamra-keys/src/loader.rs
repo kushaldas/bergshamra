@@ -2,7 +2,7 @@
 
 //! Key loading from various formats (PEM, DER, PKCS#8, PKCS#12, raw binary).
 
-use crate::key::{Key, KeyData, KeyUsage};
+use crate::key::{InternalKeyData as KeyData, Key, KeyUsage};
 use bergshamra_core::Error;
 
 /// Load an RSA private key from PEM data.
@@ -123,8 +123,11 @@ pub fn load_ec_p521_private_pem(pem_data: &[u8]) -> Result<Key, Error> {
 }
 
 /// Load an HMAC key from raw binary data.
-pub fn load_hmac_key(data: &[u8]) -> Key {
-    Key::new(KeyData::Hmac(data.to_vec()), KeyUsage::Any)
+pub fn load_hmac_key(data: &[u8]) -> Result<Key, Error> {
+    if data.is_empty() {
+        return Err(Error::Key("HMAC key must not be empty".into()));
+    }
+    Ok(Key::new(KeyData::Hmac(data.to_vec()), KeyUsage::Any))
 }
 
 /// Load an AES key from raw binary data.
@@ -425,7 +428,7 @@ pub fn load_key_file_with_password(
     path: &std::path::Path,
     password: Option<&str>,
 ) -> Result<Key, Error> {
-    let data = std::fs::read(path)?;
+    let data = zeroize::Zeroizing::new(std::fs::read(path)?);
 
     // Check extension for PKCS#12
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -966,6 +969,7 @@ fn parse_asn1_integer(data: &[u8]) -> Result<(Vec<u8>, &[u8]), Error> {
 ///
 /// Handles both the RustCrypto format (seed in context-specific tag) and the
 /// OpenSSL format (seed in `SEQUENCE { OCTET STRING(seed), ... }`).
+#[cfg(all(feature = "post-quantum", feature = "rustcrypto"))]
 pub fn try_load_pq_private_key(der: &[u8]) -> Option<Key> {
     use bergshamra_crypto::sign::PqAlgorithm;
     use ml_dsa::signature::Keypair;
@@ -1123,6 +1127,7 @@ pub fn try_load_pq_private_key(der: &[u8]) -> Option<Key> {
 ///
 /// Handles OpenSSL-style PQ private key encoding:
 /// `SEQUENCE { OCTET STRING(key_data), ... }`
+#[cfg(feature = "post-quantum")]
 fn extract_first_octet_string(data: &[u8]) -> Option<&[u8]> {
     // Must start with SEQUENCE tag (0x30)
     if data.first() != Some(&0x30) {
@@ -1168,6 +1173,7 @@ fn parse_asn1_length(data: &[u8]) -> Option<(usize, &[u8])> {
 }
 
 /// Try to load a post-quantum public key from SPKI DER bytes.
+#[cfg(all(feature = "post-quantum", feature = "rustcrypto"))]
 pub fn try_load_pq_public_key(spki_der: &[u8]) -> Option<Key> {
     use bergshamra_crypto::sign::PqAlgorithm;
     use pkcs8_pq::spki::DecodePublicKey;
@@ -1216,6 +1222,16 @@ pub fn try_load_pq_public_key(spki_der: &[u8]) -> Option<Key> {
     None
 }
 
+#[cfg(not(all(feature = "post-quantum", feature = "rustcrypto")))]
+pub fn try_load_pq_private_key(_der: &[u8]) -> Option<Key> {
+    None
+}
+
+#[cfg(not(all(feature = "post-quantum", feature = "rustcrypto")))]
+pub fn try_load_pq_public_key(_spki_der: &[u8]) -> Option<Key> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1229,13 +1245,8 @@ mod tests {
         }
         let key =
             load_key_file_with_password(pem_path, Some("secret123")).expect("load encrypted PEM");
-        assert!(matches!(
-            key.data,
-            KeyData::Rsa {
-                private: Some(_),
-                ..
-            }
-        ));
+        assert_eq!(key.data.algorithm(), kryptering::KeyAlgorithm::Rsa);
+        assert!(key.has_private_key());
     }
 
     #[test]
@@ -1269,7 +1280,7 @@ mod tests {
         }
         let data = std::fs::read(p12_path).unwrap();
         let key = load_pkcs12(&data, "secret123").expect("load_pkcs12");
-        assert!(matches!(key.data, KeyData::Rsa { .. }));
+        assert_eq!(key.data.algorithm(), kryptering::KeyAlgorithm::Rsa);
         assert!(!key.x509_chain.is_empty());
     }
 
@@ -1282,7 +1293,7 @@ mod tests {
         }
         let data = std::fs::read(p12_path).unwrap();
         let key = load_pkcs12(&data, "secret123").expect("load_pkcs12 should succeed");
-        assert!(matches!(key.data, KeyData::PostQuantum { .. }));
+        assert!(key.data.algorithm_name().starts_with("ML-DSA"));
     }
 
     #[test]
@@ -1297,7 +1308,7 @@ mod tests {
         let key = load_pkcs12(&data, "passwd").expect("load_pkcs12 DH should succeed");
         eprintln!("loaded key algo: {}", key.data.algorithm_name());
         assert!(
-            matches!(key.data, KeyData::Dh { .. }),
+            key.data.algorithm() == kryptering::KeyAlgorithm::Dh,
             "expected DH key, got {}",
             key.data.algorithm_name()
         );
@@ -1313,13 +1324,11 @@ mod tests {
         let key = load_key_file_with_password(pem_path, None).expect("load DH PEM private");
         eprintln!("loaded key algo: {}", key.data.algorithm_name());
         assert!(
-            matches!(key.data, KeyData::Dh { .. }),
+            key.data.algorithm() == kryptering::KeyAlgorithm::Dh,
             "expected DH key, got {}",
             key.data.algorithm_name()
         );
-        if let KeyData::Dh { private_key, .. } = &key.data {
-            assert!(private_key.is_some(), "should have private key");
-        }
+        assert!(key.has_private_key(), "should have private key");
     }
 
     #[test]
@@ -1333,7 +1342,7 @@ mod tests {
         let key = load_key_file_with_password(pem_path, None).expect("load DH PEM public");
         eprintln!("loaded key algo: {}", key.data.algorithm_name());
         assert!(
-            matches!(key.data, KeyData::Dh { .. }),
+            key.data.algorithm() == kryptering::KeyAlgorithm::Dh,
             "expected DH key, got {}",
             key.data.algorithm_name()
         );
@@ -1356,13 +1365,7 @@ mod tests {
         let key = load_ed25519_private_pkcs8_der(pkcs8_der.as_bytes())
             .expect("load Ed25519 private key from PKCS#8 DER");
         assert!(
-            matches!(
-                key.data,
-                KeyData::Ed25519 {
-                    private: Some(_),
-                    ..
-                }
-            ),
+            key.data.algorithm() == kryptering::KeyAlgorithm::Ed25519 && key.has_private_key(),
             "expected Ed25519 key with private component, got {}",
             key.data.algorithm_name()
         );
@@ -1387,7 +1390,7 @@ mod tests {
         let key = load_ed25519_public_spki_der(spki_der.as_ref())
             .expect("load Ed25519 public key from SPKI DER");
         assert!(
-            matches!(key.data, KeyData::Ed25519 { private: None, .. }),
+            key.data.algorithm() == kryptering::KeyAlgorithm::Ed25519 && !key.has_private_key(),
             "expected Ed25519 key without private component, got {}",
             key.data.algorithm_name()
         );
@@ -1411,13 +1414,7 @@ mod tests {
         let key = load_private_key_pkcs8_der(pkcs8_der.as_bytes())
             .expect("auto-detect Ed25519 from PKCS#8");
         assert!(
-            matches!(
-                key.data,
-                KeyData::Ed25519 {
-                    private: Some(_),
-                    ..
-                }
-            ),
+            key.data.algorithm() == kryptering::KeyAlgorithm::Ed25519 && key.has_private_key(),
             "auto-detect should find Ed25519 key"
         );
     }
@@ -1439,7 +1436,7 @@ mod tests {
 
         let key = load_spki_der(spki_der.as_ref()).expect("auto-detect Ed25519 from SPKI");
         assert!(
-            matches!(key.data, KeyData::Ed25519 { private: None, .. }),
+            key.data.algorithm() == kryptering::KeyAlgorithm::Ed25519 && !key.has_private_key(),
             "auto-detect should find Ed25519 public key"
         );
     }
@@ -1467,7 +1464,10 @@ mod tests {
         let pub_key = load_spki_der(spki_der.as_ref()).expect("load public");
 
         // Sign with loaded private key
-        let signing_key = priv_key.to_signing_key().expect("convert to signing key");
+        let signing_key = priv_key
+            .to_signing_key()
+            .expect("import signing key")
+            .expect("convert to signing key");
         let algo = bergshamra_crypto::sign::from_uri_with_context(
             bergshamra_core::algorithm::EDDSA_ED25519,
             None,
@@ -1478,7 +1478,10 @@ mod tests {
         let signature = algo.sign(&signing_key, data).expect("sign");
 
         // Verify with loaded public key
-        let verify_key = pub_key.to_signing_key().expect("convert to verify key");
+        let verify_key = pub_key
+            .to_signing_key()
+            .expect("import verify key")
+            .expect("convert to verify key");
         let result = algo.verify(&verify_key, data, &signature);
         assert!(
             result.is_ok(),
@@ -1493,16 +1496,16 @@ mod tests {
         let expected_public = x25519_dalek::PublicKey::from(&secret);
 
         let key = load_x25519_private_raw(secret.as_bytes()).expect("load X25519 private");
-        match &key.data {
-            KeyData::X25519 {
-                private: Some(priv_bytes),
-                public,
-            } => {
-                assert_eq!(priv_bytes, secret.as_bytes());
-                assert_eq!(public, expected_public.as_bytes());
-            }
-            _ => panic!("expected X25519 key data with private key"),
-        }
+        assert_eq!(key.data.algorithm(), kryptering::KeyAlgorithm::X25519);
+        assert!(key.has_private_key());
+        assert_eq!(
+            key.data.export_private().unwrap().as_slice(),
+            secret.as_bytes()
+        );
+        assert_eq!(
+            key.data.export_public().unwrap().as_slice(),
+            expected_public.as_bytes()
+        );
     }
 
     #[test]
@@ -1511,15 +1514,12 @@ mod tests {
         let public = x25519_dalek::PublicKey::from(&secret);
 
         let key = load_x25519_public_raw(public.as_bytes()).expect("load X25519 public");
-        match &key.data {
-            KeyData::X25519 {
-                private: None,
-                public: pub_bytes,
-            } => {
-                assert_eq!(pub_bytes, public.as_bytes());
-            }
-            _ => panic!("expected X25519 public key data"),
-        }
+        assert_eq!(key.data.algorithm(), kryptering::KeyAlgorithm::X25519);
+        assert!(!key.has_private_key());
+        assert_eq!(
+            key.data.export_public().unwrap().as_slice(),
+            public.as_bytes()
+        );
     }
 
     #[test]

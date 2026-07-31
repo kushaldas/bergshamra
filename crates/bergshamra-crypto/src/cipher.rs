@@ -54,7 +54,12 @@ fn uri_to_cipher(uri: &str) -> Result<(KCipherAlgorithm, &'static str), Error> {
             KCipherAlgorithm::AesGcm(AesKeySize::Aes256),
             algorithm::AES256_GCM,
         )),
+        #[cfg(feature = "legacy-algorithms")]
         algorithm::TRIPLEDES_CBC => Ok((KCipherAlgorithm::TripleDesCbc, algorithm::TRIPLEDES_CBC)),
+        #[cfg(not(feature = "legacy-algorithms"))]
+        algorithm::TRIPLEDES_CBC => Err(Error::UnsupportedAlgorithm(
+            "3DES-CBC requires legacy-algorithms".into(),
+        )),
         _ => Err(Error::UnsupportedAlgorithm(format!("cipher: {uri}"))),
     }
 }
@@ -137,6 +142,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "rustcrypto")]
     fn test_3des_roundtrip() {
         let key = [0x42u8; 24];
         let cipher = from_uri(algorithm::TRIPLEDES_CBC).unwrap();
@@ -144,6 +150,14 @@ mod tests {
         let ct = cipher.encrypt(&key, pt).unwrap();
         let decrypted = cipher.decrypt(&key, &ct).unwrap();
         assert_eq!(decrypted, pt);
+    }
+
+    #[test]
+    #[cfg(feature = "aws-lc")]
+    fn test_3des_is_explicitly_unsupported() {
+        let cipher = from_uri(algorithm::TRIPLEDES_CBC).unwrap();
+        let error = cipher.encrypt(&[0x42; 24], b"test data").unwrap_err();
+        assert!(matches!(error, Error::UnsupportedAlgorithm(_)));
     }
 
     // ── AES-GCM authentication failure test (ported from signedxml) ──

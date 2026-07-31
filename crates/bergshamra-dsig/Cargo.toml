@@ -9,9 +9,14 @@ rust-version.workspace = true
 description = "XML Digital Signatures for Bergshamra XML Security library"
 
 [features]
-default = []
+default = ["rustcrypto", "legacy-algorithms", "post-quantum", "pkcs11"]
+rustcrypto = ["bergshamra-crypto/rustcrypto", "bergshamra-keys/rustcrypto", "bergshamra-transforms/rustcrypto", "kryptering/rustcrypto"]
+aws-lc = ["bergshamra-crypto/aws-lc", "bergshamra-keys/aws-lc", "bergshamra-transforms/aws-lc", "kryptering/aws-lc"]
+fips = ["aws-lc", "bergshamra-crypto/fips", "bergshamra-keys/fips", "bergshamra-transforms/fips", "kryptering/fips"]
+post-quantum = ["bergshamra-crypto/post-quantum", "bergshamra-keys/post-quantum", "bergshamra-transforms/post-quantum", "kryptering/post-quantum"]
+pkcs11 = ["bergshamra-crypto/pkcs11", "bergshamra-keys/pkcs11", "bergshamra-transforms/pkcs11", "kryptering/pkcs11"]
 # Propagate legacy-algorithm support to the X.509 cert-chain validation path.
-legacy-algorithms = ["bergshamra-keys/legacy-algorithms"]
+legacy-algorithms = ["bergshamra-crypto/legacy-algorithms", "bergshamra-keys/legacy-algorithms", "bergshamra-transforms/legacy-algorithms", "kryptering/legacy"]
 
 [dependencies]
 bergshamra-core.workspace = true
@@ -25,12 +30,6 @@ base64.workspace = true
 uppsala.workspace = true
 x509-cert.workspace = true
 der.workspace = true
-rsa.workspace = true
-dsa.workspace = true
-p256.workspace = true
-p384.workspace = true
-p521.workspace = true
-ed25519-dalek.workspace = true
 
 [dev-dependencies]
 bergshamra-c14n.workspace = true

@@ -151,8 +151,6 @@ fn resolve_encryption_key(
 
 /// Generate a random session key for the given cipher algorithm.
 fn generate_session_key(enc_uri: &str) -> Result<Vec<u8>, Error> {
-    use rand::RngCore;
-
     let key_size = match enc_uri {
         algorithm::AES128_CBC | algorithm::AES128_GCM => 16,
         algorithm::AES192_CBC | algorithm::AES192_GCM => 24,
@@ -165,9 +163,7 @@ fn generate_session_key(enc_uri: &str) -> Result<Vec<u8>, Error> {
         }
     };
 
-    let mut key = vec![0u8; key_size];
-    rand::thread_rng().fill_bytes(&mut key);
-    Ok(key)
+    kryptering::random_bytes(key_size).map_err(map_kryptering_err)
 }
 
 /// Encrypt the session key into any EncryptedKey elements in the template.
@@ -242,10 +238,8 @@ fn encrypt_session_key(
                     // Look for KeyName in this EncryptedKey's KeyInfo to select the
                     // correct RSA key (important for multi-recipient encryption).
                     let rsa_key = resolve_encrypted_key_rsa(ctx, &doc, node_id)?;
-                    let public_key = rsa_key
-                        .rsa_public_key()
-                        .ok_or_else(|| Error::Key("RSA public key required".into()))?;
-                    transport.encrypt(public_key, session_key)?
+                    let public_key = required_software_key(rsa_key)?;
+                    transport.encrypt(&public_key, session_key)?
                 }
             }
             algorithm::KW_AES128 | algorithm::KW_AES192 | algorithm::KW_AES256 => {
@@ -389,7 +383,7 @@ fn resolve_encrypted_key_rsa<'a>(
             let name = name.trim();
             if !name.is_empty() {
                 if let Some(key) = ctx.keys_manager.find_by_name(name) {
-                    if key.rsa_public_key().is_some() {
+                    if key.data.algorithm() == kryptering::KeyAlgorithm::Rsa {
                         return Ok(key);
                     }
                 }
@@ -445,62 +439,30 @@ fn resolve_agreement_method_encrypt(
                 .ec_public_key_bytes()
                 .ok_or_else(|| Error::Key("recipient key has no EC public key bytes".into()))?;
 
-            // Compute ECDH shared secret: originator_private x recipient_public
-            match &originator_key.data {
-                bergshamra_keys::key::KeyData::EcP256 {
-                    private: Some(sk), ..
-                } => {
-                    let secret = p256::SecretKey::from_bytes(&sk.to_bytes())
-                        .map_err(|e| Error::Key(format!("P-256 secret key: {e}")))?;
-                    bergshamra_crypto::keyagreement::ecdh_p256(&recipient_public_bytes, &secret)?
-                }
-                bergshamra_keys::key::KeyData::EcP384 {
-                    private: Some(sk), ..
-                } => {
-                    let secret = p384::SecretKey::from_bytes(&sk.to_bytes())
-                        .map_err(|e| Error::Key(format!("P-384 secret key: {e}")))?;
-                    bergshamra_crypto::keyagreement::ecdh_p384(&recipient_public_bytes, &secret)?
-                }
-                bergshamra_keys::key::KeyData::EcP521 {
-                    private: Some(sk), ..
-                } => {
-                    use p521::elliptic_curve::generic_array::GenericArray;
-                    let bytes = sk.to_bytes();
-                    let secret = p521::SecretKey::from_bytes(GenericArray::from_slice(&bytes))
-                        .map_err(|e| Error::Key(format!("P-521 secret key: {e}")))?;
-                    bergshamra_crypto::keyagreement::ecdh_p521(&recipient_public_bytes, &secret)?
-                }
+            let curve = match originator_key.data.algorithm() {
+                kryptering::KeyAlgorithm::Ec(curve) if originator_key.has_private_key() => curve,
                 _ => {
                     return Err(Error::Key("originator key is not an EC private key".into()));
                 }
-            }
+            };
+            let private_key = required_software_key(originator_key)?;
+            bergshamra_crypto::keyagreement::ecdh(curve, &recipient_public_bytes, &private_key)?
         }
         algorithm::DH_ES => {
             // Finite-field DH: shared_secret = recipient_public ^ originator_private mod p
-            match (&originator_key.data, &recipient_key.data) {
-                (
-                    bergshamra_keys::key::KeyData::Dh {
-                        p,
-                        q,
-                        private_key: Some(x),
-                        ..
-                    },
-                    bergshamra_keys::key::KeyData::Dh {
-                        public_key: recipient_pub,
-                        ..
-                    },
-                ) => {
-                    let q_bytes = q.as_deref().ok_or_else(|| {
-                        Error::Key("DH subgroup order q is required for DH-ES".into())
-                    })?;
-                    bergshamra_crypto::keyagreement::dh_compute(recipient_pub, x, p, Some(q_bytes))?
-                }
-                _ => {
-                    return Err(Error::Key(
-                        "originator must be DH private key and recipient DH public key".into(),
-                    ));
-                }
+            let originator = originator_key
+                .dh_parameters()?
+                .ok_or_else(|| Error::Key("originator must be a DH private key".into()))?;
+            let recipient = recipient_key
+                .dh_parameters()?
+                .ok_or_else(|| Error::Key("recipient must be a DH public key".into()))?;
+            if originator.subgroup_order().is_none() {
+                return Err(Error::Key(
+                    "DH subgroup order q is required for DH-ES".into(),
+                ));
             }
+            let private_key = required_software_key(originator_key)?;
+            bergshamra_crypto::keyagreement::dh_compute(recipient.public_key(), &private_key)?
         }
         _ => {
             return Err(Error::UnsupportedAlgorithm(format!(
@@ -571,50 +533,35 @@ fn resolve_originator_key<'a>(
     }
     // Fallback: first DH key with private, then EC key with a private key
     if let Some(dh_key) = ctx.keys_manager.find_dh() {
-        if matches!(
-            &dh_key.data,
-            bergshamra_keys::key::KeyData::Dh {
-                private_key: Some(_),
-                ..
-            }
-        ) {
+        if dh_key.has_private_key() {
             return Ok(dh_key);
         }
     }
     ctx.keys_manager
         .find_ec_p256()
-        .filter(|k| {
-            matches!(
-                &k.data,
-                bergshamra_keys::key::KeyData::EcP256 {
-                    private: Some(_),
-                    ..
-                }
-            )
+        .filter(|key| key.has_private_key())
+        .or_else(|| {
+            ctx.keys_manager
+                .find_ec_p384()
+                .filter(|key| key.has_private_key())
         })
         .or_else(|| {
-            ctx.keys_manager.find_ec_p384().filter(|k| {
-                matches!(
-                    &k.data,
-                    bergshamra_keys::key::KeyData::EcP384 {
-                        private: Some(_),
-                        ..
-                    }
-                )
-            })
-        })
-        .or_else(|| {
-            ctx.keys_manager.find_ec_p521().filter(|k| {
-                matches!(
-                    &k.data,
-                    bergshamra_keys::key::KeyData::EcP521 {
-                        private: Some(_),
-                        ..
-                    }
-                )
-            })
+            ctx.keys_manager
+                .find_ec_p521()
+                .filter(|key| key.has_private_key())
         })
         .ok_or_else(|| Error::Key("no private key for key agreement originator".into()))
+}
+
+fn required_software_key(
+    key: &bergshamra_keys::key::Key,
+) -> Result<kryptering::SoftwareKey, Error> {
+    key.software_key()?.ok_or_else(|| {
+        Error::Key(format!(
+            "{} key has no software representation",
+            key.algorithm_name()
+        ))
+    })
 }
 
 /// Resolve the recipient's public key from AgreementMethod (EC or DH, for encryption).
@@ -788,9 +735,12 @@ fn find_child_element(
 fn map_kryptering_err(e: kryptering::Error) -> Error {
     match e {
         kryptering::Error::Crypto(s) => Error::Crypto(s),
-        kryptering::Error::UnsupportedAlgorithm(s) => Error::UnsupportedAlgorithm(s),
+        err @ kryptering::Error::UnsupportedAlgorithm { .. } => {
+            Error::UnsupportedAlgorithm(err.to_string())
+        }
         kryptering::Error::Key(s) => Error::Key(s),
         kryptering::Error::Io(e) => Error::Io(e),
-        kryptering::Error::Pkcs11(s) => Error::Crypto(format!("PKCS#11: {s}")),
+        #[allow(unreachable_patterns)]
+        other => Error::Crypto(other.to_string()),
     }
 }

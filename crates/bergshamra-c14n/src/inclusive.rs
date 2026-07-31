@@ -319,9 +319,10 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
             // output its own xml:* attrs, so no inheritance is needed.
             // Skip when attribute nodes are excluded from the node set.
             if self.node_set.is_some() && !attrs_excluded {
-                let parent_not_visible = self.doc.parent(id).map_or(true, |p| {
-                    self.doc.element(p).is_none() || !self.is_visible(p)
-                });
+                let parent_not_visible = self
+                    .doc
+                    .parent(id)
+                    .is_none_or(|p| self.doc.element(p).is_none() || !self.is_visible(p));
                 if parent_not_visible {
                     let extra = self.collect_inherited_xml_attrs(id, &attrs);
                     attrs.extend(extra);

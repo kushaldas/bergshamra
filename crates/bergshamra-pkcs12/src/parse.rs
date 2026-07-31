@@ -7,9 +7,10 @@
 use bergshamra_core::Error;
 use yasna::models::ObjectIdentifier;
 use yasna::{ASN1Error, ASN1ErrorKind, BERReader, Tag};
+use zeroize::Zeroizing;
 
 use crate::kdf;
-use crate::Pkcs12Contents;
+use crate::{Pkcs12Contents, PrivateKeyDer};
 
 // ── OID constants ──────────────────────────────────────────────────────────
 
@@ -116,6 +117,11 @@ pub fn parse_pfx(data: &[u8], password: &str) -> Result<Pkcs12Contents, Error> {
     })
     .map_err(|e| Error::Key(format!("failed to parse PKCS#12 PFX: {e}")))?;
 
+    // The authenticated safe can contain plaintext private-key bags. Retain
+    // it in a zeroizing buffer while parsing so no temporary container copy
+    // survives after import.
+    let auth_safe_data = Zeroizing::new(auth_safe_data);
+
     // Verify MAC if present
     if let Some(ref mac) = mac_data {
         verify_mac(mac, &auth_safe_data, password)?;
@@ -128,18 +134,17 @@ pub fn parse_pfx(data: &[u8], password: &str) -> Result<Pkcs12Contents, Error> {
     .map_err(|e| Error::Key(format!("failed to parse authSafe contents: {e}")))?;
 
     // Process each ContentInfo to extract bags
-    let bmp_password = kdf::password_to_bmp(password);
     let mut private_keys = Vec::new();
     let mut certificates = Vec::new();
 
     for ci in content_infos {
-        let bags_data = match ci {
+        let bags_data = Zeroizing::new(match ci {
             ContentInfoInner::Data(data) => data,
             ContentInfoInner::EncryptedData {
                 algorithm,
                 ciphertext,
-            } => decrypt_data(&algorithm, &ciphertext, password, &bmp_password)?,
-        };
+            } => decrypt_data(&algorithm, &ciphertext, password)?,
+        });
 
         // Parse SafeBags from the decrypted data
         let bags = yasna::parse_ber(&bags_data, |r| r.collect_sequence_of(parse_safe_bag))
@@ -148,14 +153,14 @@ pub fn parse_pfx(data: &[u8], password: &str) -> Result<Pkcs12Contents, Error> {
         for bag in bags {
             match bag {
                 SafeBag::KeyBag { pkcs8_der } => {
-                    private_keys.push(pkcs8_der);
+                    private_keys.push(PrivateKeyDer::new(pkcs8_der));
                 }
                 SafeBag::ShroudedKeyBag {
                     algorithm,
                     ciphertext,
                 } => {
-                    let pkcs8_der = decrypt_data(&algorithm, &ciphertext, password, &bmp_password)?;
-                    private_keys.push(pkcs8_der);
+                    let pkcs8_der = decrypt_data(&algorithm, &ciphertext, password)?;
+                    private_keys.push(PrivateKeyDer::new(pkcs8_der));
                 }
                 SafeBag::CertBag { cert_der } => {
                     certificates.push(cert_der);
@@ -461,18 +466,16 @@ fn parse_mac_data(r: BERReader) -> Result<MacData, ASN1Error> {
 }
 
 fn verify_mac(mac: &MacData, auth_safe_data: &[u8], password: &str) -> Result<(), Error> {
-    let bmp_password = kdf::password_to_bmp(password);
-
     let computed = match mac.digest_algorithm {
         MacHashAlgorithm::Sha1 => {
             let mac_key =
-                kdf::pkcs12_kdf_sha1(kdf::ID_MAC, &bmp_password, &mac.salt, mac.iterations, 20);
-            kdf::compute_hmac_sha1(&mac_key, auth_safe_data)
+                kdf::pkcs12_kdf_sha1(kdf::ID_MAC, password, &mac.salt, mac.iterations, 20)?;
+            kdf::compute_hmac(kryptering::HashAlgorithm::Sha1, &mac_key, auth_safe_data)?
         }
         MacHashAlgorithm::Sha256 => {
             let mac_key =
-                kdf::pkcs12_kdf_sha256(kdf::ID_MAC, &bmp_password, &mac.salt, mac.iterations, 32);
-            kdf::compute_hmac_sha256(&mac_key, auth_safe_data)
+                kdf::pkcs12_kdf_sha256(kdf::ID_MAC, password, &mac.salt, mac.iterations, 32)?;
+            kdf::compute_hmac(kryptering::HashAlgorithm::Sha256, &mac_key, auth_safe_data)?
         }
     };
 
@@ -491,11 +494,10 @@ fn decrypt_data(
     algorithm: &EncryptionAlgorithm,
     ciphertext: &[u8],
     password: &str,
-    bmp_password: &[u8],
 ) -> Result<Vec<u8>, Error> {
     match algorithm {
         EncryptionAlgorithm::PbeSha1And3Des { salt, iterations } => {
-            kdf::decrypt_pbe_sha1_3des(ciphertext, bmp_password, salt, *iterations)
+            kdf::decrypt_pbe_sha1_3des(ciphertext, password, salt, *iterations)
         }
         EncryptionAlgorithm::Pbes2 {
             pbkdf2_salt,
@@ -504,13 +506,15 @@ fn decrypt_data(
             aes_iv,
         } => match pbkdf2_prf {
             PrfAlgorithm::HmacSha256 => kdf::decrypt_pbes2_aes256cbc(
+                kryptering::HashAlgorithm::Sha256,
                 ciphertext,
                 password,
                 pbkdf2_salt,
                 *pbkdf2_iterations,
                 aes_iv,
             ),
-            PrfAlgorithm::HmacSha1 => kdf::decrypt_pbes2_aes256cbc_sha1(
+            PrfAlgorithm::HmacSha1 => kdf::decrypt_pbes2_aes256cbc(
+                kryptering::HashAlgorithm::Sha1,
                 ciphertext,
                 password,
                 pbkdf2_salt,
