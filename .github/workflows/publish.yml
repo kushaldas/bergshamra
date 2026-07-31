@@ -93,19 +93,6 @@ jobs:
             exit 1
           fi
 
-      - name: Verify release prerequisites
-        run: |
-          set -euo pipefail
-          for requirement in kryptering@0.5.0 tsp-ltv@0.4.0; do
-            crate="${requirement%@*}"
-            version="${requirement#*@}"
-            if ! curl --fail --silent --show-error \
-              "https://crates.io/api/v1/crates/${crate}/${version}" >/dev/null; then
-              echo "::error::${crate} ${version} must be published before Bergshamra" >&2
-              exit 1
-            fi
-          done
-
       # `--dry-run` always; real `publish` only on tag push so manual
       # workflow runs can sanity-check the workflow without uploading.
       - name: Verify publishable packages
