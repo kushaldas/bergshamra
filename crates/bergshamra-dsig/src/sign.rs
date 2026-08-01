@@ -480,7 +480,7 @@ impl<'a> EnvelopedSignatureOptions<'a> {
 /// just to add and fill the signature template.
 pub fn sign_enveloped_document(
     ctx: &DsigContext,
-    doc: &mut Document<'static>,
+    doc: &mut Document<'_>,
     options: EnvelopedSignatureOptions<'_>,
 ) -> Result<(), Error> {
     let sig_method = validate_signature_method(options.signature_method)?;
@@ -553,7 +553,7 @@ pub fn sign_enveloped_document(
 /// transform chains serialize the current DOM only for that transform pipeline,
 /// preserving behavior while still avoiding the caller-visible serialize/parse
 /// round trip.
-pub fn sign_document(ctx: &DsigContext, doc: &mut Document<'static>) -> Result<(), Error> {
+pub fn sign_document(ctx: &DsigContext, doc: &mut Document<'_>) -> Result<(), Error> {
     let mut id_attrs: Vec<&str> = vec!["Id", "ID", "id", "AssertionID"];
     let extra: Vec<&str> = ctx.id_attrs.iter().map(|s| s.as_str()).collect();
     id_attrs.extend(extra);
@@ -808,7 +808,7 @@ fn compute_reference_digest_via_transform_pipeline(
     digest::digest(digest_uri, &bytes)
 }
 
-fn replace_element_text(doc: &mut Document<'static>, element: NodeId, content: String) {
+fn replace_element_text(doc: &mut Document<'_>, element: NodeId, content: String) {
     for child in doc.children(element) {
         doc.detach(child);
     }
@@ -816,7 +816,7 @@ fn replace_element_text(doc: &mut Document<'static>, element: NodeId, content: S
     doc.append_child(element, text);
 }
 
-fn populate_x509_data_document(doc: &mut Document<'static>, x509_chain: &[Vec<u8>]) {
+fn populate_x509_data_document(doc: &mut Document<'_>, x509_chain: &[Vec<u8>]) {
     let Some(x509_data_id) = doc.descendants(doc.root()).into_iter().find(|&id| {
         doc.element(id).is_some_and(|elem| {
             &*elem.name.local_name == ns::node::X509_DATA
@@ -2155,5 +2155,39 @@ mod tests {
         let result = crate::verify::verify_document(&ctx, &doc)
             .expect("document-native verify should not error");
         assert!(result.is_valid(), "signed document must verify: {result:?}");
+    }
+
+    #[test]
+    fn sign_enveloped_document_accepts_borrowed_input_document() {
+        // Regression guard: the document-native signing entry points are
+        // lifetime-generic so zero-copy callers can sign in place. The
+        // document here borrows a runtime String, so this test fails to
+        // compile if a `Document<'static>` requirement is reintroduced in
+        // `sign_enveloped_document` or, transitively, `sign_document`.
+        let ctx = hmac_signing_context();
+        let xml = String::from(r#"<Root ID="abc"><Data>hello</Data></Root>"#);
+        let mut doc = uppsala::parse(&xml).expect("test XML must parse");
+        let options = EnvelopedSignatureOptions::new(
+            Some("abc"),
+            algorithm::HMAC_SHA256,
+            algorithm::SHA256,
+            algorithm::EXC_C14N,
+            None,
+        );
+
+        sign_enveloped_document(&ctx, &mut doc, options)
+            .expect("signing a document that borrows its input should succeed");
+
+        let signed = doc.to_xml();
+        assert!(signed.contains("<ds:Signature"));
+        assert!(!signed.contains("<ds:DigestValue></ds:DigestValue>"));
+        assert!(!signed.contains("<ds:SignatureValue></ds:SignatureValue>"));
+
+        let result = crate::verify::verify_document(&ctx, &doc)
+            .expect("document-native verify should not error");
+        assert!(
+            result.is_valid(),
+            "signed borrowed document must verify: {result:?}"
+        );
     }
 }

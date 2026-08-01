@@ -27,6 +27,10 @@
   provider boundary.
 - Finite-field DH agreement retains the private exponent inside Kryptering's
   opaque key handle.
+- `sign_document()` and `sign_enveloped_document()` accept `&mut Document<'_>`
+  instead of `&mut Document<'static>`, so bindings holding a zero-copy document
+  that borrows its input text can sign in place without an `into_static()`
+  conversion.
 
 ## 0.7.1
 
