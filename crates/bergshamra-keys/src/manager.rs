@@ -9,6 +9,8 @@ use bergshamra_core::Error;
 #[derive(Debug, Clone)]
 pub struct KeysManager {
     keys: Vec<Key>,
+    /// Context-local XML Encryption algorithm policy.
+    allowed_encryption_algorithms: Option<Vec<String>>,
     /// Trusted CA certificates (DER-encoded).
     trusted_certs: Vec<Vec<u8>>,
     /// Untrusted intermediate certificates (DER-encoded).
@@ -22,6 +24,7 @@ impl KeysManager {
     pub fn new() -> Self {
         Self {
             keys: Vec::new(),
+            allowed_encryption_algorithms: None,
             trusted_certs: Vec::new(),
             untrusted_certs: Vec::new(),
             crls: Vec::new(),
@@ -165,6 +168,18 @@ impl KeysManager {
     /// Check if empty.
     pub fn is_empty(&self) -> bool {
         self.keys.is_empty()
+    }
+
+    /// Store the XML Encryption algorithm allow-list for an encryption context.
+    #[doc(hidden)]
+    pub fn set_allowed_encryption_algorithms(&mut self, algorithms: Option<Vec<String>>) {
+        self.allowed_encryption_algorithms = algorithms;
+    }
+
+    /// Return the XML Encryption algorithm allow-list for an encryption context.
+    #[doc(hidden)]
+    pub fn allowed_encryption_algorithms(&self) -> Option<&[String]> {
+        self.allowed_encryption_algorithms.as_deref()
     }
 
     /// Add a trusted CA certificate (DER-encoded).

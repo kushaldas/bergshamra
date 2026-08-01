@@ -1512,7 +1512,7 @@ impl XsltBudget {
     /// Charge one node application. Returns `false` once either limit is hit,
     /// after which callers must stop.
     fn charge(&mut self, out_len: usize) -> bool {
-        if self.aborted || self.ops == 0 || out_len > self.max_output {
+        if self.aborted || self.ops == 0 || out_len >= self.max_output {
             self.aborted = true;
             return false;
         }
@@ -4012,6 +4012,19 @@ fn key_data_from_spki(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xslt_output_budget_rejects_the_exact_limit() {
+        let mut budget = XsltBudget {
+            ops: 2,
+            max_output: 8,
+            aborted: false,
+        };
+
+        assert!(budget.charge(7));
+        assert!(!budget.charge(8));
+        assert!(budget.aborted);
+    }
 
     #[test]
     fn xslt_transform_work_budget_rejects_exponential_blowup() {
