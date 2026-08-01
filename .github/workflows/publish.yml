@@ -93,19 +93,17 @@ jobs:
             exit 1
           fi
 
-      # `--dry-run` always; real `publish` only on tag push so manual
+      # Verification always; real `publish` only on tag push so manual
       # workflow runs can sanity-check the workflow without uploading.
+      #
+      # A per-crate `cargo publish --dry-run` loop cannot work here: a dry run
+      # never uploads, so every crate after bergshamra-core fails to resolve
+      # the not-yet-published new version of its workspace siblings from the
+      # crates.io index. Workspace-aware `cargo package` (Cargo >= 1.90)
+      # verifies every member against a temporary local registry overlay
+      # containing the freshly packaged siblings instead.
       - name: Verify publishable packages
-        run: |
-          set -euo pipefail
-          crates=(
-            bergshamra-core bergshamra-xml bergshamra-crypto
-            bergshamra-pkcs12 bergshamra-c14n bergshamra-keys
-            bergshamra-transforms bergshamra-dsig bergshamra-enc bergshamra
-          )
-          for crate in "${crates[@]}"; do
-            cargo publish --locked --dry-run -p "${crate}"
-          done
+        run: cargo package --workspace --locked
 
       - name: Publish to crates.io
         if: github.event_name == 'push'
