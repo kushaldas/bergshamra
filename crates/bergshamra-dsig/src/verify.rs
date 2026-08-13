@@ -201,7 +201,8 @@ pub fn verify_document_with_source(
     let sig_node = find_element(doc, ns::DSIG, ns::node::SIGNATURE)
         .ok_or_else(|| Error::MissingElement("Signature".into()))?;
 
-    verify_signature_node(ctx, doc, source_xml, sig_node, &id_map)
+    let mut xslt_budget = XsltBudget::new();
+    verify_signature_node(ctx, doc, source_xml, sig_node, &id_map, &mut xslt_budget)
 }
 
 /// Verify **every** `<Signature>` element in the document, returning one
@@ -226,6 +227,11 @@ pub fn verify_document_with_source(
 /// to the others. Callers must therefore inspect each entry rather than assume
 /// uniform success; the returned vector may mix [`VerifyResult::Valid`] and
 /// [`VerifyResult::Invalid`].
+///
+/// One consequence of the shared [`XsltBudget`]: a signature that exhausts it
+/// makes later XSLT-bearing signatures in the same document fail closed as
+/// [`VerifyResult::Invalid`]. This only bites documents already doing
+/// adversarial amounts of transform work.
 pub fn verify_all(ctx: &DsigContext, xml: &str) -> Result<Vec<VerifyResult>, Error> {
     let doc = uppsala::parse(xml).map_err(|e| Error::XmlParse(e.to_string()))?;
     verify_all_document_with_source(ctx, &doc, Some(xml))
@@ -253,12 +259,20 @@ pub fn verify_all_document_with_source(
         return Err(Error::MissingElement("Signature".into()));
     }
 
+    let mut xslt_budget = XsltBudget::new();
     let mut results = Vec::with_capacity(sig_nodes.len());
     for sig_node in sig_nodes {
         // A per-signature error must not abort verification of the rest: report
         // it as Invalid for this signature and continue. Document-level errors
         // are handled above, before the loop.
-        let result = match verify_signature_node(ctx, doc, source_xml, sig_node, &id_map) {
+        let result = match verify_signature_node(
+            ctx,
+            doc,
+            source_xml,
+            sig_node,
+            &id_map,
+            &mut xslt_budget,
+        ) {
             Ok(result) => result,
             Err(e) => VerifyResult::Invalid {
                 reason: format!("signature could not be processed: {e}"),
@@ -290,6 +304,7 @@ fn verify_signature_node(
     xml: Option<&str>,
     sig_node: NodeId,
     id_map: &std::collections::HashMap<String, NodeId>,
+    xslt_budget: &mut XsltBudget,
 ) -> Result<VerifyResult, Error> {
     // Find <SignedInfo>
     let signed_info = find_child_element(doc, sig_node, ns::DSIG, ns::node::SIGNED_INFO)
@@ -412,6 +427,7 @@ fn verify_signature_node(
             &ctx.url_maps,
             ctx.debug,
             ctx.base_dir.as_deref(),
+            xslt_budget,
         )?;
         verified_refs.push(vref);
         if let Some(reason) = mismatch {
@@ -721,6 +737,7 @@ fn verify_reference(
     url_maps: &[(String, String)],
     debug: bool,
     base_dir: Option<&str>,
+    xslt_budget: &mut XsltBudget,
 ) -> Result<(Option<String>, VerifiedReference), Error> {
     // Read URI attribute
     let uri = doc
@@ -848,7 +865,14 @@ fn verify_reference(
                     .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
                     .unwrap_or("");
 
-                data = apply_transform(transform_uri, data, transform_node, sig_node, doc)?;
+                data = apply_transform(
+                    transform_uri,
+                    data,
+                    transform_node,
+                    sig_node,
+                    doc,
+                    xslt_budget,
+                )?;
             }
         }
 
@@ -1269,6 +1293,7 @@ pub(crate) fn apply_transform<'a>(
     transform_node: NodeId,
     sig_node: NodeId,
     doc: &Document<'_>,
+    xslt_budget: &mut XsltBudget,
 ) -> Result<bergshamra_transforms::TransformData<'a>, Error> {
     use bergshamra_transforms::pipeline::{C14nTransform, Transform};
 
@@ -1299,7 +1324,7 @@ pub(crate) fn apply_transform<'a>(
         algorithm::XPOINTER => apply_xpointer_transform(data, transform_node, doc),
         algorithm::XPATH2 => apply_xpath_filter2_transform(data, transform_node, doc),
         algorithm::RELATIONSHIP => apply_relationship_transform(data, transform_node, doc),
-        algorithm::XSLT => apply_xslt_transform(data, transform_node, doc),
+        algorithm::XSLT => apply_xslt_transform(data, transform_node, doc, xslt_budget),
         _ => Err(Error::UnsupportedAlgorithm(format!("transform: {uri}"))),
     }
 }
@@ -1424,6 +1449,7 @@ fn apply_xslt_transform<'a>(
     data: bergshamra_transforms::TransformData<'a>,
     transform_node: NodeId,
     outer_doc: &Document<'_>,
+    budget: &mut XsltBudget,
 ) -> Result<bergshamra_transforms::TransformData<'a>, Error> {
     const XSL_NS: &str = "http://www.w3.org/1999/XSL/Transform";
 
@@ -1476,48 +1502,70 @@ fn apply_xslt_transform<'a>(
     }
 
     // For non-identity transforms, attempt minimal XSLT processing
-    apply_minimal_xslt(data, stylesheet, &templates, outer_doc)
+    apply_minimal_xslt(data, stylesheet, &templates, outer_doc, budget)
 }
 
-/// Work budget for the minimal XSLT processor.
+/// Work budget for the minimal XSLT processor, shared across a whole
+/// document verification (or signing) operation.
 ///
 /// A template with several `<xsl:apply-templates/>` over nested input expands
 /// exponentially, and transforms run before the signature is checked, so this is
 /// a pre-authentication denial of service. Bounds node applications and output
 /// size, failing closed when either limit is hit.
-struct XsltBudget {
+///
+/// One budget is created per top-level call and every XSLT transform in the
+/// document draws from the same pool. A per-transform budget would multiply by
+/// [`MAX_REFERENCES`], [`MAX_TRANSFORMS_PER_REFERENCE`], and the unbounded
+/// signature count: a small document carrying many XSLT transforms each tuned
+/// to sit just under the limit could burn minutes of CPU before any signature
+/// is checked.
+pub(crate) struct XsltBudget {
     /// Remaining node-application operations.
     ops: u64,
-    /// Maximum total output size in bytes.
+    /// Output bytes already emitted by completed transforms.
+    output_used: usize,
+    /// Maximum total output size in bytes, cumulative across transforms.
     max_output: usize,
     /// Set once either limit is exceeded.
     aborted: bool,
 }
 
-/// Max node applications per XSLT transform. Real stylesheets need a few hundred.
+/// Node-application budget per verification. Real stylesheets need a few hundred.
 const MAX_XSLT_OPS: u64 = 5_000_000;
 
-/// Maximum output size for a single XSLT transform (16 MiB).
+/// Output budget per verification (16 MiB).
 const MAX_XSLT_OUTPUT: usize = 16 * 1024 * 1024;
 
 impl XsltBudget {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             ops: MAX_XSLT_OPS,
+            output_used: 0,
             max_output: MAX_XSLT_OUTPUT,
             aborted: false,
         }
     }
 
-    /// Charge one node application. Returns `false` once either limit is hit,
-    /// after which callers must stop.
+    /// Charge one node application. `out_len` is the current transform's output
+    /// size so far; it counts against the pool on top of the output already
+    /// committed by earlier transforms. Returns `false` once either limit is
+    /// hit, after which callers must stop.
     fn charge(&mut self, out_len: usize) -> bool {
-        if self.aborted || self.ops == 0 || out_len >= self.max_output {
+        if self.aborted
+            || self.ops == 0
+            || self.output_used.saturating_add(out_len) >= self.max_output
+        {
             self.aborted = true;
             return false;
         }
         self.ops -= 1;
         true
+    }
+
+    /// Record the output of a completed transform so later transforms in the
+    /// same verification draw from what remains.
+    fn commit_output(&mut self, out_len: usize) {
+        self.output_used = self.output_used.saturating_add(out_len);
     }
 }
 
@@ -1533,6 +1581,7 @@ fn apply_minimal_xslt<'a>(
     stylesheet: NodeId,
     templates: &[NodeId],
     outer_doc: &Document<'_>,
+    budget: &mut XsltBudget,
 ) -> Result<bergshamra_transforms::TransformData<'a>, Error> {
     // Get the input XML
     let xml_text = match &data {
@@ -1599,7 +1648,6 @@ fn apply_minimal_xslt<'a>(
     // Process root element
     let root = input_doc.document_element().unwrap();
     let mut output = String::new();
-    let mut budget = XsltBudget::new();
     xslt_apply_templates_to_node(
         root,
         templates,
@@ -1608,13 +1656,14 @@ fn apply_minimal_xslt<'a>(
         &default_ns,
         &strip_set,
         &mut output,
-        &mut budget,
+        budget,
     );
     if budget.aborted {
         return Err(Error::Transform(
             "XSLT transform exceeded work/output budget (possible denial-of-service input)".into(),
         ));
     }
+    budget.commit_output(output.len());
 
     Ok(bergshamra_transforms::TransformData::Binary(
         output.into_bytes(),
@@ -4017,12 +4066,31 @@ mod tests {
     fn xslt_output_budget_rejects_the_exact_limit() {
         let mut budget = XsltBudget {
             ops: 2,
+            output_used: 0,
             max_output: 8,
             aborted: false,
         };
 
         assert!(budget.charge(7));
         assert!(!budget.charge(8));
+        assert!(budget.aborted);
+    }
+
+    #[test]
+    fn xslt_output_budget_is_cumulative_across_transforms() {
+        // Output committed by an earlier transform must count against the
+        // shared pool: 6 committed + 2 current reaches the limit of 8.
+        let mut budget = XsltBudget {
+            ops: 100,
+            output_used: 0,
+            max_output: 8,
+            aborted: false,
+        };
+
+        assert!(budget.charge(6));
+        budget.commit_output(6);
+        assert!(budget.charge(1));
+        assert!(!budget.charge(2));
         assert!(budget.aborted);
     }
 
@@ -4045,11 +4113,52 @@ mod tests {
         input.push_str("</a>");
 
         let data = bergshamra_transforms::TransformData::xml_owned(input, None);
-        let result = apply_xslt_transform(data, transform_node, &outer_doc);
+        let mut budget = XsltBudget::new();
+        let result = apply_xslt_transform(data, transform_node, &outer_doc, &mut budget);
         assert!(
             result.is_err(),
             "exponential XSLT blow-up must be rejected by the work budget"
         );
+    }
+
+    #[test]
+    fn xslt_work_budget_is_shared_across_transforms() {
+        // Regression test for the amplification flaw found in review: the
+        // budget was created per transform, so 128 references x 32 transforms
+        // each got a fresh 5M-op allowance and the budgets multiplied. Every
+        // transform in a verification must draw from one shared pool: the same
+        // transform repeated against the same budget has to fail once the pool
+        // runs dry, not get a fresh allowance each time.
+        let outer = r#"<Transform xmlns:xsl="http://www.w3.org/1999/XSL/Transform"><xsl:stylesheet><xsl:template match="a"><out><xsl:apply-templates/></out></xsl:template></xsl:stylesheet></Transform>"#;
+        let outer_doc = uppsala::parse(outer).expect("parse stylesheet");
+        let transform_node = outer_doc.document_element().expect("transform root");
+
+        // Each run charges a handful of ops; a budget of 3 x that cannot
+        // survive many repetitions.
+        let mut budget = XsltBudget {
+            ops: 30,
+            output_used: 0,
+            max_output: MAX_XSLT_OUTPUT,
+            aborted: false,
+        };
+
+        let mut failed_at = None;
+        for round in 0..30 {
+            let data = bergshamra_transforms::TransformData::xml_owned(
+                String::from("<a><a/><a/></a>"),
+                None,
+            );
+            if apply_xslt_transform(data, transform_node, &outer_doc, &mut budget).is_err() {
+                failed_at = Some(round);
+                break;
+            }
+        }
+
+        let failed_at = failed_at.expect(
+            "a shared budget must run dry after repeated transforms; \
+             per-transform budgets multiply and never fail",
+        );
+        assert!(failed_at > 0, "the first transform alone must fit the pool");
     }
 
     /// Runtime-owned file used by resolver tests.
@@ -4340,6 +4449,7 @@ mod tests {
         assert_eq!(refs.len(), 1);
 
         let id_map = HashMap::new();
+        let mut xslt_budget = XsltBudget::new();
         let (mismatch, vref) = verify_reference(
             refs[0],
             &doc,
@@ -4349,6 +4459,7 @@ mod tests {
             &[],
             false,
             None,
+            &mut xslt_budget,
         )
         .expect("verify_reference failed");
         assert!(
@@ -4382,6 +4493,7 @@ mod tests {
         assert_eq!(refs.len(), 1);
 
         let id_map = build_id_map(&doc, &["Id", "ID", "id"]).expect("no duplicate IDs");
+        let mut xslt_budget = XsltBudget::new();
         let (mismatch, vref) = verify_reference(
             refs[0],
             &doc,
@@ -4391,6 +4503,7 @@ mod tests {
             &[],
             false,
             None,
+            &mut xslt_budget,
         )
         .expect("verify_reference failed");
         // The digest will not match since AAAA is bogus, so we expect Some(reason).

@@ -105,6 +105,9 @@ pub fn sign_owned(ctx: &DsigContext, mut result_xml: String) -> Result<String, E
     // document tree is live.
     result_xml.reserve(4096);
 
+    // One shared XSLT budget for the whole signing pass.
+    let mut xslt_budget = crate::verify::XsltBudget::new();
+
     for ref_idx in 0..ref_count {
         // Re-parse current state so same-document refs see filled DigestValues
         let cur_doc = uppsala::parse(&result_xml).map_err(|e| Error::XmlParse(e.to_string()))?;
@@ -212,7 +215,14 @@ pub fn sign_owned(ctx: &DsigContext, mut result_xml: String) -> Result<String, E
                         .element(t_node)
                         .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
                         .unwrap_or("");
-                    data = crate::verify::apply_transform(t_uri, data, t_node, cur_sig, &cur_doc)?;
+                    data = crate::verify::apply_transform(
+                        t_uri,
+                        data,
+                        t_node,
+                        cur_sig,
+                        &cur_doc,
+                        &mut xslt_budget,
+                    )?;
                 }
             }
 
@@ -589,6 +599,8 @@ pub fn sign_document(ctx: &DsigContext, doc: &mut Document<'_>) -> Result<(), Er
         .to_owned();
 
     let references = find_child_elements(doc, signed_info, ns::DSIG, ns::node::REFERENCE);
+    // One shared XSLT budget for the whole signing pass.
+    let mut xslt_budget = crate::verify::XsltBudget::new();
     for reference in references {
         let uri = doc
             .element(reference)
@@ -626,6 +638,7 @@ pub fn sign_document(ctx: &DsigContext, doc: &mut Document<'_>) -> Result<(), Er
                 &uri,
                 transforms_node,
                 &digest_uri,
+                &mut xslt_budget,
             )?
         };
 
@@ -750,6 +763,7 @@ fn compute_reference_digest_via_transform_pipeline(
     uri: &str,
     transforms_node: Option<NodeId>,
     digest_uri: &str,
+    xslt_budget: &mut crate::verify::XsltBudget,
 ) -> Result<Vec<u8>, Error> {
     let current_xml = doc.to_xml();
     let mut data = if uri.is_empty() {
@@ -800,7 +814,7 @@ fn compute_reference_digest_via_transform_pipeline(
                 .element(t_node)
                 .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
                 .unwrap_or("");
-            data = crate::verify::apply_transform(t_uri, data, t_node, sig_node, doc)?;
+            data = crate::verify::apply_transform(t_uri, data, t_node, sig_node, doc, xslt_budget)?;
         }
     }
 
