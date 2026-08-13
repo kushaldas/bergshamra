@@ -1,6 +1,21 @@
 # Changelog
 
-## 0.8.0 [2026-07-31]
+## 0.8.0 [2026-08-01]
+
+### Security
+
+- Bound XML-DSig verification work by limiting the number of references and
+  transforms and by enforcing operation and output budgets for the minimal
+  XSLT processor. Reaching the XSLT output limit now fails closed.
+- Hardened XML-DSig `RetrievalMethod` certificate resolution against schemes,
+  absolute paths, and parent-directory traversal. Explicit URL-map directory
+  mappings also reject traversal in attacker-controlled suffixes.
+- Added `EncContext::with_allowed_algorithms()` so callers can restrict both
+  content-encryption and `EncryptedKey` key-transport/key-wrap algorithms
+  across software and HSM paths, preventing downgrade to weaker methods.
+- Reject inline RSA `KeyValue` moduli larger than 16,384 bits and PKCS#12 MAC
+  or decryption iteration counts above `MAX_PKCS12_ITERATIONS` before starting
+  attacker-controlled expensive cryptographic work.
 
 ### Added
 
@@ -14,6 +29,8 @@
 
 ### Changed
 
+- Store the XML Encryption algorithm allow-list in private context state so
+  adding the builder does not break downstream `EncContext` struct literals.
 - **Breaking:** workspace crates are version 0.8.0 and require Rust 1.88.
 - **Breaking:** signature keys and digest contexts use opaque Kryptering-backed
   handles and provider failures are propagated.

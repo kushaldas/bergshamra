@@ -530,6 +530,16 @@ pub fn parse_rsa_key_value(key_value_node: NodeId, doc: &Document<'_>) -> Result
     let exponent_bytes = decode_crypto_binary(&exponent_b64, &engine)
         .map_err(|e| Error::Base64(format!("Exponent: {e}")))?;
 
+    // Bound the modulus size: a huge inline modulus would make verification
+    // arbitrarily expensive. 16384 bits is far above any real RSA key.
+    const MAX_RSA_MODULUS_BITS: usize = 16384;
+    if modulus_bytes.len().saturating_mul(8) > MAX_RSA_MODULUS_BITS {
+        return Err(Error::Key(format!(
+            "RSA modulus too large ({} bits, maximum {MAX_RSA_MODULUS_BITS})",
+            modulus_bytes.len().saturating_mul(8)
+        )));
+    }
+
     let rsa_public = der_sequence(&[
         der_positive_integer(&modulus_bytes)?,
         der_positive_integer(&exponent_bytes)?,

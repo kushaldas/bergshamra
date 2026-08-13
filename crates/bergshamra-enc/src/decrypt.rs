@@ -55,6 +55,9 @@ pub fn decrypt_to_bytes(ctx: &EncContext, xml: &str) -> Result<Vec<u8>, Error> {
         .unwrap()
         .get_attribute(ns::attr::ALGORITHM)
         .ok_or_else(|| Error::MissingAttribute("Algorithm on EncryptionMethod".into()))?;
+    // Enforce the caller's algorithm allow-list (if any) on the attacker-chosen
+    // content cipher before doing any work, blocking GCM->CBC-style downgrades.
+    ctx.ensure_algorithm_allowed(enc_uri)?;
 
     // Resolve decryption key
     let key_bytes = resolve_decryption_key(ctx, &doc, enc_data_id, &id_map, enc_uri)?;
@@ -260,6 +263,9 @@ fn decrypt_encrypted_key(
         .ok_or_else(|| {
             Error::MissingAttribute("Algorithm on EncryptedKey EncryptionMethod".into())
         })?;
+    // Enforce the caller's algorithm allow-list (if any) on the attacker-chosen
+    // key-transport algorithm, blocking OAEP->PKCS#1v1.5-style downgrades.
+    ctx.ensure_algorithm_allowed(enc_uri)?;
 
     // Read CipherData/CipherValue
     let cipher_data_id = find_child_element(doc, enc_key_id, ns::ENC, ns::node::CIPHER_DATA)

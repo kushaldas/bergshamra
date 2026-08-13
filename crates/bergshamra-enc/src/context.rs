@@ -63,6 +63,10 @@ impl std::fmt::Debug for EncContext {
             .field("disable_cipher_reference", &self.disable_cipher_reference)
             .field("max_pbkdf2_iterations", &self.max_pbkdf2_iterations)
             .field(
+                "allowed_algorithms",
+                &self.keys_manager.allowed_encryption_algorithms(),
+            )
+            .field(
                 "hsm_decryptor",
                 &self.hsm_decryptor.as_ref().map(|_| "<hsm_decryptor>"),
             )
@@ -103,7 +107,8 @@ impl EncContext {
     /// PBKDF2 work factors, and no HSM delegates configured. Use the builder
     /// methods to adjust limits and bind HSM operations to explicit XML
     /// Encryption algorithm URIs.
-    pub fn new(keys_manager: KeysManager) -> Self {
+    pub fn new(mut keys_manager: KeysManager) -> Self {
+        keys_manager.set_allowed_encryption_algorithms(None);
         Self {
             keys_manager,
             id_attrs: Vec::new(),
@@ -142,6 +147,41 @@ impl EncContext {
     pub fn with_max_pbkdf2_iterations(mut self, max_iterations: u32) -> Self {
         self.max_pbkdf2_iterations = max_iterations;
         self
+    }
+
+    /// Restrict decryption to an allow-list of `EncryptionMethod` algorithm URIs.
+    ///
+    /// The allow-list applies to both content-encryption and `EncryptedKey`
+    /// key-transport/key-wrap methods, whether handled in software or by an HSM.
+    /// `None` (the default) accepts every implemented algorithm; an empty list
+    /// rejects every method. Recommended when decrypting untrusted input: list
+    /// only the algorithms you expect so an attacker cannot downgrade to a
+    /// padding-oracle-prone one.
+    pub fn with_allowed_algorithms(mut self, algorithms: &[&str]) -> Self {
+        // Keep additive policy state behind the private KeysManager layout so
+        // existing downstream EncContext struct literals remain source-compatible.
+        self.keys_manager
+            .set_allowed_encryption_algorithms(Some(copy_algorithm_uris(algorithms)));
+        self
+    }
+
+    /// Reject an `EncryptionMethod` Algorithm URI that is not in the configured
+    /// allow-list. A `None` allow-list (the default) accepts everything.
+    pub(crate) fn ensure_algorithm_allowed(&self, enc_uri: &str) -> Result<(), Error> {
+        match self.keys_manager.allowed_encryption_algorithms() {
+            None => Ok(()),
+            Some(list) if list.iter().any(|allowed| allowed == enc_uri) => Ok(()),
+            Some(list) => {
+                let allowed = if list.is_empty() {
+                    "<none>".to_owned()
+                } else {
+                    list.join(", ")
+                };
+                Err(Error::UnsupportedAlgorithm(format!(
+                    "EncryptionMethod {enc_uri} is not in the configured algorithm allow-list (allowed: {allowed})"
+                )))
+            }
+        }
     }
 
     /// Set an HSM-backed decryptor for RSA key transport (builder style).
@@ -371,5 +411,23 @@ mod tests {
 
         let ctx = ctx.with_max_pbkdf2_iterations(4096);
         assert_eq!(ctx.max_pbkdf2_iterations, 4096);
+    }
+
+    #[test]
+    fn algorithm_allow_list_gates_content_and_key_transport_methods() {
+        // Default: no allow-list configured, so every algorithm is accepted
+        // (preserves backward compatibility and the interop corpus).
+        let ctx = EncContext::new(KeysManager::new());
+        assert!(ctx.ensure_algorithm_allowed(algorithm::RSA_PKCS1).is_ok());
+        assert!(ctx.ensure_algorithm_allowed(algorithm::AES256_CBC).is_ok());
+
+        // Restricted: only RSA-OAEP + AES-GCM are accepted; the padding-oracle
+        // downgrade targets (rsa-1_5, CBC) are rejected.
+        let ctx = EncContext::new(KeysManager::new())
+            .with_allowed_algorithms(&[algorithm::RSA_OAEP, algorithm::AES256_GCM]);
+        assert!(ctx.ensure_algorithm_allowed(algorithm::RSA_OAEP).is_ok());
+        assert!(ctx.ensure_algorithm_allowed(algorithm::AES256_GCM).is_ok());
+        assert!(ctx.ensure_algorithm_allowed(algorithm::RSA_PKCS1).is_err());
+        assert!(ctx.ensure_algorithm_allowed(algorithm::AES256_CBC).is_err());
     }
 }

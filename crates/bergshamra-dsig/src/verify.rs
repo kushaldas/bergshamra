@@ -21,6 +21,14 @@ use bergshamra_xml::xpath;
 use std::collections::HashMap;
 use uppsala::{Document, NodeId, NodeKind, XmlWriter};
 
+/// Max `<Reference>` elements per `<SignedInfo>`, bounding the work a malicious
+/// document can force. Real signatures use only a handful.
+const MAX_REFERENCES: usize = 128;
+
+/// Max `<Transform>` elements per `<Reference>`. Each transform can re-parse its
+/// input, so an unbounded chain is a denial-of-service amplifier.
+const MAX_TRANSFORMS_PER_REFERENCE: usize = 32;
+
 /// Metadata about a single verified `<Reference>`.
 ///
 /// Marked `#[non_exhaustive]`: construct it via the verifier rather than a
@@ -193,7 +201,8 @@ pub fn verify_document_with_source(
     let sig_node = find_element(doc, ns::DSIG, ns::node::SIGNATURE)
         .ok_or_else(|| Error::MissingElement("Signature".into()))?;
 
-    verify_signature_node(ctx, doc, source_xml, sig_node, &id_map)
+    let mut xslt_budget = XsltBudget::new();
+    verify_signature_node(ctx, doc, source_xml, sig_node, &id_map, &mut xslt_budget)
 }
 
 /// Verify **every** `<Signature>` element in the document, returning one
@@ -218,6 +227,11 @@ pub fn verify_document_with_source(
 /// to the others. Callers must therefore inspect each entry rather than assume
 /// uniform success; the returned vector may mix [`VerifyResult::Valid`] and
 /// [`VerifyResult::Invalid`].
+///
+/// One consequence of the shared [`XsltBudget`]: a signature that exhausts it
+/// makes later XSLT-bearing signatures in the same document fail closed as
+/// [`VerifyResult::Invalid`]. This only bites documents already doing
+/// adversarial amounts of transform work.
 pub fn verify_all(ctx: &DsigContext, xml: &str) -> Result<Vec<VerifyResult>, Error> {
     let doc = uppsala::parse(xml).map_err(|e| Error::XmlParse(e.to_string()))?;
     verify_all_document_with_source(ctx, &doc, Some(xml))
@@ -245,12 +259,20 @@ pub fn verify_all_document_with_source(
         return Err(Error::MissingElement("Signature".into()));
     }
 
+    let mut xslt_budget = XsltBudget::new();
     let mut results = Vec::with_capacity(sig_nodes.len());
     for sig_node in sig_nodes {
         // A per-signature error must not abort verification of the rest: report
         // it as Invalid for this signature and continue. Document-level errors
         // are handled above, before the loop.
-        let result = match verify_signature_node(ctx, doc, source_xml, sig_node, &id_map) {
+        let result = match verify_signature_node(
+            ctx,
+            doc,
+            source_xml,
+            sig_node,
+            &id_map,
+            &mut xslt_budget,
+        ) {
             Ok(result) => result,
             Err(e) => VerifyResult::Invalid {
                 reason: format!("signature could not be processed: {e}"),
@@ -282,6 +304,7 @@ fn verify_signature_node(
     xml: Option<&str>,
     sig_node: NodeId,
     id_map: &std::collections::HashMap<String, NodeId>,
+    xslt_budget: &mut XsltBudget,
 ) -> Result<VerifyResult, Error> {
     // Find <SignedInfo>
     let signed_info = find_child_element(doc, sig_node, ns::DSIG, ns::node::SIGNED_INFO)
@@ -385,6 +408,14 @@ fn verify_signature_node(
 
     // 3. Verify each Reference
     let references = find_child_elements(doc, signed_info, ns::DSIG, ns::node::REFERENCE);
+    if references.len() > MAX_REFERENCES {
+        return Ok(VerifyResult::Invalid {
+            reason: format!(
+                "too many References ({}, maximum {MAX_REFERENCES})",
+                references.len()
+            ),
+        });
+    }
     let mut verified_refs = Vec::with_capacity(references.len());
     for reference in &references {
         let (mismatch, vref) = verify_reference(
@@ -396,6 +427,7 @@ fn verify_signature_node(
             &ctx.url_maps,
             ctx.debug,
             ctx.base_dir.as_deref(),
+            xslt_budget,
         )?;
         verified_refs.push(vref);
         if let Some(reason) = mismatch {
@@ -705,6 +737,7 @@ fn verify_reference(
     url_maps: &[(String, String)],
     debug: bool,
     base_dir: Option<&str>,
+    xslt_budget: &mut XsltBudget,
 ) -> Result<(Option<String>, VerifiedReference), Error> {
     // Read URI attribute
     let uri = doc
@@ -807,6 +840,19 @@ fn verify_reference(
         };
 
         if let Some(transforms) = transforms_node {
+            let transform_count = doc
+                .children(transforms)
+                .into_iter()
+                .filter(|&n| {
+                    doc.element(n)
+                        .is_some_and(|e| e.name.local_name.as_ref() == ns::node::TRANSFORM)
+                })
+                .count();
+            if transform_count > MAX_TRANSFORMS_PER_REFERENCE {
+                return Err(Error::Transform(format!(
+                    "too many Transforms in Reference ({transform_count}, maximum {MAX_TRANSFORMS_PER_REFERENCE})"
+                )));
+            }
             for transform_node in doc.children(transforms) {
                 let is_transform_elem = doc
                     .element(transform_node)
@@ -819,7 +865,14 @@ fn verify_reference(
                     .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
                     .unwrap_or("");
 
-                data = apply_transform(transform_uri, data, transform_node, sig_node, doc)?;
+                data = apply_transform(
+                    transform_uri,
+                    data,
+                    transform_node,
+                    sig_node,
+                    doc,
+                    xslt_budget,
+                )?;
             }
         }
 
@@ -1240,6 +1293,7 @@ pub(crate) fn apply_transform<'a>(
     transform_node: NodeId,
     sig_node: NodeId,
     doc: &Document<'_>,
+    xslt_budget: &mut XsltBudget,
 ) -> Result<bergshamra_transforms::TransformData<'a>, Error> {
     use bergshamra_transforms::pipeline::{C14nTransform, Transform};
 
@@ -1270,7 +1324,7 @@ pub(crate) fn apply_transform<'a>(
         algorithm::XPOINTER => apply_xpointer_transform(data, transform_node, doc),
         algorithm::XPATH2 => apply_xpath_filter2_transform(data, transform_node, doc),
         algorithm::RELATIONSHIP => apply_relationship_transform(data, transform_node, doc),
-        algorithm::XSLT => apply_xslt_transform(data, transform_node, doc),
+        algorithm::XSLT => apply_xslt_transform(data, transform_node, doc, xslt_budget),
         _ => Err(Error::UnsupportedAlgorithm(format!("transform: {uri}"))),
     }
 }
@@ -1395,6 +1449,7 @@ fn apply_xslt_transform<'a>(
     data: bergshamra_transforms::TransformData<'a>,
     transform_node: NodeId,
     outer_doc: &Document<'_>,
+    budget: &mut XsltBudget,
 ) -> Result<bergshamra_transforms::TransformData<'a>, Error> {
     const XSL_NS: &str = "http://www.w3.org/1999/XSL/Transform";
 
@@ -1447,7 +1502,71 @@ fn apply_xslt_transform<'a>(
     }
 
     // For non-identity transforms, attempt minimal XSLT processing
-    apply_minimal_xslt(data, stylesheet, &templates, outer_doc)
+    apply_minimal_xslt(data, stylesheet, &templates, outer_doc, budget)
+}
+
+/// Work budget for the minimal XSLT processor, shared across a whole
+/// document verification (or signing) operation.
+///
+/// A template with several `<xsl:apply-templates/>` over nested input expands
+/// exponentially, and transforms run before the signature is checked, so this is
+/// a pre-authentication denial of service. Bounds node applications and output
+/// size, failing closed when either limit is hit.
+///
+/// One budget is created per top-level call and every XSLT transform in the
+/// document draws from the same pool. A per-transform budget would multiply by
+/// [`MAX_REFERENCES`], [`MAX_TRANSFORMS_PER_REFERENCE`], and the unbounded
+/// signature count: a small document carrying many XSLT transforms each tuned
+/// to sit just under the limit could burn minutes of CPU before any signature
+/// is checked.
+pub(crate) struct XsltBudget {
+    /// Remaining node-application operations.
+    ops: u64,
+    /// Output bytes already emitted by completed transforms.
+    output_used: usize,
+    /// Maximum total output size in bytes, cumulative across transforms.
+    max_output: usize,
+    /// Set once either limit is exceeded.
+    aborted: bool,
+}
+
+/// Node-application budget per verification. Real stylesheets need a few hundred.
+const MAX_XSLT_OPS: u64 = 5_000_000;
+
+/// Output budget per verification (16 MiB).
+const MAX_XSLT_OUTPUT: usize = 16 * 1024 * 1024;
+
+impl XsltBudget {
+    pub(crate) fn new() -> Self {
+        Self {
+            ops: MAX_XSLT_OPS,
+            output_used: 0,
+            max_output: MAX_XSLT_OUTPUT,
+            aborted: false,
+        }
+    }
+
+    /// Charge one node application. `out_len` is the current transform's output
+    /// size so far; it counts against the pool on top of the output already
+    /// committed by earlier transforms. Returns `false` once either limit is
+    /// hit, after which callers must stop.
+    fn charge(&mut self, out_len: usize) -> bool {
+        if self.aborted
+            || self.ops == 0
+            || self.output_used.saturating_add(out_len) >= self.max_output
+        {
+            self.aborted = true;
+            return false;
+        }
+        self.ops -= 1;
+        true
+    }
+
+    /// Record the output of a completed transform so later transforms in the
+    /// same verification draw from what remains.
+    fn commit_output(&mut self, out_len: usize) {
+        self.output_used = self.output_used.saturating_add(out_len);
+    }
 }
 
 /// Minimal XSLT processor for simple template-based transforms.
@@ -1462,6 +1581,7 @@ fn apply_minimal_xslt<'a>(
     stylesheet: NodeId,
     templates: &[NodeId],
     outer_doc: &Document<'_>,
+    budget: &mut XsltBudget,
 ) -> Result<bergshamra_transforms::TransformData<'a>, Error> {
     // Get the input XML
     let xml_text = match &data {
@@ -1536,7 +1656,14 @@ fn apply_minimal_xslt<'a>(
         &default_ns,
         &strip_set,
         &mut output,
+        budget,
     );
+    if budget.aborted {
+        return Err(Error::Transform(
+            "XSLT transform exceeded work/output budget (possible denial-of-service input)".into(),
+        ));
+    }
+    budget.commit_output(output.len());
 
     Ok(bergshamra_transforms::TransformData::Binary(
         output.into_bytes(),
@@ -1544,6 +1671,7 @@ fn apply_minimal_xslt<'a>(
 }
 
 /// Apply templates to a node.
+#[allow(clippy::too_many_arguments)]
 fn xslt_apply_templates_to_node(
     node: NodeId,
     templates: &[NodeId],
@@ -1552,12 +1680,16 @@ fn xslt_apply_templates_to_node(
     default_ns: &Option<String>,
     strip_set: &std::collections::HashSet<String>,
     out: &mut String,
+    budget: &mut XsltBudget,
 ) {
+    if !budget.charge(out.len()) {
+        return;
+    }
     // Find matching template
     if let Some(tmpl) = find_matching_template(node, templates, tmpl_doc, input_doc) {
         // Execute template body
         xslt_execute_body(
-            tmpl, node, templates, tmpl_doc, input_doc, default_ns, strip_set, out,
+            tmpl, node, templates, tmpl_doc, input_doc, default_ns, strip_set, out, budget,
         );
     } else {
         // Default: for elements, apply templates to children; for text, copy text
@@ -1585,7 +1717,7 @@ fn xslt_apply_templates_to_node(
         } else if input_doc.element(node).is_some() {
             for child in input_doc.children(node) {
                 xslt_apply_templates_to_node(
-                    child, templates, tmpl_doc, input_doc, default_ns, strip_set, out,
+                    child, templates, tmpl_doc, input_doc, default_ns, strip_set, out, budget,
                 );
             }
         }
@@ -1606,7 +1738,11 @@ fn xslt_execute_body(
     default_ns: &Option<String>,
     strip_set: &std::collections::HashSet<String>,
     out: &mut String,
+    budget: &mut XsltBudget,
 ) {
+    if !budget.charge(out.len()) {
+        return;
+    }
     const XSL_NS: &str = "http://www.w3.org/1999/XSL/Transform";
 
     for child in tmpl_doc.children(body) {
@@ -1631,7 +1767,7 @@ fn xslt_execute_body(
                                 {
                                     xslt_apply_templates_to_node(
                                         ch, templates, tmpl_doc, input_doc, default_ns, strip_set,
-                                        out,
+                                        out, budget,
                                     );
                                 }
                             }
@@ -1640,6 +1776,7 @@ fn xslt_execute_body(
                             for ch in input_doc.children(context_node) {
                                 xslt_apply_templates_to_node(
                                     ch, templates, tmpl_doc, input_doc, default_ns, strip_set, out,
+                                    budget,
                                 );
                             }
                         }
@@ -1686,6 +1823,7 @@ fn xslt_execute_body(
                                 default_ns,
                                 strip_set,
                                 out,
+                                budget,
                             );
                             out.push_str("</");
                             out.push_str(local);
@@ -1731,6 +1869,7 @@ fn xslt_execute_body(
                     default_ns,
                     strip_set,
                     out,
+                    budget,
                 );
                 out.push_str("</");
                 out.push_str(local);
@@ -3746,11 +3885,9 @@ fn try_resolve_retrieval_method(
             continue;
         }
 
-        // Resolve URI to a file path
-        let file_path = resolve_retrieval_uri(uri, base_dir, url_maps)?;
-
-        // Load DER certificate
-        let cert_der = std::fs::read(&file_path).ok()?;
+        // Resolve to certificate bytes under the hardened local-file policy
+        // (no absolute paths, schemes, traversal, or network access).
+        let cert_der = resolve_retrieval_uri(uri, base_dir, url_maps)?;
 
         // Try to parse as DER X.509 certificate
         use der::Decode;
@@ -3842,52 +3979,45 @@ fn resolve_retrieval_uri(
     uri: &str,
     base_dir: Option<&str>,
     url_maps: &[(String, String)],
-) -> Option<std::path::PathBuf> {
-    // Check url-maps first (prefix replacement)
+) -> Option<Vec<u8>> {
+    // Caller-configured url-maps are trusted: match exactly, by `#fragment`, or
+    // by directory prefix. The joined remainder is attacker-influenced, so
+    // reject parent-directory traversal.
     for (url, path) in url_maps {
         if uri == url {
-            return Some(std::path::PathBuf::from(path));
+            return std::fs::read(path).ok();
         }
-        if uri.starts_with(url) {
-            let suffix = &uri[url.len()..];
-            let full = std::path::Path::new(path).join(suffix.trim_start_matches('/'));
+        if let Some(suffix) = uri.strip_prefix(url.as_str()) {
+            if suffix.starts_with('#') {
+                return std::fs::read(path).ok();
+            }
+            let rel = std::path::Path::new(suffix.trim_start_matches('/'));
+            if rel
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                continue;
+            }
+            let full = std::path::Path::new(path).join(rel);
             if full.exists() {
-                return Some(full);
+                return std::fs::read(full).ok();
             }
         }
     }
 
-    // Treat as relative path from base_dir
+    // Otherwise the URI is from the untrusted document. Same policy as
+    // `<Reference>` resolution: only simple relative paths (no scheme, absolute
+    // path, or traversal), resolved within the base or current directory.
+    let rel = local_reference_relative_path(uri).ok()??;
     if let Some(base) = base_dir {
-        let full = std::path::Path::new(base).join(uri);
-        if full.exists() {
-            return Some(full);
-        }
-        // Walk up ancestors of base_dir and try each
-        let mut ancestor = std::path::Path::new(base);
-        while let Some(parent) = ancestor.parent() {
-            let full = parent.join(uri);
-            if full.exists() {
-                return Some(full);
-            }
-            ancestor = parent;
+        if let Ok(Some(data)) = read_existing_relative_file(std::path::Path::new(base), rel, uri) {
+            return Some(data);
         }
     }
-
-    // Try CWD-relative
-    {
-        let p = std::path::PathBuf::from(uri);
-        if p.exists() {
-            return Some(p);
-        }
+    let cwd = std::env::current_dir().ok()?;
+    if let Ok(Some(data)) = read_existing_relative_file(&cwd, rel, uri) {
+        return Some(data);
     }
-
-    // Try as absolute path
-    let p = std::path::PathBuf::from(uri);
-    if p.exists() {
-        return Some(p);
-    }
-
     None
 }
 
@@ -3931,6 +4061,105 @@ fn key_data_from_spki(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xslt_output_budget_rejects_the_exact_limit() {
+        let mut budget = XsltBudget {
+            ops: 2,
+            output_used: 0,
+            max_output: 8,
+            aborted: false,
+        };
+
+        assert!(budget.charge(7));
+        assert!(!budget.charge(8));
+        assert!(budget.aborted);
+    }
+
+    #[test]
+    fn xslt_output_budget_is_cumulative_across_transforms() {
+        // Output committed by an earlier transform must count against the
+        // shared pool: 6 committed + 2 current reaches the limit of 8.
+        let mut budget = XsltBudget {
+            ops: 100,
+            output_used: 0,
+            max_output: 8,
+            aborted: false,
+        };
+
+        assert!(budget.charge(6));
+        budget.commit_output(6);
+        assert!(budget.charge(1));
+        assert!(!budget.charge(2));
+        assert!(budget.aborted);
+    }
+
+    #[test]
+    fn xslt_transform_work_budget_rejects_exponential_blowup() {
+        // Two `<xsl:apply-templates/>` over nested input expand as 2^depth
+        // without a budget. The budget must abort with an error, not hang.
+        let outer = r#"<Transform xmlns:xsl="http://www.w3.org/1999/XSL/Transform"><xsl:stylesheet><xsl:template match="a"><xsl:apply-templates/><xsl:apply-templates/></xsl:template></xsl:stylesheet></Transform>"#;
+        let outer_doc = uppsala::parse(outer).expect("parse stylesheet");
+        let transform_node = outer_doc.document_element().expect("transform root");
+
+        let depth = 40;
+        let mut input = String::from("<a>");
+        for _ in 0..depth {
+            input.push_str("<a>");
+        }
+        for _ in 0..depth {
+            input.push_str("</a>");
+        }
+        input.push_str("</a>");
+
+        let data = bergshamra_transforms::TransformData::xml_owned(input, None);
+        let mut budget = XsltBudget::new();
+        let result = apply_xslt_transform(data, transform_node, &outer_doc, &mut budget);
+        assert!(
+            result.is_err(),
+            "exponential XSLT blow-up must be rejected by the work budget"
+        );
+    }
+
+    #[test]
+    fn xslt_work_budget_is_shared_across_transforms() {
+        // Regression test for the amplification flaw found in review: the
+        // budget was created per transform, so 128 references x 32 transforms
+        // each got a fresh 5M-op allowance and the budgets multiplied. Every
+        // transform in a verification must draw from one shared pool: the same
+        // transform repeated against the same budget has to fail once the pool
+        // runs dry, not get a fresh allowance each time.
+        let outer = r#"<Transform xmlns:xsl="http://www.w3.org/1999/XSL/Transform"><xsl:stylesheet><xsl:template match="a"><out><xsl:apply-templates/></out></xsl:template></xsl:stylesheet></Transform>"#;
+        let outer_doc = uppsala::parse(outer).expect("parse stylesheet");
+        let transform_node = outer_doc.document_element().expect("transform root");
+
+        // Each run charges a handful of ops; a budget of 3 x that cannot
+        // survive many repetitions.
+        let mut budget = XsltBudget {
+            ops: 30,
+            output_used: 0,
+            max_output: MAX_XSLT_OUTPUT,
+            aborted: false,
+        };
+
+        let mut failed_at = None;
+        for round in 0..30 {
+            let data = bergshamra_transforms::TransformData::xml_owned(
+                String::from("<a><a/><a/></a>"),
+                None,
+            );
+            if apply_xslt_transform(data, transform_node, &outer_doc, &mut budget).is_err() {
+                failed_at = Some(round);
+                break;
+            }
+        }
+
+        let failed_at = failed_at.expect(
+            "a shared budget must run dry after repeated transforms; \
+             per-transform budgets multiply and never fail",
+        );
+        assert!(failed_at > 0, "the first transform alone must fit the pool");
+    }
 
     /// Runtime-owned file used by resolver tests.
     ///
@@ -4220,6 +4449,7 @@ mod tests {
         assert_eq!(refs.len(), 1);
 
         let id_map = HashMap::new();
+        let mut xslt_budget = XsltBudget::new();
         let (mismatch, vref) = verify_reference(
             refs[0],
             &doc,
@@ -4229,6 +4459,7 @@ mod tests {
             &[],
             false,
             None,
+            &mut xslt_budget,
         )
         .expect("verify_reference failed");
         assert!(
@@ -4262,6 +4493,7 @@ mod tests {
         assert_eq!(refs.len(), 1);
 
         let id_map = build_id_map(&doc, &["Id", "ID", "id"]).expect("no duplicate IDs");
+        let mut xslt_budget = XsltBudget::new();
         let (mismatch, vref) = verify_reference(
             refs[0],
             &doc,
@@ -4271,6 +4503,7 @@ mod tests {
             &[],
             false,
             None,
+            &mut xslt_budget,
         )
         .expect("verify_reference failed");
         // The digest will not match since AAAA is bogus, so we expect Some(reason).

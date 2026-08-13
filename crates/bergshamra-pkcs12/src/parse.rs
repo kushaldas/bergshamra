@@ -465,7 +465,25 @@ fn parse_mac_data(r: BERReader) -> Result<MacData, ASN1Error> {
     })
 }
 
+/// Maximum accepted PKCS#12 key-derivation iteration count.
+///
+/// The count comes from the (possibly attacker-supplied) file, and the MAC is
+/// derived before the password is checked, so an unbounded value is a
+/// denial-of-service vector. Real keystores stay well under this ceiling.
+pub const MAX_PKCS12_ITERATIONS: u32 = 10_000_000;
+
+/// Reject an out-of-range PKCS#12 iteration count before invoking the KDF.
+fn check_iterations(iterations: u32) -> Result<(), Error> {
+    if iterations > MAX_PKCS12_ITERATIONS {
+        return Err(Error::Key(format!(
+            "PKCS#12 iteration count {iterations} exceeds maximum {MAX_PKCS12_ITERATIONS}"
+        )));
+    }
+    Ok(())
+}
+
 fn verify_mac(mac: &MacData, auth_safe_data: &[u8], password: &str) -> Result<(), Error> {
+    check_iterations(mac.iterations)?;
     let computed = match mac.digest_algorithm {
         MacHashAlgorithm::Sha1 => {
             let mac_key =
@@ -497,6 +515,7 @@ fn decrypt_data(
 ) -> Result<Vec<u8>, Error> {
     match algorithm {
         EncryptionAlgorithm::PbeSha1And3Des { salt, iterations } => {
+            check_iterations(*iterations)?;
             kdf::decrypt_pbe_sha1_3des(ciphertext, password, salt, *iterations)
         }
         EncryptionAlgorithm::Pbes2 {
@@ -504,30 +523,45 @@ fn decrypt_data(
             pbkdf2_iterations,
             pbkdf2_prf,
             aes_iv,
-        } => match pbkdf2_prf {
-            PrfAlgorithm::HmacSha256 => kdf::decrypt_pbes2_aes256cbc(
-                kryptering::HashAlgorithm::Sha256,
-                ciphertext,
-                password,
-                pbkdf2_salt,
-                *pbkdf2_iterations,
-                aes_iv,
-            ),
-            PrfAlgorithm::HmacSha1 => kdf::decrypt_pbes2_aes256cbc(
-                kryptering::HashAlgorithm::Sha1,
-                ciphertext,
-                password,
-                pbkdf2_salt,
-                *pbkdf2_iterations,
-                aes_iv,
-            ),
-        },
+        } => {
+            check_iterations(*pbkdf2_iterations)?;
+            match pbkdf2_prf {
+                PrfAlgorithm::HmacSha256 => kdf::decrypt_pbes2_aes256cbc(
+                    kryptering::HashAlgorithm::Sha256,
+                    ciphertext,
+                    password,
+                    pbkdf2_salt,
+                    *pbkdf2_iterations,
+                    aes_iv,
+                ),
+                PrfAlgorithm::HmacSha1 => kdf::decrypt_pbes2_aes256cbc(
+                    kryptering::HashAlgorithm::Sha1,
+                    ciphertext,
+                    password,
+                    pbkdf2_salt,
+                    *pbkdf2_iterations,
+                    aes_iv,
+                ),
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn iteration_count_cap_rejects_excessive_values() {
+        // Legitimate keystore iteration counts are accepted.
+        assert!(check_iterations(1).is_ok());
+        assert!(check_iterations(4096).is_ok());
+        assert!(check_iterations(600_000).is_ok());
+        assert!(check_iterations(MAX_PKCS12_ITERATIONS).is_ok());
+        // Denial-of-service work factors are rejected before the KDF runs.
+        assert!(check_iterations(MAX_PKCS12_ITERATIONS + 1).is_err());
+        assert!(check_iterations(u32::MAX).is_err());
+    }
 
     #[test]
     fn test_parse_rsa_2048_p12() {
