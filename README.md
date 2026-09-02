@@ -4,8 +4,8 @@ XML Security library implementing the W3C XML Digital Signatures
 (XML-DSig), XML Encryption (XML-Enc), and XML Canonicalization (C14N)
 specifications. Document cryptography is selectable between RustCrypto and
 AWS-LC through Kryptering; XML parsing uses
-[Uppsala](https://crates.io/crates/uppsala). Version 0.8.0 was released on
-July 31, 2026, and requires Rust 1.88.
+[Uppsala](https://crates.io/crates/uppsala). Version 0.10.1 was released on
+August 02, 2026, and requires Rust 1.88.
 
 ## Features
 
