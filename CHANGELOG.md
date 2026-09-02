@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.0 [2026-09-02]
+
+### Changed
+
+- **Breaking:** workspace crates are version 0.9.0 and use Uppsala 0.10.1.
+- Document-native signing and verification remain Rust APIs within one linked
+  dependency graph. Python bindings should cross extension-module boundaries
+  using owned serialized XML rather than sharing Uppsala DOM pointers.
+
 ## 0.8.0 [2026-07-31]
 
 ### Added
