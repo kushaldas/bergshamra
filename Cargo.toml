@@ -94,6 +94,3 @@ kryptering = { version = "0.5.0", default-features = false }
 
 # Shared trust/validation infrastructure
 tsp-ltv = { version = "0.4", default-features = false }
-
-[patch.crates-io]
-uppsala = { path = "../uppsala" }
