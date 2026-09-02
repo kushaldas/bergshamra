@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-10
 **Status:** Accepted
-**Context:** pyuppsala moved to zero-copy documents that borrow from their retained input, so its documents are no longer `Document<'static>`
+**Context:** Supporting zero-copy documents that borrow from their retained input rather than requiring `Document<'static>`
 
 ## Problem
 
@@ -13,12 +13,10 @@ The document-native signing functions were declared over
 pub fn sign_document(ctx: &DsigContext, doc: &mut Document<'static>) -> Result<(), Error>
 ```
 
-`'static` was an accident of history: the first caller (pyuppsala) happened to
-own fully `'static` documents because it copied every string out of the parse
-input via `into_static()`. When pyuppsala adopted the zero-copy model
-(pyuppsala ADR 0003), its documents became `Document<'a>` borrowing from the
-retained input string, and the `'static` bound stopped compiling for the very
-caller the API was built for.
+`'static` was an accident of history. A zero-copy `Document<'a>` may borrow
+from its retained input string, and the `'static` bound prevents such a
+document from using the API even though signing does not retain references to
+it after the call.
 
 ## Decision
 
@@ -37,10 +35,13 @@ compile unchanged.
 
 ## Consequences
 
-- bergshamra signs both owned documents and borrowed zero-copy documents; the
-  pyuppsala capsule handoff works without a document copy.
+- bergshamra signs both owned documents and borrowed zero-copy documents when
+  they are used within one linked Rust dependency graph.
 - The relaxed bound is also the honest one: nothing in signing requires the
   document to own its strings, only to be mutable for the duration of the
   call.
+- This lifetime relaxation does not change the Python extension boundary:
+  extension modules exchange owned serialized XML rather than Uppsala DOM
+  pointers or capsules.
 - Future document-native APIs in this workspace should default to generic
   document lifetimes; requiring `'static` should need a justification.

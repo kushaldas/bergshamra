@@ -10,9 +10,9 @@ The string API (`sign()`, `sign_enveloped()`, `verify()`) treats XML text as
 the unit of exchange. Internally, `sign_owned()` parses the whole template and
 then re-parses the entire document once per `<Reference>` so that
 same-document references observe already-filled `DigestValue` elements, and
-finally serializes the whole result back to a `String`. A caller that already
-holds a DOM (pyuppsala/pyFF signing a built aggregate) additionally pays one
-serialization before the call and one re-parse after it.
+finally serializes the whole result back to a `String`. A Rust caller that
+already holds a DOM additionally pays one serialization before the call and
+one re-parse after it.
 
 For an enveloped single-reference 100 MB aggregate that is two full parses
 inside the signer plus a document-sized output string, around four whole-
@@ -52,9 +52,10 @@ is tested against.
   1.88 s to 717 ms (2.6x); verify 20 MB 652 ms to 453 ms.
 - Signing mutates the caller's document (signature inserted, digest and
   signature values filled). Callers that need the pre-sign tree must copy it
-  first; the Python binding documents the same contract.
+  first.
 - Same-document references resolve against the live DOM instead of re-parsed
   text, removing the per-reference re-parse loop entirely on the fast path.
-- pybergshamra exposes these functions for pyuppsala documents through the
-  shared document capsule (pyuppsala ADR 0002), which is what makes the
-  end-to-end pyFF signing path string-free.
+- These document-native APIs are supported only within one linked Rust
+  dependency graph. Python extension modules exchange owned serialized XML;
+  sharing Uppsala DOM pointers or capsules across extension boundaries is not
+  supported.
