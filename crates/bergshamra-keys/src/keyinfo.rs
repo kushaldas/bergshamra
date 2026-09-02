@@ -36,7 +36,9 @@ fn decode_crypto_binary(text: &str, engine: &impl base64::Engine) -> Result<Vec<
 
         let bytes: Result<Vec<u8>, _> = clean
             .as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| {
                 let hex = std::str::from_utf8(pair).map_err(|e| e.to_string())?;
                 u8::from_str_radix(hex, 16).map_err(|e| e.to_string())
