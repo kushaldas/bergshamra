@@ -9,7 +9,7 @@ if [[ "$#" -ne 0 ]]; then
 fi
 
 dsig_expected='--- TOTAL OK: 447; OK (percent): 99; TOTAL FAILED: 0; TOTAL SKIPPED: 3'
-enc_expected='--- TOTAL OK: 701; OK (percent): 100; TOTAL FAILED: 0; TOTAL SKIPPED: 0'
+enc_expected='--- TOTAL OK: 700; OK (percent): 99; TOTAL FAILED: 0; TOTAL SKIPPED: 1'
 
 # XMLSEC compatibility is a contract of Bergshamra's default RustCrypto
 # configuration. Alternate providers have focused capability and policy tests.

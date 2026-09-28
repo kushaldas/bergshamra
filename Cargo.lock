@@ -204,7 +204,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "bergshamra"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "base64",
  "bergshamra-c14n",
@@ -222,7 +222,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-c14n"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "bergshamra-core",
  "bergshamra-xml",
@@ -233,14 +233,14 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-core"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "bergshamra-crypto"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "bergshamra-core",
  "hex",
@@ -252,7 +252,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-dsig"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "base64",
  "bergshamra-c14n",
@@ -269,7 +269,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-enc"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "base64",
  "bergshamra-c14n",
@@ -284,7 +284,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-keys"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "base64",
  "bergshamra-core",
@@ -320,7 +320,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-pkcs12"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "bergshamra-core",
  "cipher 0.5.2",
@@ -331,7 +331,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-transforms"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "base64",
  "bergshamra-c14n",
@@ -344,7 +344,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-xml"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "bergshamra-core",
  "uppsala",
@@ -767,6 +767,16 @@ checksum = "ce6e4c961d6cd6c9a86db418387425e8bdeaf05b3c8bc1411e6dca4c252f1453"
 dependencies = [
  "getrandom 0.4.3",
  "hybrid-array",
+ "rand_core 0.10.1",
+]
+
+[[package]]
+name = "crypto-primes"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3633a51a39c69ebbaa4feaa694bd83d241e4093901c84a0963b19d9bb3f0cf8f"
+dependencies = [
+ "crypto-bigint 0.7.5",
  "rand_core 0.10.1",
 ]
 
@@ -1391,9 +1401,9 @@ dependencies = [
 
 [[package]]
 name = "kryptering"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35eb0c42bd90483295061d56a4fbfaeb2dfe817e3e98b3244039cc13ed1fbd15"
+checksum = "246fc275192d5342930279ed2070daf15204ca2e6158e91daaa3eaff78a5477d"
 dependencies = [
  "aes 0.9.1",
  "aes-gcm",
@@ -1401,6 +1411,7 @@ dependencies = [
  "aws-lc-rs",
  "cbc 0.2.1",
  "crypto-bigint 0.7.5",
+ "crypto-primes",
  "cryptoki",
  "des 0.9.0",
  "digest 0.10.7",
@@ -1508,6 +1519,7 @@ dependencies = [
  "pkcs8 0.11.0",
  "shake",
  "signature 3.0.0",
+ "zeroize",
 ]
 
 [[package]]
@@ -2260,6 +2272,7 @@ dependencies = [
  "signature 3.0.0",
  "typenum",
  "zerocopy",
+ "zeroize",
 ]
 
 [[package]]
@@ -2387,9 +2400,9 @@ dependencies = [
 
 [[package]]
 name = "tsp-ltv"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce76d3fd38735dbbbf634c55708fdf0633acfc5c5d906998d25617115ff93bb2"
+checksum = "563d1761c001e91bfd607f254b1fbc61fa2929dbd3685d5d89964aa95d53c8b2"
 dependencies = [
  "base64",
  "chrono",
