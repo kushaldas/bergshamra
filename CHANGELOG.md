@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.2 [2026-09-28]
+
+### Changed
+
+- Require `uppsala` 0.10.1. Callers using document-native APIs must use
+  Uppsala 0.10 types.
+- Updated `kryptering` to 0.6.0 for provider and PKCS#11 security fixes.
+- Use `tsp-ltv` 0.5.0 and `kryptering` 0.6.0 from crates.io, removing local
+  checkout overrides.
+- Bumped all workspace crates and internal dependency requirements to 0.9.2.
+
 ## 0.9.1 [2026-09-22]
 
 ### Changed

@@ -4,8 +4,8 @@ XML Security library implementing the W3C XML Digital Signatures
 (XML-DSig), XML Encryption (XML-Enc), and XML Canonicalization (C14N)
 specifications. Document cryptography is selectable between RustCrypto and
 AWS-LC through Kryptering; XML parsing uses
-[Uppsala](https://crates.io/crates/uppsala). Version 0.10.1 was released on
-August 02, 2026, and requires Rust 1.88.
+[Uppsala](https://crates.io/crates/uppsala) 0.10.1. Bergshamra 0.9.2 is
+released on September 28, 2026, and requires Rust 1.88.
 
 ## Features
 
@@ -79,9 +79,9 @@ the W3C, Merlin, Aleksey, IAIK, NIST, and Phaos interop suites.
 
 | Suite | Passed | Failed | Skipped |
 |-------|--------|--------|---------|
-| Enc   | 701    | 0      | 0       |
+| Enc   | 700    | 0      | 1       |
 | DSig  | 447    | 0      | 3       |
-| **Total** | **1148** | **0** | **3** |
+| **Total** | **1147** | **0** | **4** |
 
 The three skipped DSig cases are GOST signature transform fixtures (GOST R
 34.10-2001, GOST R 34.10-2012-256, GOST R 34.10-2012-512) which require special
@@ -89,9 +89,16 @@ OS cryptographic libraries not available in the RustCrypto ecosystem, thus
 outside Kryptering's algorithm contract. Alternate providers use focused
 capability and policy tests rather than this XMLSEC compatibility gate.
 
+The skipped Enc case is existing-document decryption of the
+`xmlenc11-interop-2012` DH-1024 fixture. Its subgroup order `q` is even and
+composite, which Kryptering rejects even with `legacy-algorithms`. The
+fixture's encryption and round-trip decryption phases use valid RFC 5114
+parameters and still run. Prime-subgroup validation remains enforced.
+
 A Python shim (`tests/xmlsec1-shim.py`) translates xmlsec1 CLI flags to
-bergshamra flags, so the unmodified xmlsec test scripts run directly against
-bergshamra.
+bergshamra flags. The test runner explicitly skips the incompatible DH-1024
+decryption phase when using this shim; running against xmlsec1 retains the
+original fixture behavior.
 
 ## Workspace crates
 
@@ -159,6 +166,10 @@ Key loading options: `-k` (auto-detect PEM/DER), `-K NAME:FILE` (named key),
 let signed = bergshamra::sign(&ctx, template_xml)?;
 let signed = bergshamra::dsig::sign::sign_owned(&ctx, template_xml_string)?;
 ```
+
+Document-native APIs use Uppsala 0.10 types. Callers that pass an
+`uppsala::Document` directly must also use Uppsala 0.10; the same types are
+available through the `bergshamra::xml` re-exports.
 
 Use `sign_owned` when the caller already owns a generated template `String` and
 wants to avoid the initial clone that the borrowed `sign` convenience wrapper
