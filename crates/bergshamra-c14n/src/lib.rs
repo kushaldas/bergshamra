@@ -203,6 +203,11 @@ pub fn canonicalize_doc_to<S: AsRef<str>, W: C14nSink>(
     inclusive_prefixes: &[S],
     output: &mut W,
 ) -> Result<(), Error> {
+    // Pre-size buffering sinks: canonical output is typically on the order of
+    // the input length, and growing `Vec<u8>` through realloc-copies on 10 MB
+    // documents is pure waste. Non-buffering sinks (digest streams) ignore the
+    // hint via the default no-op reserve.
+    output.reserve(doc.input_text().len());
     match mode {
         C14nMode::Inclusive | C14nMode::InclusiveWithComments => {
             inclusive::canonicalize_to(doc, mode.with_comments(), node_set, output)

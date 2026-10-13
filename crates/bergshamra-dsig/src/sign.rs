@@ -483,6 +483,19 @@ pub fn sign_enveloped_document(
     doc: &mut Document<'_>,
     options: EnvelopedSignatureOptions<'_>,
 ) -> Result<(), Error> {
+    sign_enveloped_document_with_node(ctx, doc, options).map(|_| ())
+}
+
+/// Like [`sign_enveloped_document`], additionally returning the [`NodeId`] of
+/// the `<ds:Signature>` element that was inserted and signed.
+///
+/// Bindings that mirror the document in another DOM use the node to serialize
+/// just the signature fragment instead of the whole signed document.
+pub fn sign_enveloped_document_with_node(
+    ctx: &DsigContext,
+    doc: &mut Document<'_>,
+    options: EnvelopedSignatureOptions<'_>,
+) -> Result<NodeId, Error> {
     let sig_method = validate_signature_method(options.signature_method)?;
     let dig_method = validate_digest_method(options.digest_method)?;
     let c14n = validate_c14n_method(options.c14n_method)?;
@@ -542,7 +555,8 @@ pub fn sign_enveloped_document(
         doc.append_child(root, imported_sig);
     }
 
-    sign_document(ctx, doc)
+    sign_document(ctx, doc)?;
+    Ok(imported_sig)
 }
 
 /// Sign a parsed XML template document in place.

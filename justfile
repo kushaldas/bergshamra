@@ -36,6 +36,21 @@ fmt:
 # Integration tests (xmlsec test suite via shim)
 # All integration tests require a release build and run from the project root.
 
+# Benchmark harnesses (P0 measurement infrastructure)
+bench-c14n:
+    cargo bench -p bergshamra-c14n --bench c14n
+
+bench-dsig:
+    cargo bench -p bergshamra-dsig --bench dsig_e2e
+
+# Peak-RSS harness; requires a release build and test-data/ (see performance.md)
+bench-memory BIN=`echo target/release/bergshamra`:
+    bash scripts/membench.sh {{BIN}}
+
+# CLI wall-time harness; pass two binaries for A/B: `just bench-cli binA binB`
+bench-cli *ARGS:
+    bash scripts/hyperfine.sh {{ARGS}}
+
 # Run DSig integration tests, log to /tmp
 test-dsig: build-release
     bash {{topfolder}}/testrun.sh {{topfolder}}/testDSig.sh openssl "{{topfolder}}" "{{shim}}" pem \

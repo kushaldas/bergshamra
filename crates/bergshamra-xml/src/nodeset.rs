@@ -16,7 +16,13 @@
 //! element except the `<Signature>` subtree" can otherwise require a hash table
 //! entry for every node in a large document.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+
+use rustc_hash::FxHashSet;
+
+/// Hasher choice for node-index sets: `usize` arena indexes are SipHash's
+/// worst case; FxHash is the standard non-adversarial choice (uv lesson 05).
+pub type NodeIdSet = FxHashSet<usize>;
 use uppsala::{Document, NodeId, NodeKind};
 
 /// The storage and interpretation mode for a [`NodeSet`].
@@ -61,7 +67,7 @@ pub enum NodeSetOp {
 #[derive(Debug, Clone)]
 pub struct NodeSet {
     /// The node IDs in this set.
-    nodes: HashSet<usize>,
+    nodes: NodeIdSet,
     /// The type of this node set.
     set_type: NodeSetType,
     /// Optional namespace node visibility map.
@@ -90,7 +96,7 @@ impl NodeSet {
     /// The resulting set contains no visible nodes.
     pub fn new() -> Self {
         Self {
-            nodes: HashSet::new(),
+            nodes: NodeIdSet::default(),
             set_type: NodeSetType::Normal,
             ns_visible: None,
             exclude_attrs: false,
@@ -104,7 +110,7 @@ impl NodeSet {
     /// are accepted for compatibility, but callers should prefer the
     /// constructor methods such as [`NodeSet::tree_without_comments`] because
     /// those choose the compact representation when possible.
-    pub fn from_ids(ids: HashSet<usize>, set_type: NodeSetType) -> Self {
+    pub fn from_ids(ids: NodeIdSet, set_type: NodeSetType) -> Self {
         Self {
             nodes: ids,
             set_type,
@@ -119,7 +125,7 @@ impl NodeSet {
     /// does not allocate one hash entry per document node.
     pub fn all(_doc: &Document<'_>) -> Self {
         Self {
-            nodes: HashSet::new(),
+            nodes: NodeIdSet::default(),
             set_type: NodeSetType::Invert,
             ns_visible: None,
             exclude_attrs: false,
@@ -164,7 +170,7 @@ impl NodeSet {
             };
         }
 
-        let mut nodes = HashSet::new();
+        let mut nodes = NodeIdSet::default();
         collect_subtree(root_id, doc, &mut nodes, false);
         Self {
             nodes,
@@ -187,7 +193,7 @@ impl NodeSet {
             // The document element with comments includes almost everything in
             // the parsed document; only top-level comments/PIs outside that
             // element need to be excluded.
-            let mut nodes = HashSet::new();
+            let mut nodes = NodeIdSet::default();
             collect_document_child_exclusions(root_id, doc, &mut nodes);
             return Self {
                 nodes,
@@ -197,7 +203,7 @@ impl NodeSet {
             };
         }
 
-        let mut nodes = HashSet::new();
+        let mut nodes = NodeIdSet::default();
         collect_subtree(root_id, doc, &mut nodes, true);
         Self {
             nodes,
@@ -232,7 +238,7 @@ impl NodeSet {
     /// For [`NodeSetType::Normal`], these are visible nodes. For
     /// [`NodeSetType::Invert`], these are excluded nodes. This method exposes
     /// storage, not logical membership.
-    pub fn node_ids(&self) -> &HashSet<usize> {
+    pub fn node_ids(&self) -> &NodeIdSet {
         &self.nodes
     }
 
@@ -518,12 +524,7 @@ fn merge_ns_visible_subtract(
 }
 
 /// Collect all nodes in a subtree into a HashSet.
-fn collect_subtree(
-    id: NodeId,
-    doc: &Document<'_>,
-    set: &mut HashSet<usize>,
-    include_comments: bool,
-) {
+fn collect_subtree(id: NodeId, doc: &Document<'_>, set: &mut NodeIdSet, include_comments: bool) {
     if !include_comments && matches!(doc.node_kind(id), Some(NodeKind::Comment(_))) {
         return;
     }
@@ -537,8 +538,8 @@ fn collect_subtree(
 /// Collect every comment node in the document.
 ///
 /// Used as the exclusion list for compact "all nodes except comments" sets.
-fn collect_comment_ids(doc: &Document<'_>) -> HashSet<usize> {
-    let mut nodes = HashSet::new();
+fn collect_comment_ids(doc: &Document<'_>) -> NodeIdSet {
+    let mut nodes = NodeIdSet::default();
     for id in doc.descendants(doc.root()) {
         if matches!(doc.node_kind(id), Some(NodeKind::Comment(_))) {
             nodes.insert(id.index());
@@ -555,7 +556,7 @@ fn collect_comment_ids(doc: &Document<'_>) -> HashSet<usize> {
 fn collect_document_child_exclusions(
     selected_root: NodeId,
     doc: &Document<'_>,
-    set: &mut HashSet<usize>,
+    set: &mut NodeIdSet,
 ) {
     for child in doc.children_iter(doc.root()) {
         if child != selected_root {
@@ -568,7 +569,7 @@ fn collect_document_child_exclusions(
 mod tests {
     use super::*;
 
-    fn ids(values: &[usize]) -> HashSet<usize> {
+    fn ids(values: &[usize]) -> NodeIdSet {
         values.iter().copied().collect()
     }
 

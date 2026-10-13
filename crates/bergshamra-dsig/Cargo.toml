@@ -35,3 +35,12 @@ der.workspace = true
 bergshamra-c14n.workspace = true
 bergshamra-xml.workspace = true
 uppsala.workspace = true
+# criterion drives the end-to-end performance harness (benches/dsig_e2e.rs); rsa
+# and rand exist solely for once-per-process RSA-2048 key generation there.
+criterion.workspace = true
+rsa.workspace = true
+rand.workspace = true
+
+[[bench]]
+name = "dsig_e2e"
+harness = false

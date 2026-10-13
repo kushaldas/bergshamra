@@ -1924,7 +1924,6 @@ fn try_compound_xpath_filter<'a>(
     _sig_node: NodeId,
 ) -> Result<Option<bergshamra_transforms::TransformData<'a>>, Error> {
     use bergshamra_xml::nodeset::{NodeSet, NodeSetType};
-    use std::collections::HashSet;
 
     // Try to match: "... and count(ancestor-or-self::P:E | here()/ancestor::P:E[1]) > count(ancestor-or-self::P:E) or count(ancestor-or-self::node() | id('X')) = count(ancestor-or-self::node())"
 
@@ -1994,7 +1993,7 @@ fn try_compound_xpath_filter<'a>(
     let id_element_idx = id_map.get(id_value).map(|nid| nid.index());
 
     // Filter nodes
-    let mut result_ids = HashSet::new();
+    let mut result_ids = bergshamra_xml::nodeset::NodeIdSet::default();
     for node in inner_doc.descendants(inner_doc.root()) {
         if let Some(ref ns) = input_ns {
             if !ns.contains_id(node) {
@@ -2672,7 +2671,6 @@ fn apply_parsed_xpath_filter<'a>(
     expr: &XPathBoolExpr,
 ) -> Result<bergshamra_transforms::TransformData<'a>, Error> {
     use bergshamra_xml::nodeset::{NodeSet, NodeSetType};
-    use std::collections::HashSet;
 
     // If input is binary, convert to XML first (per XML-DSig spec: "If the input
     // is an octet stream, the implementation MUST convert the octets to an XPath
@@ -2690,7 +2688,7 @@ fn apply_parsed_xpath_filter<'a>(
     let doc = uppsala::parse(xml_text.as_ref()).map_err(|e| Error::XmlParse(e.to_string()))?;
 
     // Filter: include only nodes for which the expression evaluates to true
-    let mut result_ids = HashSet::new();
+    let mut result_ids = bergshamra_xml::nodeset::NodeIdSet::default();
     for node in doc.descendants(doc.root()) {
         // If we have an input node set, only consider nodes in it
         if let Some(ref ns) = input_ns {
@@ -2914,7 +2912,6 @@ fn evaluate_simple_xpath(
     outer_doc: &Document<'_>,
 ) -> Result<NodeSet, Error> {
     use bergshamra_xml::nodeset::NodeSet;
-    use std::collections::HashSet;
 
     // `/` — selects the entire document
     if expr == "/" {
@@ -2944,7 +2941,7 @@ fn evaluate_simple_xpath(
         };
 
         // Find all matching elements and collect their subtrees
-        let mut nodes = HashSet::new();
+        let mut nodes = bergshamra_xml::nodeset::NodeIdSet::default();
         for node in doc.descendants(doc.root()) {
             if let Some(elem) = doc.element(node) {
                 if elem.name.local_name.as_ref() == local_name {
@@ -2971,7 +2968,7 @@ fn evaluate_simple_xpath(
     // Absolute path: `/step1/step2/step3[pred]`
     if let Some(stripped) = expr.strip_prefix('/') {
         let steps = parse_xpath_path_steps(stripped)?;
-        let mut nodes = HashSet::new();
+        let mut nodes = bergshamra_xml::nodeset::NodeIdSet::default();
         let matches = evaluate_path_steps(doc, &steps, xpath_node, outer_doc)?;
         for node in &matches {
             collect_subtree_ids(*node, doc, &mut nodes);
@@ -3268,7 +3265,7 @@ fn evaluate_attr_eq(node: NodeId, doc: &Document<'_>, pred: &str) -> bool {
 fn collect_subtree_ids(
     node: NodeId,
     doc: &Document<'_>,
-    ids: &mut std::collections::HashSet<usize>,
+    ids: &mut bergshamra_xml::nodeset::NodeIdSet,
 ) {
     ids.insert(node.index());
     for child in doc.children(node) {

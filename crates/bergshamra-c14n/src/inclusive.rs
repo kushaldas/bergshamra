@@ -16,6 +16,7 @@ use crate::render::{Attr, NsDecl};
 use crate::{escape, C14nSink};
 use bergshamra_core::Error;
 use bergshamra_xml::nodeset::NodeSet;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use uppsala::{Document, NodeId, NodeKind};
 
@@ -96,7 +97,8 @@ pub fn canonicalize_with_options_to<W: C14nSink>(
         node_set,
         c14n11_mode,
     };
-    ctx.process_node(doc.root(), output, &BTreeMap::new())
+    let mut inscope_ns = BTreeMap::new();
+    ctx.process_node(doc.root(), output, &mut inscope_ns, &BTreeMap::new())
 }
 
 struct C14nContext<'a, 'doc> {
@@ -128,22 +130,31 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
         &mut self,
         id: NodeId,
         output: &mut W,
+        inscope_ns: &mut BTreeMap<String, String>,
         inherited_ns: &BTreeMap<String, String>,
     ) -> Result<(), Error> {
         match self.doc.node_kind(id) {
             Some(NodeKind::Document) => {
                 for child in self.doc.children_iter(id) {
-                    self.process_node(child, output, inherited_ns)?;
+                    self.process_node(child, output, inscope_ns, inherited_ns)?;
                 }
             }
             Some(NodeKind::Element(_)) => {
-                self.process_element(id, output, inherited_ns)?;
+                // Namespace scope is maintained incrementally: apply this
+                // element's declarations, process the subtree, then restore.
+                // This replaces the previous per-element O(depth) ancestor walk
+                // that allocated a fresh map (plus owned strings) per level.
+                let changes = apply_inscope_namespaces(self.doc, id, inscope_ns);
+                let result = self.process_element(id, output, inscope_ns, inherited_ns);
+                restore_namespaces(inscope_ns, changes);
+                result?;
             }
             Some(NodeKind::Text(text)) | Some(NodeKind::CData(text)) if self.is_visible(id) => {
                 escape::escape_text_into(output, text);
             }
             Some(NodeKind::Comment(text)) if self.with_comments && self.is_visible(id) => {
-                let text = text.clone();
+                // Borrow the comment text straight from the document arena; no
+                // per-node String allocation (uv 01: allocation hygiene).
                 // Top-level comments are separated from the document element by
                 // newlines. Comments inside elements are emitted without those
                 // synthetic separators.
@@ -173,9 +184,7 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
                 }
             }
             Some(NodeKind::ProcessingInstruction(pi)) if self.is_visible(id) => {
-                let target = pi.target.clone();
-                let data = pi.data.clone();
-
+                // Borrow target/data from the arena instead of cloning.
                 let parent_is_root = self
                     .doc
                     .parent(id)
@@ -189,8 +198,8 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
                 }
 
                 output.write(b"<?");
-                output.write(target.as_bytes());
-                if let Some(value) = &data {
+                output.write(pi.target.as_bytes());
+                if let Some(value) = &pi.data {
                     if !value.is_empty() {
                         output.write_byte(b' ');
                         escape::escape_pi_into(output, value);
@@ -220,37 +229,45 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
         &mut self,
         id: NodeId,
         output: &mut W,
+        inscope_ns: &mut BTreeMap<String, String>,
         inherited_ns: &BTreeMap<String, String>,
     ) -> Result<(), Error> {
         let visible = self.is_visible(id);
 
         if visible {
-            // Collect all namespace declarations that are "in scope" at this element.
-            // For inclusive C14N, this means all namespaces declared on this element
-            // and all ancestors that haven't been overridden.
-            let current_ns = collect_inscope_namespaces(self.doc, id);
+            // In-scope namespaces are already applied to `inscope_ns` by the
+            // caller (including this element's own declarations), matching the
+            // previous `collect_inscope_namespaces` walk-up semantics.
 
             // If the node set has namespace node visibility filtering,
             // restrict in-scope namespaces to only those whose namespace
             // node is in the node-set (per C14N spec section 2.3).
             let has_ns_filter = self.node_set.is_some_and(|ns| ns.has_ns_visible());
-            let visible_ns: BTreeMap<String, String> = if has_ns_filter {
-                let eid = id.index();
-                let ns = self.node_set.unwrap();
-                current_ns
-                    .into_iter()
-                    .filter(|(prefix, _)| ns.is_ns_visible(eid, prefix))
-                    .collect()
-            } else {
-                current_ns
-            };
+            let visible_ns: BTreeMap<String, String> =
+                if let Some(ns) = self.node_set.filter(|ns| ns.has_ns_visible()) {
+                    let eid = id.index();
+                    inscope_ns
+                        .iter()
+                        .filter(|(prefix, _)| ns.is_ns_visible(eid, prefix))
+                        .map(|(p, u)| (p.clone(), u.clone()))
+                        .collect()
+                } else {
+                    BTreeMap::new()
+                };
 
             // Determine which namespace declarations to output:
             // Output a namespace declaration if:
             // 1. It's not the xml namespace (never output xmlns:xml=...)
             // 2. It's new or different from what was inherited
             let mut ns_decls: Vec<NsDecl> = Vec::new();
-            for (prefix, uri) in &visible_ns {
+            // Entries considered: the ns-filtered visible set when namespace
+            // node filtering is active, otherwise the full in-scope map.
+            let ns_source: &BTreeMap<String, String> = if has_ns_filter {
+                &visible_ns
+            } else {
+                inscope_ns
+            };
+            for (prefix, uri) in ns_source {
                 // Skip xml namespace
                 if prefix == "xml" {
                     continue;
@@ -293,20 +310,13 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
             let attrs_excluded = self.node_set.is_some_and(|ns| ns.excludes_attrs());
             let mut attrs: Vec<Attr> = Vec::new();
             if !attrs_excluded {
-                let elem = self.doc.element(id).unwrap();
+                let elem = element_of(self.doc, id)?;
                 for attr in &elem.attributes {
-                    let ns_uri = attr.name.namespace_uri.as_deref().unwrap_or("");
-                    // Build qualified name
-                    let qname = if let Some(prefix) = find_attr_prefix(attr) {
-                        format!("{}:{}", prefix, attr.name.local_name)
-                    } else {
-                        attr.name.local_name.to_string()
-                    };
                     attrs.push(Attr {
-                        ns_uri: ns_uri.to_owned(),
-                        local_name: attr.name.local_name.to_string(),
-                        qualified_name: qname,
-                        value: attr.value.to_string(),
+                        ns_uri: attr.name.namespace_uri.clone().unwrap_or(Cow::Borrowed("")),
+                        prefix: find_attr_prefix(attr),
+                        local_name: attr.name.local_name.clone(),
+                        value: attr.value.clone(),
                     });
                 }
             } // end if !attrs_excluded
@@ -332,22 +342,21 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
                     if self.c14n11_mode {
                         let abs_base = compute_absolute_base_uri(self.doc, id);
                         let xml_ns = "http://www.w3.org/XML/1998/namespace";
-                        if let Some(attr) = attrs
-                            .iter_mut()
-                            .find(|a| a.ns_uri == xml_ns && a.local_name == "base")
-                        {
+                        if let Some(attr) = attrs.iter_mut().find(|a| {
+                            a.ns_uri.as_ref() == xml_ns && a.local_name.as_ref() == "base"
+                        }) {
                             // Replace the value with the absolute base URI
                             if !abs_base.is_empty() {
-                                attr.value = abs_base;
+                                attr.value = Cow::Owned(abs_base);
                             }
                         } else if !abs_base.is_empty() {
                             // Synthesize xml:base if there are ancestor base URIs
                             // that would change the effective base
                             attrs.push(Attr {
-                                ns_uri: xml_ns.to_owned(),
-                                local_name: "base".to_owned(),
-                                qualified_name: "xml:base".to_owned(),
-                                value: abs_base,
+                                ns_uri: Cow::Borrowed(xml_ns),
+                                prefix: Some(Cow::Borrowed("xml")),
+                                local_name: Cow::Borrowed("base"),
+                                value: Cow::Owned(abs_base),
                             });
                         }
                     }
@@ -356,17 +365,23 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
             // Re-sort after possible additions
             attrs.sort();
 
-            // Build qualified element name
-            let elem_name = qualified_element_name(self.doc, id);
-
-            // Output: <name ns-decls attrs>
+            // Output: <name ns-decls attrs>. The qualified name is written
+            // straight from the arena (no per-element String); ns decls and
+            // attributes stream through their zero-allocation write_to forms.
             output.write_byte(b'<');
-            output.write(elem_name.as_bytes());
+            {
+                let elem = element_of(self.doc, id)?;
+                if let Some(prefix) = &elem.name.prefix {
+                    output.write(prefix.as_bytes());
+                    output.write_byte(b':');
+                }
+                output.write(elem.name.local_name.as_bytes());
+            }
             for ns_decl in &ns_decls {
-                output.write(ns_decl.render().as_bytes());
+                ns_decl.write_to(output);
             }
             for attr in &attrs {
-                output.write(attr.render().as_bytes());
+                attr.write_to(output);
             }
             output.write_byte(b'>');
 
@@ -389,22 +404,27 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
                 }
                 cn
             } else {
-                let mut cn = inherited_ns.clone();
-                for (prefix, uri) in &visible_ns {
-                    if prefix != "xml" {
-                        cn.insert(prefix.clone(), uri.clone());
-                    }
-                }
-                cn
+                // Without namespace filtering, children inherit the full
+                // in-scope map maintained by the traversal (identical to the
+                // previous `inherited_ns`-plus-visible-entries construction,
+                // without the extra rebuild).
+                inscope_ns.clone()
             };
 
             for child in self.doc.children_iter(id) {
-                self.process_node(child, output, &child_ns)?;
+                self.process_node(child, output, inscope_ns, &child_ns)?;
             }
 
-            // Close tag
+            // Close tag (name written again from the arena; no String kept)
             output.write(b"</");
-            output.write(elem_name.as_bytes());
+            {
+                let elem = element_of(self.doc, id)?;
+                if let Some(prefix) = &elem.name.prefix {
+                    output.write(prefix.as_bytes());
+                    output.write_byte(b':');
+                }
+                output.write(elem.name.local_name.as_bytes());
+            }
             output.write_byte(b'>');
         } else {
             // Element not visible, but per C14N 1.0 spec (section 2.3):
@@ -420,15 +440,20 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
             let has_ns_filter = self.node_set.is_some_and(|ns| ns.has_ns_visible());
             if has_ns_filter {
                 let eid = id.index();
-                let ns = self.node_set.unwrap();
+                // has_ns_filter guarantees this is Some; resolve it without a
+                // panic-inducing unwrap so a corrupted arena errors instead.
+                let Some(ns) = self.node_set else {
+                    return Err(Error::Canonicalization(
+                        "node set disappeared during canonicalization".into(),
+                    ));
+                };
 
-                // Collect this element's in-scope namespaces
-                let current_ns = collect_inscope_namespaces(self.doc, id);
-
-                // Filter by ns_visible
-                let visible_ns: BTreeMap<String, String> = current_ns
-                    .into_iter()
+                // This element's in-scope namespaces are already applied in
+                // `inscope_ns`; filter by ns_visible.
+                let visible_ns: BTreeMap<String, String> = inscope_ns
+                    .iter()
                     .filter(|(prefix, _)| ns.is_ns_visible(eid, prefix))
+                    .map(|(p, u)| (p.clone(), u.clone()))
                     .collect();
 
                 // Output namespace declarations for visible ns nodes
@@ -463,7 +488,7 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
             // only. Invisible element ns output does not affect what
             // visible descendants render.
             for child in self.doc.children_iter(id) {
-                self.process_node(child, output, inherited_ns)?;
+                self.process_node(child, output, inscope_ns, inherited_ns)?;
             }
         }
         Ok(())
@@ -473,10 +498,15 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
     /// ancestors. Called only when the element's immediate parent is NOT
     /// visible. Per the spec and libxml2, we walk ALL ancestors (regardless
     /// of visibility) collecting xml:* attrs, then remove any already
-    /// present on the element's own attribute axis.
-    fn collect_inherited_xml_attrs(&self, id: NodeId, existing_attrs: &[Attr]) -> Vec<Attr> {
+    /// present on the element's own attribute axis. Nearest ancestor wins.
+    fn collect_inherited_xml_attrs(
+        &self,
+        id: NodeId,
+        existing_attrs: &[Attr<'doc>],
+    ) -> Vec<Attr<'doc>> {
         let xml_ns = "http://www.w3.org/XML/1998/namespace";
-        let mut inherited_xml: BTreeMap<String, String> = BTreeMap::new();
+        let mut seen: Vec<&str> = Vec::new();
+        let mut result: Vec<Attr> = Vec::new();
 
         let mut current = self.doc.parent(id);
         while let Some(ancestor) = current {
@@ -485,28 +515,24 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
                     if attr.name.namespace_uri.as_deref() == Some(xml_ns) {
                         let name = &*attr.name.local_name;
                         // Nearest ancestor value wins (first occurrence)
-                        if !inherited_xml.contains_key(name) {
-                            inherited_xml.insert(name.to_owned(), attr.value.to_string());
+                        if !seen.contains(&name) {
+                            seen.push(name);
+                            let already_present = existing_attrs.iter().any(|a| {
+                                a.ns_uri.as_ref() == xml_ns && a.local_name.as_ref() == name
+                            });
+                            if !already_present {
+                                result.push(Attr {
+                                    ns_uri: Cow::Borrowed(xml_ns),
+                                    prefix: Some(Cow::Borrowed("xml")),
+                                    local_name: attr.name.local_name.clone(),
+                                    value: attr.value.clone(),
+                                });
+                            }
                         }
                     }
                 }
             }
             current = self.doc.parent(ancestor);
-        }
-
-        let mut result = Vec::new();
-        for (name, value) in &inherited_xml {
-            let already_present = existing_attrs
-                .iter()
-                .any(|a| a.ns_uri == xml_ns && a.local_name == *name);
-            if !already_present {
-                result.push(Attr {
-                    ns_uri: xml_ns.to_owned(),
-                    local_name: name.clone(),
-                    qualified_name: format!("xml:{name}"),
-                    value: value.clone(),
-                });
-            }
         }
         result
     }
@@ -536,66 +562,74 @@ fn has_following_element(doc: &Document<'_>, id: NodeId) -> bool {
     false
 }
 
-/// Collect all in-scope namespaces for an element.
+/// Resolve an element node from the arena, mapping a missing entry to a
+/// canonicalization error instead of panicking mid-serialization.
 ///
-/// This walks up the ancestor chain and collects all namespace declarations,
-/// with closer declarations overriding more distant ones.
-fn collect_inscope_namespaces(doc: &Document<'_>, id: NodeId) -> BTreeMap<String, String> {
-    let mut ns_stack: Vec<BTreeMap<String, String>> = Vec::new();
+/// Element node IDs always resolve while a document is alive; this guard
+/// exists so an inconsistent arena can never abort the process inside a
+/// security-critical serialization path.
+fn element_of<'a, 'doc>(
+    doc: &'a Document<'doc>,
+    id: NodeId,
+) -> Result<&'a uppsala::Element<'doc>, Error> {
+    doc.element(id)
+        .ok_or_else(|| Error::Canonicalization(format!("node {id:?} is not an element")))
+}
 
-    // Walk up to root, collecting namespaces at each level
-    let mut current = Some(id);
-    while let Some(n) = current {
-        if let Some(elem) = doc.element(n) {
-            let mut level = BTreeMap::new();
-            for (prefix, uri) in &elem.namespace_declarations {
-                level.insert(prefix.to_string(), uri.to_string());
-            }
-            ns_stack.push(level);
-        }
-        current = doc.parent(n);
-    }
-
-    // Merge from root down (root is last in stack)
-    let mut result = BTreeMap::new();
-    for level in ns_stack.into_iter().rev() {
-        for (prefix, uri) in level {
-            if uri.is_empty() && prefix.is_empty() {
-                // xmlns="" undeclares the default namespace.
-                // Keep it as an empty-string entry so C14N can emit xmlns=""
-                // when the inherited default was non-empty.
-                result.insert(prefix, uri);
+/// Apply one element's namespace declarations to the incremental in-scope
+/// map, returning an undo log for [`restore_namespaces`].
+///
+/// Undeclaration semantics match the previous walk-up collector: `xmlns=""`
+/// (empty prefix, empty URI) is kept as an empty-string entry so C14N can
+/// emit `xmlns=""` when the inherited default was non-empty, while an empty
+/// URI on a prefixed declaration removes that prefix.
+fn apply_inscope_namespaces(
+    doc: &Document<'_>,
+    id: NodeId,
+    inscope_ns: &mut BTreeMap<String, String>,
+) -> Vec<(String, Option<String>)> {
+    let mut changes = Vec::new();
+    if let Some(elem) = doc.element(id) {
+        for (prefix, uri) in &elem.namespace_declarations {
+            let previous = if uri.is_empty() && prefix.is_empty() {
+                inscope_ns.insert(String::new(), String::new())
             } else if uri.is_empty() {
-                // Undeclaration of a prefixed namespace (only valid in XML 1.1)
-                result.remove(&prefix);
+                inscope_ns.remove(prefix.as_ref())
             } else {
-                result.insert(prefix, uri);
-            }
+                inscope_ns.insert(prefix.to_string(), uri.to_string())
+            };
+            changes.push((prefix.to_string(), previous));
         }
     }
-    result
+    changes
 }
 
-/// Get the qualified element name (prefix:local or just local).
-fn qualified_element_name(doc: &Document<'_>, id: NodeId) -> String {
-    let elem = doc.element(id).unwrap();
-    if let Some(prefix) = &elem.name.prefix {
-        format!("{}:{}", prefix, elem.name.local_name)
-    } else {
-        elem.name.local_name.to_string()
-    }
-}
-
-/// Find the prefix for an attribute's namespace.
-fn find_attr_prefix(attr: &uppsala::Attribute<'_>) -> Option<String> {
-    if let Some(ns_uri) = &attr.name.namespace_uri {
-        if &**ns_uri == "http://www.w3.org/XML/1998/namespace" {
-            return Some("xml".to_owned());
+/// Restore namespace bindings from an undo log in reverse mutation order.
+fn restore_namespaces(
+    namespaces: &mut BTreeMap<String, String>,
+    changes: Vec<(String, Option<String>)>,
+) {
+    for (prefix, previous) in changes.into_iter().rev() {
+        if let Some(uri) = previous {
+            namespaces.insert(prefix, uri);
+        } else {
+            namespaces.remove(&prefix);
         }
-        attr.name.prefix.as_ref().map(|p| p.to_string())
-    } else {
-        None
     }
+}
+
+/// Find the prefix for an attribute's namespace: the `xml` pseudo-prefix for
+/// XML-namespace attributes, the attribute's own prefix when namespaced, and
+/// `None` for unqualified attributes (matching the previous qualified-name
+/// construction rules exactly).
+fn find_attr_prefix<'a>(attr: &uppsala::Attribute<'a>) -> Option<Cow<'a, str>> {
+    if attr.name.namespace_uri.is_some() {
+        if attr.name.namespace_uri.as_deref() == Some("http://www.w3.org/XML/1998/namespace") {
+            return Some(Cow::Borrowed("xml"));
+        }
+        return attr.name.prefix.clone();
+    }
+    None
 }
 
 /// Compute the absolute base URI for an element by walking up ancestors
