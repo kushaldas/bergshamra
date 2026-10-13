@@ -8,6 +8,8 @@
 # allocation behavior are caught before release.
 #
 # Usage: scripts/membench.sh [BIN]   (default: target/release/bergshamra)
+#   MEMBENCH_VERBOSE=1  record the full /usr/bin/time -v report per run
+#   MEMBENCH_DIR=DIR    output directory (default: target/membench)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -32,8 +34,15 @@ run_timed() {
     # run_timed LABEL CMD...
     local label="$1"; shift
     local log="$OUT/${label//\//_}.time"
-    "$TIME_BIN" -f "elapsed_s=%e maxrss_kib=%M" -o "$log" "$@" >/dev/null
-    printf '%-28s %s\n' "$label" "$(cat "$log")"
+    if [[ -n "${MEMBENCH_VERBOSE:-}" ]]; then
+        # Full GNU time -v report (page faults, context switches, ...).
+        "$TIME_BIN" -v -o "$log" "$@" >/dev/null
+        printf '%-28s %s\n' "$label" \
+            "$(awk -F': ' '/Elapsed \(wall clock\)/ {e=$2} /Maximum resident set size/ {m=$2} END {print "elapsed=" e " maxrss_kib=" m}' "$log")"
+    else
+        "$TIME_BIN" -f "elapsed_s=%e maxrss_kib=%M" -o "$log" "$@" >/dev/null
+        printf '%-28s %s\n' "$label" "$(cat "$log")"
+    fi
 }
 
 echo "== bergshamra peak-RSS harness =="
@@ -58,4 +67,4 @@ for class in small medium large; do
     echo
 done
 
-echo "results in $OUT/*.time (raw); full -v logs: re-run with MEMBENCH_VERBOSE=1"
+echo "results in $OUT/*.time (raw); full /usr/bin/time -v logs: re-run with MEMBENCH_VERBOSE=1"

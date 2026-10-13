@@ -2235,6 +2235,53 @@ mod tests {
     }
 
     #[test]
+    fn sign_enveloped_document_with_node_returns_populated_signature_node() {
+        let ctx = hmac_signing_context();
+        let mut doc = uppsala::parse(r#"<Root ID="abc"><Data>hello</Data></Root>"#)
+            .expect("test XML must parse")
+            .into_static();
+        let options = EnvelopedSignatureOptions::new(
+            Some("abc"),
+            algorithm::HMAC_SHA256,
+            algorithm::SHA256,
+            algorithm::EXC_C14N,
+            None,
+        );
+
+        let sig_node = sign_enveloped_document_with_node(&ctx, &mut doc, options)
+            .expect("document-native enveloped signing should succeed");
+
+        // The returned node is the ds:Signature element that was inserted as
+        // the first child of the document element.
+        let element = doc
+            .element(sig_node)
+            .expect("returned node must be an element");
+        assert_eq!(element.name.local_name.as_ref(), ns::node::SIGNATURE);
+        assert_eq!(element.name.namespace_uri.as_deref(), Some(ns::DSIG));
+        let root = doc.document_element().expect("document element");
+        assert_eq!(doc.parent(sig_node), Some(root));
+        assert_eq!(doc.first_child(root), Some(sig_node));
+        assert_eq!(
+            find_element(&doc, ns::DSIG, ns::node::SIGNATURE),
+            Some(sig_node),
+            "the returned node must be the only Signature in the document"
+        );
+
+        // The fragment serialized from that node alone is the populated
+        // signature, which is what bindings splice into their own DOM.
+        let fragment = doc.node_to_xml(sig_node);
+        assert!(fragment.starts_with("<ds:Signature"));
+        assert!(fragment.ends_with("</ds:Signature>"));
+        assert!(!fragment.contains("<ds:DigestValue></ds:DigestValue>"));
+        assert!(!fragment.contains("<ds:SignatureValue></ds:SignatureValue>"));
+        assert!(!fragment.contains("<Root"));
+
+        let result = crate::verify::verify_document(&ctx, &doc)
+            .expect("document-native verify should not error");
+        assert!(result.is_valid(), "signed document must verify: {result:?}");
+    }
+
+    #[test]
     fn sign_enveloped_document_accepts_borrowed_input_document() {
         // Regression guard: the document-native signing entry points are
         // lifetime-generic so zero-copy callers can sign in place. The

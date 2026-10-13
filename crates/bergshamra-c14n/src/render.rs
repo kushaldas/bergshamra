@@ -88,6 +88,11 @@ impl PartialOrd for NsDecl {
 /// copy-on-write over the arena string, so rendering an attribute costs no
 /// allocation (the previous four owned `String`s per attribute were the
 /// dominant per-element allocation source on attribute-heavy documents).
+///
+/// Equality and ordering follow the canonical ordering key (namespace URI and
+/// local name) and are implemented by hand below; `Debug` and `Clone` are
+/// derived so the type stays as usable as the owned version it replaced.
+#[derive(Debug, Clone)]
 pub struct Attr<'a> {
     /// The namespace URI of the attribute ("" for no namespace).
     pub ns_uri: Cow<'a, str>,

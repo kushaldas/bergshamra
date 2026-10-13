@@ -130,8 +130,10 @@ fn bench_sign(c: &mut Criterion) {
 
     for (method, assertions) in [("rsa", 40), ("hmac", 40), ("hmac", 400)] {
         let fixture = prepare(method, assertions);
-        let input_len = saml_shaped(assertions).len();
-        group.throughput(Throughput::Bytes(input_len as u64));
+        // Generated once per benchmark; the timed closure measures only
+        // parse + sign + serialize, as the module docs promise.
+        let xml = saml_shaped(assertions);
+        group.throughput(Throughput::Bytes(xml.len() as u64));
         group.bench_function(format!("enveloped_{method}_{assertions}"), |b| {
             let options = EnvelopedSignatureOptions::new(
                 None,
@@ -141,8 +143,7 @@ fn bench_sign(c: &mut Criterion) {
                 None,
             );
             b.iter(|| {
-                let xml = saml_shaped(assertions);
-                let mut doc = uppsala::parse(&xml).unwrap();
+                let mut doc = uppsala::parse(black_box(&xml)).unwrap();
                 sign_enveloped_document(&fixture.signing_ctx, &mut doc, options.clone()).unwrap();
                 black_box(doc.to_xml());
             });

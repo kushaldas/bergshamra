@@ -281,10 +281,18 @@ input multiplier.
 
 ---
 
-## P0/P1 measurement infrastructure + build profile (plan.md phases 0–1)
+## P0/P1 measurement infrastructure + build profile
 
 Date: 2026-10-07. Toolchain: `rustc 1.99.0 (b940084d7 2026-09-28)`, 8 cores.
-Implements the P0/P1 phases of `plan.md`:
+
+The work was sequenced as numbered phases: P0 measurement
+harnesses and saved baselines, P1 build profile, P2 C14N allocation hygiene,
+P3 NodeSet and hashing representations, P4 duplicate-work audit (parse once
+per operation), P5 concurrency and large-input paths, P6 startup latency.
+P0 through P3 are complete and described below, P6 was measured and needs
+no work, and P4 and P5 remain open.
+
+P0 and P1:
 
 1. **P0 harnesses** (all committed):
    - `crates/bergshamra-dsig/benches/dsig_e2e.rs` — end-to-end sign/verify over
@@ -354,7 +362,7 @@ just bench-cli
 
 ---
 
-## P2 experiments: applying the uv learnings (plan.md phase 2)
+## P2 experiments: applying the uv learnings (C14N allocation hygiene)
 
 Date: 2026-10-07. Five experiments, each implemented, proven byte-identical via
 the xmlsec suites (DSig 447 OK / 0 FAILED, Enc 700 OK / 0 FAILED — the lone Enc
@@ -418,7 +426,8 @@ cases (it confirmed inclusive/text −23%, i.e. *faster*).
 ### Not applied (with reasons)
 
 - 03 rkyv / 07 rayon: N/A (rkyv has no repeated-deserialize workload;
-  verify_all parallelism is P5, needs DOM aliasing analysis).
+  verify_all parallelism is the open P5 item and needs DOM aliasing analysis
+  first).
 - 04 OnceMap: no concurrent same-work dedup hotspot in a single-operation CLI.
 - 10 caching/startup: startup measured 3.2–3.8 ms — no work needed.
 - 12 fork upstream: uppsala is not the bottleneck anymore (parse benches are
@@ -483,8 +492,8 @@ kryptering 0.6.0 from crates.io, so the RSA rows carry a crypto-path confound.
 | sign/enveloped_rsa_40 | 3.72 ms | 3.99 ms | +7% (kryptering confound + RSA noise) |
 
 The end-to-end HMAC wins exceed the parse wins alone because every verify
-and sign reparses for same-document references (the parse-once audit in
-`plan.md` P3 is still open) — each saved parse is paid several times per
+and sign reparses for same-document references (the parse-once audit, open
+item P4 above, is still pending) — each saved parse is paid several times per
 operation. Correctness gates unchanged: xmlsec DSig 447 OK / 0 FAILED /
 3 SKIPPED, Enc 700 OK / 0 FAILED / 1 SKIPPED (the deliberate DH-1024
 rejection), 181 unit tests, zero clippy warnings on both the default and the
