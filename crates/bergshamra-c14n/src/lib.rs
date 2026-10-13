@@ -184,6 +184,29 @@ pub fn canonicalize_doc<S: AsRef<str>>(
     Ok(output)
 }
 
+/// Capacity hint for buffering sinks before canonicalization starts.
+///
+/// Canonical output of a whole document is on the order of the input length,
+/// and growing a `Vec<u8>` through realloc-copies on a 10 MB document is pure
+/// waste, so whole-document and compact inverted selections (the enveloped
+/// `URI=""` reference, the document element) reserve the input length up
+/// front. Materialized selections such as a `<SignedInfo>` subtree are
+/// usually tiny relative to the document; pre-sizing them to the input would
+/// turn a few hundred bytes of output into an input-sized allocation on every
+/// sign and verify, so they return no hint and grow from their actual output.
+fn output_size_hint(doc: &Document<'_>, node_set: Option<&NodeSet>) -> Option<usize> {
+    use bergshamra_xml::nodeset::NodeSetType;
+
+    match node_set.map(NodeSet::set_type) {
+        None | Some(NodeSetType::Invert) | Some(NodeSetType::TreeInvert) => {
+            Some(doc.input_text().len())
+        }
+        Some(NodeSetType::Normal)
+        | Some(NodeSetType::Tree)
+        | Some(NodeSetType::TreeWithoutComments) => None,
+    }
+}
+
 /// Canonicalize an already parsed document into a byte sink.
 ///
 /// This is the streaming form of [`canonicalize_doc`]. It is useful when the
@@ -203,11 +226,9 @@ pub fn canonicalize_doc_to<S: AsRef<str>, W: C14nSink>(
     inclusive_prefixes: &[S],
     output: &mut W,
 ) -> Result<(), Error> {
-    // Pre-size buffering sinks: canonical output is typically on the order of
-    // the input length, and growing `Vec<u8>` through realloc-copies on 10 MB
-    // documents is pure waste. Non-buffering sinks (digest streams) ignore the
-    // hint via the default no-op reserve.
-    output.reserve(doc.input_text().len());
+    if let Some(hint) = output_size_hint(doc, node_set) {
+        output.reserve(hint);
+    }
     match mode {
         C14nMode::Inclusive | C14nMode::InclusiveWithComments => {
             inclusive::canonicalize_to(doc, mode.with_comments(), node_set, output)
@@ -222,5 +243,89 @@ pub fn canonicalize_doc_to<S: AsRef<str>, W: C14nSink>(
             inclusive_prefixes,
             output,
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bergshamra_xml::nodeset::{NodeIdSet, NodeSetType};
+
+    /// Sink that records every capacity hint it receives.
+    #[derive(Default)]
+    struct RecordingSink {
+        reserved: Vec<usize>,
+        bytes: Vec<u8>,
+    }
+
+    impl C14nSink for RecordingSink {
+        fn reserve(&mut self, additional: usize) {
+            self.reserved.push(additional);
+        }
+
+        fn write(&mut self, bytes: &[u8]) {
+            self.bytes.extend_from_slice(bytes);
+        }
+    }
+
+    const XML: &str = r#"<Root xmlns="urn:x"><A><B>text</B></A><C>more</C></Root>"#;
+
+    fn canonicalize_recording(node_set: Option<&NodeSet>) -> RecordingSink {
+        let doc = uppsala::parse(XML).expect("fixture must parse");
+        let mut sink = RecordingSink::default();
+        canonicalize_doc_to::<&str, _>(&doc, C14nMode::Exclusive, node_set, &[], &mut sink)
+            .expect("canonicalization must succeed");
+        sink
+    }
+
+    /// The serializers issue small per-node hints of their own; only the
+    /// leading, input-sized hint from `canonicalize_doc_to` is under test.
+    fn input_sized_hints(sink: &RecordingSink) -> Vec<usize> {
+        sink.reserved
+            .iter()
+            .copied()
+            .filter(|&n| n >= XML.len())
+            .collect()
+    }
+
+    #[test]
+    fn whole_document_reserves_input_length() {
+        let sink = canonicalize_recording(None);
+        assert_eq!(sink.reserved.first(), Some(&XML.len()));
+        assert_eq!(input_sized_hints(&sink), vec![XML.len()]);
+        assert!(!sink.bytes.is_empty());
+    }
+
+    #[test]
+    fn compact_inverted_set_reserves_input_length() {
+        let doc = uppsala::parse(XML).expect("fixture must parse");
+        let all = NodeSet::all_without_comments(&doc);
+        assert_eq!(all.set_type(), NodeSetType::Invert);
+        let sink = canonicalize_recording(Some(&all));
+        assert_eq!(sink.reserved.first(), Some(&XML.len()));
+        assert_eq!(input_sized_hints(&sink), vec![XML.len()]);
+    }
+
+    #[test]
+    fn sparse_normal_set_gets_no_capacity_hint() {
+        let doc = uppsala::parse(XML).expect("fixture must parse");
+        let root = doc.document_element().expect("document element");
+        let a = doc
+            .first_child(root)
+            .expect("Root must have a first child element");
+        let subtree = NodeSet::tree_without_comments(a, &doc);
+        assert_eq!(subtree.set_type(), NodeSetType::Normal);
+        let sink = canonicalize_recording(Some(&subtree));
+        assert!(
+            input_sized_hints(&sink).is_empty(),
+            "a materialized subtree must not reserve input-sized capacity: {:?}",
+            sink.reserved
+        );
+        assert_eq!(sink.bytes, b"<A xmlns=\"urn:x\"><B>text</B></A>");
+
+        let explicit = NodeSet::from_ids(NodeIdSet::default(), NodeSetType::Normal);
+        let sink = canonicalize_recording(Some(&explicit));
+        assert!(sink.reserved.is_empty(), "{:?}", sink.reserved);
+        assert!(sink.bytes.is_empty());
     }
 }
