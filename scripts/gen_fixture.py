@@ -9,7 +9,8 @@ Usage: gen_fixture.py SIZE_CLASS OUT_DIR
     SIZE_CLASS: small | medium | large   (≈ 30 KB / 1 MB / 10 MB)
 
 An unsigned document and a matching enveloped-signature template (RSA-SHA256,
-exclusive C14N, whole-document reference) are written to OUT_DIR.
+inclusive C14N 1.0 for both SignedInfo and the reference transform,
+whole-document reference) are written to OUT_DIR.
 """
 
 import os

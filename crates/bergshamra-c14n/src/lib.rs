@@ -190,20 +190,22 @@ pub fn canonicalize_doc<S: AsRef<str>>(
 /// and growing a `Vec<u8>` through realloc-copies on a 10 MB document is pure
 /// waste, so whole-document and compact inverted selections (the enveloped
 /// `URI=""` reference, the document element) reserve the input length up
-/// front. Materialized selections such as a `<SignedInfo>` subtree are
-/// usually tiny relative to the document; pre-sizing them to the input would
-/// turn a few hundred bytes of output into an input-sized allocation on every
-/// sign and verify, so they return no hint and grow from their actual output.
+/// front. Only [`NodeSetType::Invert`] stores exclusions; every other
+/// variant, `TreeInvert` included, materializes its visible node IDs (see
+/// `NodeSet::contains_id`). Materialized selections such as a `<SignedInfo>`
+/// subtree are usually tiny relative to the document; pre-sizing them to the
+/// input would turn a few hundred bytes of output into an input-sized
+/// allocation on every sign and verify, so they return no hint and grow from
+/// their actual output.
 fn output_size_hint(doc: &Document<'_>, node_set: Option<&NodeSet>) -> Option<usize> {
     use bergshamra_xml::nodeset::NodeSetType;
 
     match node_set.map(NodeSet::set_type) {
-        None | Some(NodeSetType::Invert) | Some(NodeSetType::TreeInvert) => {
-            Some(doc.input_text().len())
-        }
+        None | Some(NodeSetType::Invert) => Some(doc.input_text().len()),
         Some(NodeSetType::Normal)
         | Some(NodeSetType::Tree)
-        | Some(NodeSetType::TreeWithoutComments) => None,
+        | Some(NodeSetType::TreeWithoutComments)
+        | Some(NodeSetType::TreeInvert) => None,
     }
 }
 
@@ -323,9 +325,22 @@ mod tests {
         );
         assert_eq!(sink.bytes, b"<A xmlns=\"urn:x\"><B>text</B></A>");
 
-        let explicit = NodeSet::from_ids(NodeIdSet::default(), NodeSetType::Normal);
-        let sink = canonicalize_recording(Some(&explicit));
-        assert!(sink.reserved.is_empty(), "{:?}", sink.reserved);
-        assert!(sink.bytes.is_empty());
+        for set_type in [
+            NodeSetType::Normal,
+            NodeSetType::Tree,
+            NodeSetType::TreeWithoutComments,
+            NodeSetType::TreeInvert,
+        ] {
+            // Every materialized variant, TreeInvert included, stores visible
+            // IDs directly and must not reserve input-sized capacity.
+            let explicit = NodeSet::from_ids(NodeIdSet::default(), set_type);
+            let sink = canonicalize_recording(Some(&explicit));
+            assert!(
+                sink.reserved.is_empty(),
+                "{set_type:?} must not reserve: {:?}",
+                sink.reserved
+            );
+            assert!(sink.bytes.is_empty());
+        }
     }
 }

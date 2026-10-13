@@ -33,6 +33,11 @@
 - `bergshamra_dsig::sign::sign_enveloped_document_with_node` signs like
   `sign_enveloped_document` and returns the `NodeId` of the inserted
   `<ds:Signature>`, so bindings can serialize just the signature fragment.
+  It signs exactly the node it inserted, even when an earlier
+  `<ds:Signature>` exists in document order.
+- `bergshamra_dsig::sign::sign_document_node` signs a specific
+  `<ds:Signature>` skeleton by `NodeId`; `sign_document` is now the
+  first-in-document-order wrapper around it.
 - End-to-end DSig benchmark (`cargo bench -p bergshamra-dsig --bench dsig_e2e`),
   peak-RSS and CLI wall-time harnesses under `scripts/`, and matching
   `just bench-*` recipes.

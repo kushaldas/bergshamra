@@ -555,26 +555,58 @@ pub fn sign_enveloped_document_with_node(
         doc.append_child(root, imported_sig);
     }
 
-    sign_document(ctx, doc)?;
+    // Sign the node we inserted, not whichever `<ds:Signature>` happens to
+    // come first in document order: the document element itself could be a
+    // Signature, and the returned node must be the one that was populated.
+    sign_document_node(ctx, doc, imported_sig)?;
     Ok(imported_sig)
 }
 
 /// Sign a parsed XML template document in place.
 ///
 /// The document must contain a `<Signature>` skeleton with empty
-/// `<DigestValue>` and `<SignatureValue>` elements. Common same-document C14N
-/// transform chains are processed directly against the live DOM. Less common
-/// transform chains serialize the current DOM only for that transform pipeline,
-/// preserving behavior while still avoiding the caller-visible serialize/parse
-/// round trip.
+/// `<DigestValue>` and `<SignatureValue>` elements; the first `<ds:Signature>`
+/// in document order is signed. Use [`sign_document_node`] to target a
+/// specific signature. Common same-document C14N transform chains are
+/// processed directly against the live DOM. Less common transform chains
+/// serialize the current DOM only for that transform pipeline, preserving
+/// behavior while still avoiding the caller-visible serialize/parse round
+/// trip.
 pub fn sign_document(ctx: &DsigContext, doc: &mut Document<'_>) -> Result<(), Error> {
+    let sig_node = find_element(doc, ns::DSIG, ns::node::SIGNATURE)
+        .ok_or_else(|| Error::MissingElement("Signature".into()))?;
+    sign_document_node(ctx, doc, sig_node)
+}
+
+/// Sign the `<ds:Signature>` skeleton at `sig_node` in place.
+///
+/// This is the signing core behind [`sign_document`]; it takes the target
+/// node instead of searching for one, so callers that inserted a signature
+/// themselves, or that hold a document with several signatures, sign exactly
+/// the element they mean to. `sig_node` must be a `<ds:Signature>` element
+/// with empty `<DigestValue>` and `<SignatureValue>` children.
+pub fn sign_document_node(
+    ctx: &DsigContext,
+    doc: &mut Document<'_>,
+    sig_node: NodeId,
+) -> Result<(), Error> {
+    let is_signature = doc.element(sig_node).is_some_and(|e| {
+        e.name.local_name.as_ref() == ns::node::SIGNATURE
+            && e.name.namespace_uri.as_deref() == Some(ns::DSIG)
+    });
+    if !is_signature {
+        return Err(Error::XmlStructure(format!(
+            "node {sig_node:?} is not a {{{}}}{} element",
+            ns::DSIG,
+            ns::node::SIGNATURE
+        )));
+    }
+
     let mut id_attrs: Vec<&str> = vec!["Id", "ID", "id", "AssertionID"];
     let extra: Vec<&str> = ctx.id_attrs.iter().map(|s| s.as_str()).collect();
     id_attrs.extend(extra);
     let id_map = build_id_map(doc, &id_attrs)?;
 
-    let sig_node = find_element(doc, ns::DSIG, ns::node::SIGNATURE)
-        .ok_or_else(|| Error::MissingElement("Signature".into()))?;
     let signed_info = find_child_element(doc, sig_node, ns::DSIG, ns::node::SIGNED_INFO)
         .ok_or_else(|| Error::MissingElement("SignedInfo".into()))?;
 
@@ -2279,6 +2311,63 @@ mod tests {
         let result = crate::verify::verify_document(&ctx, &doc)
             .expect("document-native verify should not error");
         assert!(result.is_valid(), "signed document must verify: {result:?}");
+    }
+
+    #[test]
+    fn sign_enveloped_document_with_node_signs_inserted_node_not_first_signature() {
+        // The document element is itself a ds:Signature, so a lookup-based
+        // core would find it first (and fail on its missing SignedInfo) while
+        // the inserted skeleton stayed empty. The node-targeted core must sign
+        // the node it returns.
+        let ctx = hmac_signing_context();
+        let mut doc = uppsala::parse(
+            r#"<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#" ID="outer"><Data ID="abc">hello</Data></ds:Signature>"#,
+        )
+        .expect("test XML must parse")
+        .into_static();
+        let options = EnvelopedSignatureOptions::new(
+            Some("abc"),
+            algorithm::HMAC_SHA256,
+            algorithm::SHA256,
+            algorithm::EXC_C14N,
+            None,
+        );
+
+        let sig_node = sign_enveloped_document_with_node(&ctx, &mut doc, options)
+            .expect("the inserted Signature must be signed even behind an earlier one");
+
+        let root = doc.document_element().expect("document element");
+        assert_ne!(sig_node, root, "the returned node must be the inserted one");
+        assert_eq!(doc.parent(sig_node), Some(root));
+        assert_eq!(
+            find_element(&doc, ns::DSIG, ns::node::SIGNATURE),
+            Some(root),
+            "the pre-existing Signature still comes first in document order"
+        );
+
+        let fragment = doc.node_to_xml(sig_node);
+        assert!(!fragment.contains("<ds:DigestValue></ds:DigestValue>"));
+        assert!(!fragment.contains("<ds:SignatureValue></ds:SignatureValue>"));
+        assert!(
+            !fragment.contains("ID=\"outer\""),
+            "fragment must be the inserted signature only"
+        );
+    }
+
+    #[test]
+    fn sign_document_node_rejects_non_signature_node() {
+        let ctx = hmac_signing_context();
+        let mut doc = uppsala::parse(r#"<Root ID="abc"><Data>hello</Data></Root>"#)
+            .expect("test XML must parse")
+            .into_static();
+        let root = doc.document_element().expect("document element");
+
+        let err = sign_document_node(&ctx, &mut doc, root)
+            .expect_err("a non-Signature target must be rejected");
+        assert!(
+            matches!(err, Error::XmlStructure(ref m) if m.contains("Signature")),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[test]

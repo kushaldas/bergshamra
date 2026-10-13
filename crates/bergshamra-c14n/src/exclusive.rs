@@ -454,14 +454,17 @@ fn element_of<'a, 'doc>(
 }
 
 /// Get the prefix for an attribute: `Some("xml")` for XML-namespace
-/// attributes, otherwise the attribute's own prefix (empty string when the
-/// attribute is namespaced but unprefixed, `None` when unqualified).
+/// attributes, otherwise the attribute's own non-empty prefix, and `None`
+/// when the attribute is unqualified or namespaced without a prefix.
 fn get_attr_prefix<'a>(attr: &uppsala::Attribute<'a>) -> Option<Cow<'a, str>> {
     if attr.name.namespace_uri.is_some() {
         if attr.name.namespace_uri.as_deref() == Some("http://www.w3.org/XML/1998/namespace") {
             return Some(Cow::Borrowed("xml"));
         }
-        return attr.name.prefix.clone();
+        // `Attr::write_to` renders every `Some(prefix)` as `prefix:`, so a
+        // namespaced attribute whose arena prefix is the empty string must
+        // map to `None` or it would serialize as the invalid name `:local`.
+        return attr.name.prefix.clone().filter(|p| !p.is_empty());
     }
     None
 }
@@ -529,6 +532,39 @@ fn visible_namespace_uri<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn get_attr_prefix_maps_empty_prefix_to_none() {
+        let attr = |uri: Option<&'static str>, prefix: Option<&'static str>| uppsala::Attribute {
+            name: uppsala::QName {
+                namespace_uri: uri.map(Cow::Borrowed),
+                prefix: prefix.map(Cow::Borrowed),
+                local_name: Cow::Borrowed("local"),
+            },
+            value: Cow::Borrowed("v"),
+        };
+
+        assert_eq!(get_attr_prefix(&attr(None, None)), None);
+        assert_eq!(
+            get_attr_prefix(&attr(Some("urn:x"), Some("p"))).as_deref(),
+            Some("p")
+        );
+        assert_eq!(
+            get_attr_prefix(&attr(Some("http://www.w3.org/XML/1998/namespace"), None)).as_deref(),
+            Some("xml")
+        );
+        // Namespaced but unprefixed: must not render as `:local`.
+        assert_eq!(get_attr_prefix(&attr(Some("urn:x"), Some(""))), None);
+        assert_eq!(get_attr_prefix(&attr(Some("urn:x"), None)), None);
+        let rendered = crate::render::Attr {
+            ns_uri: Cow::Borrowed("urn:x"),
+            prefix: get_attr_prefix(&attr(Some("urn:x"), Some(""))),
+            local_name: Cow::Borrowed("local"),
+            value: Cow::Borrowed("v"),
+        }
+        .render();
+        assert_eq!(rendered, " local=\"v\"");
+    }
 
     // --- W3C C14N Spec Examples tested with Exclusive C14N ---
     // Ported from Go signedxml library canonicalization_test.go.
