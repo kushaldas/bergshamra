@@ -178,7 +178,14 @@ between consecutive runs), so only deltas far outside that band are claimed;
 the inclusive C14N wins cleared it in three independent comparisons and the
 ambiguous cases were confirmed with thermally neutral stash A/B runs.
 
-Stage 1, the C14N and rendering changes against the post-profile tree:
+Stage 1 covers the C14N and rendering changes. The two tables use different
+baselines and say so: the C14N rows were measured against the tree after the
+release profile landed, so they isolate the code changes; the end-to-end rows
+were saved against the earlier pre-profile baseline, so their first delta
+includes the profile gain and the second delta, where a post-profile value
+exists, isolates the C14N and rendering stage.
+
+C14N, against the post-profile tree:
 
 | Benchmark | Before | After | Change |
 | --- | ---: | ---: | ---: |
@@ -187,10 +194,16 @@ Stage 1, the C14N and rendering changes against the post-profile tree:
 | c14n_inclusive/text_heavy | 75 us | 58 us | -22% |
 | c14n_exclusive/saml | 232 us | 176 us | -24% |
 | c14n_exclusive/attr_heavy | 490 us | 442 us | -11% |
-| verify/enveloped_hmac_40 | 922 us | 680 us | -28% |
-| verify/enveloped_hmac_400 | 8.37 ms | 6.52 ms | -22% |
-| sign/enveloped_hmac_40 | 966 us | 901 us | -12% |
-| sign/enveloped_rsa_40 | 3.92 ms | 3.59 ms | -8% |
+
+End-to-end, against the pre-profile baseline, with the post-profile value
+where one was recorded:
+
+| Benchmark | Pre-profile | Post-profile | After | vs pre | vs post |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| verify/enveloped_hmac_40 | 922 us | 778 us | 680 us | -28% | -13% |
+| verify/enveloped_hmac_400 | 8.37 ms | 7.00 ms | 6.52 ms | -22% | -7% |
+| sign/enveloped_hmac_40 | 966 us | n/a | 901 us | -12% | n/a |
+| sign/enveloped_rsa_40 | 3.92 ms | 3.96 ms | 3.59 ms | -8% | -9% |
 
 Stage 2, the uppsala 0.10.1 to 0.12.0 bump with bergshamra code identical in
 both columns, so the C14N rows are the noise-floor control:

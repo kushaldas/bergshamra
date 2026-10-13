@@ -398,16 +398,21 @@ cases (it confirmed inclusive/text −23%, i.e. *faster*).
 | c14n_exclusive/attr_heavy | 490 µs | 442 µs | −11% |
 | c14n_exclusive/text_heavy | 76 µs | ~85 µs | noise |
 
-### End-to-end dsig_e2e (vs `plan-p0` = post-P1 tree)
+### End-to-end dsig_e2e (vs `plan-p0` = the pre-P1 baseline)
 
-| Benchmark | plan-p0 | after E1–E5 | Delta |
-|---|---:|---:|---:|
-| verify/enveloped_hmac_40 | 922 µs | 680 µs | **−28%** |
-| verify/enveloped_hmac_400 | 8.37 ms | 6.52 ms | **−22%** |
-| sign/enveloped_hmac_40 | 966 µs | 901 µs | −12% |
-| sign/enveloped_rsa_40 | 3.92 ms | 3.59 ms | −8% |
-| verify/enveloped_rsa_40 | 1.20 ms | 1.07 ms | −3% (noise band) |
-| sign/enveloped_hmac_400 | 8.32 ms | 8.04 ms | noise band |
+`plan-p0` was saved before the P1 build profile landed, so the deltas in the
+first pair of columns include the P1 profile gains as well as E1–E5. The
+"post-P1" column repeats the After-P1 table above where a value was
+recorded, so the C14N/rendering stage can be attributed on its own.
+
+| Benchmark | plan-p0 (pre-P1) | post-P1 | after E1–E5 | Delta vs pre-P1 | Delta vs post-P1 |
+|---|---:|---:|---:|---:|---:|
+| verify/enveloped_hmac_40 | 922 µs | 778 µs | 680 µs | **−28%** | −13% |
+| verify/enveloped_hmac_400 | 8.37 ms | 7.00 ms | 6.52 ms | **−22%** | −7% |
+| sign/enveloped_hmac_40 | 966 µs | n/a | 901 µs | −12% | n/a |
+| sign/enveloped_rsa_40 | 3.92 ms | 3.96 ms | 3.59 ms | −8% | −9% |
+| verify/enveloped_rsa_40 | 1.20 ms | n/a | 1.07 ms | −3% (noise band) | n/a |
+| sign/enveloped_hmac_400 | 8.32 ms | n/a | 8.04 ms | noise band | n/a |
 
 ### Design notes
 
