@@ -21,7 +21,7 @@ pub mod render;
 
 use bergshamra_core::{algorithm, Error};
 use bergshamra_xml::NodeSet;
-use uppsala::Document;
+use uppsala::{Document, NodeId};
 
 /// Destination for canonicalized bytes.
 ///
@@ -184,28 +184,63 @@ pub fn canonicalize_doc<S: AsRef<str>>(
     Ok(output)
 }
 
+/// Inverted selections with at most this many exclusions are treated as
+/// whole-document shapes when the parser's source ranges are unavailable.
+///
+/// The compact constructors (`NodeSet::all`, `all_without_comments`, the
+/// document-element subtree) exclude only comments, top-level siblings, or
+/// an enveloped `<ds:Signature>` subtree: a few dozen nodes at most.
+const COMPACT_EXCLUSION_LIMIT: usize = 64;
+
 /// Capacity hint for buffering sinks before canonicalization starts.
 ///
 /// Canonical output of a whole document is on the order of the input length,
 /// and growing a `Vec<u8>` through realloc-copies on a 10 MB document is pure
-/// waste, so whole-document and compact inverted selections (the enveloped
-/// `URI=""` reference, the document element) reserve the input length up
-/// front. Only [`NodeSetType::Invert`] stores exclusions; every other
-/// variant, `TreeInvert` included, materializes its visible node IDs (see
+/// waste, so whole-document selections reserve the input length up front.
+///
+/// Only [`NodeSetType::Invert`] stores exclusions; every other variant,
+/// `TreeInvert` included, materializes its visible node IDs (see
 /// `NodeSet::contains_id`). Materialized selections such as a `<SignedInfo>`
 /// subtree are usually tiny relative to the document; pre-sizing them to the
 /// input would turn a few hundred bytes of output into an input-sized
 /// allocation on every sign and verify, so they return no hint and grow from
 /// their actual output.
+///
+/// An inverted set is not necessarily dense either: `NodeSet::from_ids` and
+/// the set algebra can produce `all - large_normal_set`, whose output is a
+/// small fragment. The hint therefore subtracts the source length of every
+/// excluded node (`Document::node_serialized_size_hint`) from the input
+/// length. Nested exclusions are counted more than once, which only lowers
+/// the estimate; a hint is never an upper bound. When the document was
+/// mutated after parsing those ranges are unavailable, and only exclusion
+/// sets small enough to be a compact shape keep the whole-input hint.
 fn output_size_hint(doc: &Document<'_>, node_set: Option<&NodeSet>) -> Option<usize> {
     use bergshamra_xml::nodeset::NodeSetType;
 
-    match node_set.map(NodeSet::set_type) {
-        None | Some(NodeSetType::Invert) => Some(doc.input_text().len()),
-        Some(NodeSetType::Normal)
-        | Some(NodeSetType::Tree)
-        | Some(NodeSetType::TreeWithoutComments)
-        | Some(NodeSetType::TreeInvert) => None,
+    let input_len = doc.input_text().len();
+    let node_set = match node_set {
+        None => return Some(input_len),
+        Some(set) => set,
+    };
+    match node_set.set_type() {
+        NodeSetType::Invert => {
+            let excluded_ids = node_set.node_ids();
+            if excluded_ids.is_empty() {
+                return Some(input_len);
+            }
+            if doc.node_serialized_size_hint(doc.root()) == 0 {
+                // Source ranges are gone (mutated or programmatic document).
+                return (excluded_ids.len() <= COMPACT_EXCLUSION_LIMIT).then_some(input_len);
+            }
+            let excluded_bytes = excluded_ids.iter().fold(0usize, |acc, &index| {
+                acc.saturating_add(doc.node_serialized_size_hint(NodeId::new(index)))
+            });
+            Some(input_len.saturating_sub(excluded_bytes))
+        }
+        NodeSetType::Normal
+        | NodeSetType::Tree
+        | NodeSetType::TreeWithoutComments
+        | NodeSetType::TreeInvert => None,
     }
 }
 
@@ -306,6 +341,55 @@ mod tests {
         let sink = canonicalize_recording(Some(&all));
         assert_eq!(sink.reserved.first(), Some(&XML.len()));
         assert_eq!(input_sized_hints(&sink), vec![XML.len()]);
+    }
+
+    #[test]
+    fn sparse_inverted_set_reserves_only_the_visible_remainder() {
+        // all - <A> subtree: an inverted set whose output is the small
+        // remainder, so the hint must shrink by the excluded source bytes.
+        let doc = uppsala::parse(XML).expect("fixture must parse");
+        let root = doc.document_element().expect("document element");
+        let a = doc.first_child(root).expect("Root must have <A>");
+        let a_len = doc.node_serialized_size_hint(a);
+        assert!(a_len > 0, "parsed nodes carry a source range");
+        let subtree = NodeSet::tree_without_comments(a, &doc);
+        let sparse = NodeSet::all_without_comments(&doc).subtract(&subtree);
+        assert_eq!(sparse.set_type(), NodeSetType::Invert);
+
+        let hint = output_size_hint(&doc, Some(&sparse)).expect("inverted sets get a hint");
+        assert!(
+            hint < XML.len() && hint <= XML.len() - a_len,
+            "hint {hint} must drop at least the excluded {a_len} bytes of {}",
+            XML.len()
+        );
+        let sink = canonicalize_recording(Some(&sparse));
+        assert!(input_sized_hints(&sink).is_empty(), "{:?}", sink.reserved);
+        assert_eq!(sink.bytes, b"<Root xmlns=\"urn:x\"><C>more</C></Root>");
+    }
+
+    #[test]
+    fn mutated_document_keeps_hint_only_for_compact_exclusion_sets() {
+        // After a mutation the parser ranges are invalid, so the hint falls
+        // back to the exclusion cardinality: a handful of exclusions is a
+        // compact shape, a large exclusion set is not.
+        // Borrowed parse: `into_static` drops the input text (its hint is
+        // always 0), whereas a mutation keeps the text but invalidates ranges.
+        let mut doc = uppsala::parse(XML).expect("fixture must parse");
+        let root = doc.document_element().expect("document element");
+        let extra = doc.create_element(uppsala::QName {
+            namespace_uri: None,
+            prefix: None,
+            local_name: std::borrow::Cow::Borrowed("D"),
+        });
+        doc.append_child(root, extra);
+        assert_eq!(doc.node_serialized_size_hint(doc.root()), 0);
+
+        let few = NodeSet::all_without_comments(&doc);
+        assert_eq!(output_size_hint(&doc, Some(&few)), Some(XML.len()));
+
+        let many: NodeIdSet = (0..=COMPACT_EXCLUSION_LIMIT).collect();
+        let sparse = NodeSet::from_ids(many, NodeSetType::Invert);
+        assert_eq!(output_size_hint(&doc, Some(&sparse)), None);
     }
 
     #[test]

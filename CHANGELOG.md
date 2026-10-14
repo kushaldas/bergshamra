@@ -17,9 +17,10 @@
   follows the canonical ordering key (namespace URI and local name).
 - `NodeSet` stores node indexes in an `FxHashSet` exposed as the
   `NodeIdSet` alias; `NodeSet::from_ids` and `NodeSet::node_ids` use it.
-- `canonicalize_doc_to` pre-sizes buffering sinks to the input length for
-  whole-document and compact inverted selections; materialized subsets such
-  as `<SignedInfo>` grow from their actual output instead.
+- `canonicalize_doc_to` pre-sizes buffering sinks for whole-document and
+  inverted selections, subtracting the source length of excluded nodes so a
+  sparse inverted set reserves only its visible remainder; materialized
+  subsets such as `<SignedInfo>` grow from their actual output instead.
 - Element lookups inside the C14N serializers return
   `Error::Canonicalization` on an inconsistent arena instead of panicking.
 - The release profile uses fat LTO, a single codegen unit, and symbol
