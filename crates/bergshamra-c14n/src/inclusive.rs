@@ -17,7 +17,7 @@ use crate::{escape, C14nSink};
 use bergshamra_core::Error;
 use bergshamra_xml::nodeset::NodeSet;
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use uppsala::{Document, NodeId, NodeKind};
 
 /// Canonicalize a document using Inclusive C14N 1.0.
@@ -519,7 +519,15 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
         existing_attrs: &[Attr<'a>],
     ) -> Vec<Attr<'a>> {
         let xml_ns = "http://www.w3.org/XML/1998/namespace";
-        let mut seen: Vec<&str> = Vec::new();
+        // Borrowed-key sets: logarithmic membership without copying names.
+        // A `Vec::contains` scan would be quadratic in the number of distinct
+        // ancestor `xml:*` attributes, which untrusted input controls.
+        let existing_xml: BTreeSet<&str> = existing_attrs
+            .iter()
+            .filter(|a| a.ns_uri.as_ref() == xml_ns)
+            .map(|a| a.local_name.as_ref())
+            .collect();
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
         let mut result: Vec<Attr> = Vec::new();
 
         let mut current = self.doc.parent(id);
@@ -529,11 +537,8 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
                     if attr.name.namespace_uri.as_deref() == Some(xml_ns) {
                         let name = &*attr.name.local_name;
                         // Nearest ancestor value wins (first occurrence)
-                        if !seen.contains(&name) {
-                            seen.push(name);
-                            let already_present = existing_attrs.iter().any(|a| {
-                                a.ns_uri.as_ref() == xml_ns && a.local_name.as_ref() == name
-                            });
+                        if seen.insert(name) {
+                            let already_present = existing_xml.contains(name);
                             if !already_present {
                                 result.push(Attr {
                                     ns_uri: Cow::Borrowed(xml_ns),

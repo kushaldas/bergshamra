@@ -601,6 +601,15 @@ pub fn sign_document_node(
             ns::node::SIGNATURE
         )));
     }
+    // A Signature that was imported or created but never attached is not
+    // part of the document: canonicalizing its SignedInfo as a document
+    // subset would traverse from the root, find nothing, and happily sign an
+    // empty message. Reject it before any digest is computed.
+    if element_path(doc, sig_node).is_none() {
+        return Err(Error::XmlStructure(format!(
+            "node {sig_node:?} is a Signature element that is not attached to the document"
+        )));
+    }
 
     let mut id_attrs: Vec<&str> = vec!["Id", "ID", "id", "AssertionID"];
     let extra: Vec<&str> = ctx.id_attrs.iter().map(|s| s.as_str()).collect();
@@ -2655,6 +2664,61 @@ mod tests {
             .filter_map(|c| doc.element(c).map(|e| e.name.local_name.to_string()))
             .collect();
         assert_eq!(children, vec!["X509SubjectName".to_string()]);
+    }
+
+    #[test]
+    fn sign_document_node_rejects_detached_signature_node() {
+        // Imported but never attached: the node is a well-formed Signature,
+        // yet it is unreachable from the document root. Signing it would
+        // canonicalize an empty SignedInfo subset and produce a signature
+        // over nothing that can never verify once attached.
+        let ctx = hmac_signing_context();
+        let mut doc = uppsala::parse(r#"<Root ID="abc"><Data>hello</Data></Root>"#)
+            .expect("test XML must parse")
+            .into_static();
+        let template = r#"<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/><ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#hmac-sha256"/><ds:Reference URI=""><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/><ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue></ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue></ds:SignatureValue></ds:Signature>"#;
+        let sig_doc = uppsala::parse(template).expect("template must parse");
+        let sig_root = sig_doc.document_element().expect("template root");
+        let detached = doc
+            .import_subtree(&sig_doc, sig_root)
+            .expect("import must succeed");
+        assert_eq!(doc.parent(detached), None);
+        let before = doc.to_xml();
+
+        let err = sign_document_node(&ctx, &mut doc, detached)
+            .expect_err("a detached Signature must be rejected");
+        assert!(
+            matches!(err, Error::XmlStructure(ref m) if m.contains("not attached")),
+            "unexpected error: {err:?}"
+        );
+        assert_eq!(
+            doc.to_xml(),
+            before,
+            "a rejected target must not modify the document"
+        );
+        let digest_value = doc
+            .descendants(detached)
+            .into_iter()
+            .find(|&id| {
+                doc.element(id)
+                    .is_some_and(|e| e.name.local_name.as_ref() == ns::node::DIGEST_VALUE)
+            })
+            .expect("detached skeleton keeps its DigestValue");
+        assert!(
+            doc.text_content_deep(digest_value).trim().is_empty(),
+            "no digest may be written into the detached skeleton"
+        );
+
+        // The same skeleton signs and verifies once attached.
+        let root = doc.document_element().expect("document element");
+        let first = doc.first_child(root).expect("first child");
+        doc.insert_before(root, detached, first);
+        sign_document_node(&ctx, &mut doc, detached).expect("attached skeleton signs");
+        let result = crate::verify::verify(&ctx, &doc.to_xml()).expect("verify");
+        assert!(
+            result.is_valid(),
+            "attached signature must verify: {result:?}"
+        );
     }
 
     #[test]

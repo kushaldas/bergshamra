@@ -45,7 +45,9 @@
   `<ds:Signature>` skeleton by `NodeId`; `sign_document` is now the
   first-in-document-order wrapper around it. Certificate population fills
   only the target signature's own `<KeyInfo>/<X509Data>`, never the first
-  `<X509Data>` anywhere in the document. The generic transform fallback
+  `<X509Data>` anywhere in the document. A target that is not attached to
+  the document is rejected with `Error::XmlStructure` before any digest is
+  computed. The generic transform fallback
   re-parses the serialized document once and remaps the signature and
   transform nodes into that arena by element path, so a signature inserted
   into a mutated document keeps its identity through transforms such as

@@ -38,10 +38,18 @@ if [[ ! -f "$SMALL" || ! -f "$LARGE" ]]; then
     exit 1
 fi
 
-# Workload table: label and the argument string appended to a binary path.
+# hyperfine runs each command string through a shell, so every path is
+# single-quoted here (with embedded quotes escaped) to survive spaces and
+# shell metacharacters in MEMBENCH_DIR or the binary locations. Single
+# quotes are POSIX sh quoting, which is what hyperfine's default shell uses.
+shq() {
+    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+# Workload table: label and the argument string appended to a quoted binary.
 WORKLOADS=(
-    "verify/small|verify --key $KEY $SMALL"
-    "verify/large|verify --key $KEY $LARGE"
+    "verify/small|verify --key $(shq "$KEY") $(shq "$SMALL")"
+    "verify/large|verify --key $(shq "$KEY") $(shq "$LARGE")"
     "startup|--version"
 )
 
@@ -53,8 +61,8 @@ if [[ $# -ge 2 ]]; then
         echo
         echo "-- $label --"
         hyperfine --warmup 5 --runs 50 \
-            --command-name "A: $label" "$A $args" \
-            --command-name "B: $label" "$B $args"
+            --command-name "A: $label" "$(shq "$A") $args" \
+            --command-name "B: $label" "$(shq "$B") $args"
     done
 else
     BIN="${1:-$ROOT/target/release/bergshamra}"
@@ -63,6 +71,6 @@ else
         label="${entry%%|*}"; args="${entry#*|}"
         echo
         echo "-- $label --"
-        hyperfine --warmup 5 --runs 50 --command-name "$label" "$BIN $args"
+        hyperfine --warmup 5 --runs 50 --command-name "$label" "$(shq "$BIN") $args"
     done
 fi
