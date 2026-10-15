@@ -35,3 +35,19 @@ der.workspace = true
 bergshamra-c14n.workspace = true
 bergshamra-xml.workspace = true
 uppsala.workspace = true
+# criterion drives both performance harnesses (benches/dsig.rs and
+# benches/dsig_e2e.rs); rsa and rand exist solely for once-per-process
+# RSA-2048 key generation in dsig_e2e.
+criterion.workspace = true
+rsa.workspace = true
+rand.workspace = true
+
+# String API vs document-native API ("bridge win") at ~1 MB and ~20 MB.
+[[bench]]
+name = "dsig"
+harness = false
+
+# End-to-end sign/verify over the SAML-shaped fixture family, RSA and HMAC.
+[[bench]]
+name = "dsig_e2e"
+harness = false

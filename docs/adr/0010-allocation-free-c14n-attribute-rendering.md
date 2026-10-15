@@ -1,7 +1,7 @@
 # ADR-0010: Allocation-Free C14N Attribute and Namespace Rendering
 
 **Date:** 2026-07-10
-**Status:** Proposed
+**Status:** Superseded by ADR-0012 (implemented with a single borrowed `Cow` type instead of two rendering paths)
 **Context:** Investigating per-element allocation in C14N attribute and
 namespace rendering
 

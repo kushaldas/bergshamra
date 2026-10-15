@@ -16,6 +16,7 @@ use crate::render::{Attr, NsDecl};
 use crate::{escape, C14nSink};
 use bergshamra_core::Error;
 use bergshamra_xml::nodeset::NodeSet;
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 use uppsala::{Document, NodeId, NodeKind};
 
@@ -126,7 +127,7 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
                 escape::escape_text_into(output, text);
             }
             Some(NodeKind::Comment(text)) if self.with_comments && self.is_visible(id) => {
-                let text = text.clone();
+                // Borrowed from the document arena; no per-node String.
                 let parent_is_root = self
                     .doc
                     .parent(id)
@@ -151,9 +152,7 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
                 }
             }
             Some(NodeKind::ProcessingInstruction(pi)) if self.is_visible(id) => {
-                let target = pi.target.clone();
-                let data = pi.data.clone();
-
+                // Borrowed from the document arena; no per-node Strings.
                 let parent_is_root = self
                     .doc
                     .parent(id)
@@ -167,8 +166,8 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
                 }
 
                 output.write(b"<?");
-                output.write(target.as_bytes());
-                if let Some(value) = &data {
+                output.write(pi.target.as_bytes());
+                if let Some(value) = &pi.data {
                     if !value.is_empty() {
                         output.write_byte(b' ');
                         escape::escape_pi_into(output, value);
@@ -209,16 +208,16 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
             let mut utilized_prefixes: HashSet<String> = HashSet::new();
 
             // 1. Prefix used by the element's tag name
-            let elem_prefix = get_element_prefix(self.doc, id);
-            utilized_prefixes.insert(elem_prefix.clone());
+            let elem_prefix = get_element_prefix(self.doc, id)?;
+            utilized_prefixes.insert(elem_prefix);
 
             // 2. Prefixes used by attributes
             {
-                let elem = self.doc.element(id).unwrap();
+                let elem = element_of(self.doc, id)?;
                 for attr in &elem.attributes {
                     if let Some(prefix) = get_attr_prefix(attr) {
                         if !prefix.is_empty() {
-                            utilized_prefixes.insert(prefix);
+                            utilized_prefixes.insert(prefix.into_owned());
                         }
                     }
                 }
@@ -259,7 +258,7 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
                     // Default namespace: if it was previously non-empty and now should be empty,
                     // we need to output xmlns=""
                     let previously_rendered = rendered_ns.get("");
-                    if previously_rendered.is_some() && !previously_rendered.unwrap().is_empty() {
+                    if previously_rendered.is_some_and(|uri| !uri.is_empty()) {
                         ns_decls.push(NsDecl {
                             prefix: String::new(),
                             uri: String::new(),
@@ -269,37 +268,34 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
             }
             ns_decls.sort();
 
-            // Collect attributes
+            // Collect attributes (borrowed from the arena; no per-attr Strings)
             let mut attrs: Vec<Attr> = Vec::new();
             {
-                let elem = self.doc.element(id).unwrap();
+                let elem = element_of(self.doc, id)?;
                 for attr in &elem.attributes {
-                    let ns_uri = attr.name.namespace_uri.as_deref().unwrap_or("");
-                    let qname = if let Some(prefix) = get_attr_prefix(attr) {
-                        if prefix.is_empty() {
-                            attr.name.local_name.to_string()
-                        } else {
-                            format!("{}:{}", prefix, attr.name.local_name)
-                        }
-                    } else {
-                        attr.name.local_name.to_string()
-                    };
+                    // Borrow from the document borrow (`'a`), not by cloning
+                    // the arena `Cow`s: for an owned document (`into_static`)
+                    // a `Cow::clone` deep-copies every string.
                     attrs.push(Attr {
-                        ns_uri: ns_uri.to_owned(),
-                        local_name: attr.name.local_name.to_string(),
-                        qualified_name: qname,
-                        value: attr.value.to_string(),
+                        ns_uri: Cow::Borrowed(attr.name.namespace_uri.as_deref().unwrap_or("")),
+                        prefix: get_attr_prefix(attr),
+                        local_name: Cow::Borrowed(attr.name.local_name.as_ref()),
+                        value: Cow::Borrowed(attr.value.as_ref()),
                     });
                 }
             }
             attrs.sort();
 
-            // Build qualified element name
-            let elem_name = qualified_element_name(self.doc, id);
-
-            // Output start tag
+            // Output start tag (name streamed from the arena, no String)
             output.write_byte(b'<');
-            output.write(elem_name.as_bytes());
+            {
+                let elem = element_of(self.doc, id)?;
+                if let Some(prefix) = &elem.name.prefix {
+                    output.write(prefix.as_bytes());
+                    output.write_byte(b':');
+                }
+                output.write(elem.name.local_name.as_bytes());
+            }
             for ns_decl in &ns_decls {
                 ns_decl.write_to(output);
             }
@@ -348,9 +344,16 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
             restore_namespaces(rendered_ns, rendered_changes);
             child_result?;
 
-            // Close tag
+            // Close tag (name written again from the arena; no String kept)
             output.write(b"</");
-            output.write(elem_name.as_bytes());
+            {
+                let elem = element_of(self.doc, id)?;
+                if let Some(prefix) = &elem.name.prefix {
+                    output.write(prefix.as_bytes());
+                    output.write_byte(b':');
+                }
+                output.write(elem.name.local_name.as_bytes());
+            }
             output.write_byte(b'>');
         } else {
             // Element not visible -- in exclusive C14N, namespace
@@ -361,7 +364,13 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
             let has_ns_filter = self.node_set.is_some_and(|ns| ns.has_ns_visible());
             if has_ns_filter && !self.inclusive_prefixes.is_empty() {
                 let eid = id.index();
-                let ns = self.node_set.unwrap();
+                // has_ns_filter guarantees this is Some; resolve it without a
+                // panic-inducing unwrap so a corrupted arena errors instead.
+                let Some(ns) = self.node_set else {
+                    return Err(Error::Canonicalization(
+                        "node set disappeared during canonicalization".into(),
+                    ));
+                };
                 let visible_ns: BTreeMap<String, String> = inscope_ns
                     .iter()
                     .filter(|(prefix, _)| ns.is_ns_visible(eid, prefix))
@@ -428,21 +437,45 @@ fn has_following_element(doc: &Document<'_>, id: NodeId) -> bool {
 }
 
 /// Get the prefix for an element's tag name.
-fn get_element_prefix(doc: &Document<'_>, id: NodeId) -> String {
-    let elem = doc.element(id).unwrap();
-    elem.name.prefix.as_deref().unwrap_or("").to_owned()
+fn get_element_prefix(doc: &Document<'_>, id: NodeId) -> Result<String, Error> {
+    let elem = element_of(doc, id)?;
+    Ok(elem.name.prefix.as_deref().unwrap_or("").to_owned())
 }
 
-/// Get the prefix for an attribute.
-fn get_attr_prefix(attr: &uppsala::Attribute<'_>) -> Option<String> {
-    if let Some(ns_uri) = &attr.name.namespace_uri {
-        if &**ns_uri == "http://www.w3.org/XML/1998/namespace" {
-            return Some("xml".to_owned());
+/// Resolve an element node from the arena, mapping a missing entry to a
+/// canonicalization error instead of panicking mid-serialization.
+///
+/// Element node IDs always resolve while a document is alive; this guard
+/// exists so an inconsistent arena can never abort the process inside a
+/// security-critical serialization path.
+fn element_of<'a, 'doc>(
+    doc: &'a Document<'doc>,
+    id: NodeId,
+) -> Result<&'a uppsala::Element<'doc>, Error> {
+    doc.element(id)
+        .ok_or_else(|| Error::Canonicalization(format!("node {id:?} is not an element")))
+}
+
+/// Get the prefix for an attribute: `Some("xml")` for XML-namespace
+/// attributes, otherwise the attribute's own non-empty prefix, and `None`
+/// when the attribute is unqualified or namespaced without a prefix.
+fn get_attr_prefix<'a>(attr: &'a uppsala::Attribute<'_>) -> Option<Cow<'a, str>> {
+    if attr.name.namespace_uri.is_some() {
+        if attr.name.namespace_uri.as_deref() == Some("http://www.w3.org/XML/1998/namespace") {
+            return Some(Cow::Borrowed("xml"));
         }
-        Some(attr.name.prefix.as_deref().unwrap_or("").to_owned())
-    } else {
-        None
+        // `Attr::write_to` renders every `Some(prefix)` as `prefix:`, so a
+        // namespaced attribute whose arena prefix is the empty string must
+        // map to `None` or it would serialize as the invalid name `:local`.
+        // Borrowed from the attribute, never cloned out of the arena `Cow`.
+        return attr
+            .name
+            .prefix
+            .as_deref()
+            .filter(|p| !p.is_empty())
+            .map(Cow::Borrowed);
     }
+    None
 }
 
 /// Record namespace-map mutations so a completed subtree can restore its
@@ -505,19 +538,42 @@ fn visible_namespace_uri<'a>(
     inscope_ns.get(prefix)
 }
 
-/// Get the qualified element name.
-fn qualified_element_name(doc: &Document<'_>, id: NodeId) -> String {
-    let elem = doc.element(id).unwrap();
-    if let Some(prefix) = &elem.name.prefix {
-        format!("{}:{}", prefix, elem.name.local_name)
-    } else {
-        elem.name.local_name.to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn get_attr_prefix_maps_empty_prefix_to_none() {
+        let attr = |uri: Option<&'static str>, prefix: Option<&'static str>| uppsala::Attribute {
+            name: uppsala::QName {
+                namespace_uri: uri.map(Cow::Borrowed),
+                prefix: prefix.map(Cow::Borrowed),
+                local_name: Cow::Borrowed("local"),
+            },
+            value: Cow::Borrowed("v"),
+        };
+
+        assert_eq!(get_attr_prefix(&attr(None, None)), None);
+        assert_eq!(
+            get_attr_prefix(&attr(Some("urn:x"), Some("p"))).as_deref(),
+            Some("p")
+        );
+        assert_eq!(
+            get_attr_prefix(&attr(Some("http://www.w3.org/XML/1998/namespace"), None)).as_deref(),
+            Some("xml")
+        );
+        // Namespaced but unprefixed: must not render as `:local`.
+        assert_eq!(get_attr_prefix(&attr(Some("urn:x"), Some(""))), None);
+        assert_eq!(get_attr_prefix(&attr(Some("urn:x"), None)), None);
+        let rendered = crate::render::Attr {
+            ns_uri: Cow::Borrowed("urn:x"),
+            prefix: get_attr_prefix(&attr(Some("urn:x"), Some(""))),
+            local_name: Cow::Borrowed("local"),
+            value: Cow::Borrowed("v"),
+        }
+        .render();
+        assert_eq!(rendered, " local=\"v\"");
+    }
 
     // --- W3C C14N Spec Examples tested with Exclusive C14N ---
     // Ported from Go signedxml library canonicalization_test.go.

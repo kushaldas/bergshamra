@@ -13,6 +13,33 @@ members = [
 ]
 resolver = "2"
 
+# Performance-oriented build profiles (see plan.md P1).
+#
+# release: fat LTO + single codegen unit lets hot code inline across the
+# c14n -> uppsala -> memchr and dsig -> crypto boundaries; strip removes
+# symbols for faster load. panic="abort" is deliberately NOT set here: this is
+# a library workspace, and consumers embed these crates in larger
+# applications.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+
+# Faster edit/build/test loops: line tables keep file:line backtraces but skip
+# type/variable debuginfo (uv measured ~20% faster warm rebuilds).
+[profile.dev]
+debug = "line-tables-only"
+
+# For perf/flamegraph sessions: ships the same optimized code shape as release
+# but with full debuginfo and no LTO, so symbolization works and builds are
+# ~10x faster. Not what we ship — benchmark releases, profile with this.
+[profile.profiling]
+inherits = "release"
+lto = false
+codegen-units = 16
+strip = false
+debug = "full"
+
 [workspace.package]
 version = "0.9.2"
 edition = "2021"
@@ -34,7 +61,7 @@ bergshamra-enc = { version = "0.9.2", path = "crates/bergshamra-enc", default-fe
 bergshamra-pkcs12 = { version = "0.9.2", path = "crates/bergshamra-pkcs12", default-features = false }
 
 # XML parsing
-uppsala = "0.10.1"
+uppsala = "0.12.0"
 
 # Cryptography (RustCrypto ecosystem)
 sha1 = { version = "0.10", features = ["oid"] }
@@ -82,6 +109,9 @@ num-traits = "0.2"
 
 # Utilities
 base64 = "0.22"
+# Fast non-cryptographic hashers for internal maps (uv uses rustc-hash for
+# non-adversarial keys; SipHash is slow for usize node-index keys).
+rustc-hash = "2"
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 memchr = "2"

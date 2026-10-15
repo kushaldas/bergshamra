@@ -265,7 +265,7 @@ node-set membership, canonicalized output, and often replacement/output XML.
 
 6. **Create a memory benchmark harness.**
    Add reproducible generated fixtures for parse, sign, verify, encrypt, and
-   decrypt. Record peak RSS or allocator stats in CI/manual runs. The existing
+   decrypt. Record peak RSS in CI/manual runs. The existing
    Criterion harness covers time, not memory, and RSS scaling is currently the
    more actionable signal.
 
@@ -278,3 +278,228 @@ storage. On the 9.9 MB generated fixture, reducing whole-document/subtree
 `HashSet` materialization and hashing C14N into a sink should bring peak RSS
 substantially closer to "input + DOM + output" instead of the observed ~24x
 input multiplier.
+
+---
+
+## P0/P1 measurement infrastructure + build profile
+
+Date: 2026-10-07. Toolchain: `rustc 1.99.0 (b940084d7 2026-09-28)`, 8 cores.
+
+The work was sequenced as numbered phases: P0 measurement
+harnesses and saved baselines, P1 build profile, P2 C14N allocation hygiene,
+P3 NodeSet and hashing representations, P4 duplicate-work audit (parse once
+per operation), P5 concurrency and large-input paths, P6 startup latency.
+P0 through P3 are complete and described below, P6 was measured and needs
+no work, and P4 and P5 remain open.
+
+P0 and P1:
+
+1. **P0 harnesses** (all committed):
+   - `crates/bergshamra-dsig/benches/dsig_e2e.rs` — end-to-end sign/verify over
+     the SAML-shaped fixture family, RSA-2048 and HMAC-SHA256, 40 and 400
+     assertions. HMAC variants isolate the XML pipeline from the asymmetric
+     primitive.
+   - `scripts/gen_fixture.py` + `scripts/membench.sh` — deterministic 30 KB /
+     1 MB / 10 MB fixtures, `/usr/bin/time -v` peak-RSS and elapsed for CLI
+     sign and verify (`just bench-memory`).
+   - `scripts/hyperfine.sh` (`just bench-cli`) — warm-path verify timing and
+     startup; two-binary A/B mode.
+   - Baselines saved: `cargo bench … -- --save-baseline plan-p0` for both
+     benches (c14n and dsig_e2e) before the P1 changes landed.
+
+2. **P1 changes**:
+   - `[profile.release]` = fat LTO, `codegen-units = 1`, `strip = true`
+     (no `panic = "abort"`: library workspace, consumers embed these crates).
+   - `[profile.dev] debug = "line-tables-only"`; new `[profile.profiling]`.
+   - `[patch.crates-io] kryptering = { path = "../kryptering" }` — the local
+     0.6.1 working tree, for crypto-path iteration. All 189 unit tests pass
+     with the patch; C14N byte-identity is covered by the xmlsec suites.
+
+### Initial P0 baseline (no LTO tuning)
+
+| Metric | Value |
+|---|---:|
+| CLI startup (`--version`) | 3.2 ms |
+| CLI verify small (30 KB SAML) | 7.6 ms |
+| CLI verify large (10.7 MB) | 581 ms |
+| peak RSS sign/large | 97.7 MB (1.12 s) |
+| peak RSS verify/large | 73.7 MB (0.67 s) |
+| sign/enveloped_rsa_40 | 3.92 ms |
+| verify/enveloped_rsa_40 | 1.20 ms |
+| sign/enveloped_hmac_400 | 8.32 ms |
+| verify/enveloped_hmac_400 | 8.37 ms |
+
+(criterion medians; c14n numbers for this baseline are the `plan-p0` saved
+baseline, not reproduced here.)
+
+### After P1 (fat LTO + codegen-units=1 + local kryptering 0.6.1)
+
+| Metric | P0 | P1 | Delta |
+|---|---:|---:|---:|
+| CLI verify large | 581 ms | 513 ms | −12% |
+| c14n_inclusive/saml | 866 µs | 680 µs | **−19%** |
+| c14n_exclusive/saml | 307 µs | 255 µs | −16% |
+| c14n_exclusive/attr_heavy | 903 µs | 580 µs | **−39%** |
+| c14n_inclusive/attr_heavy | 1.64 ms | 1.55 ms | −11% |
+| verify/enveloped_hmac_400 | 8.37 ms | 7.00 ms | −16% |
+| verify/enveloped_hmac_40 | 922 µs | 778 µs | −13% |
+| sign/enveloped_rsa_40 | 3.92 ms | 3.96 ms | noise |
+| CLI verify small / startup | 7.6 / 3.2 ms | 8.1 / 3.8 ms | noise |
+
+Small apparent regressions (`parse/attr_heavy` +5.7%, `escape/text_sparse`
++12.9% on a 1.4 µs benchmark, `sign/enveloped_hmac_400` +8.5%) are within the
+documented ±25% machine-variance band; the structural C14N/verify wins clear
+it comfortably.
+
+### Reproduce
+
+```sh
+cargo bench -p bergshamra-c14n --bench c14n -- --baseline plan-p0
+cargo bench -p bergshamra-dsig --bench dsig_e2e -- --baseline plan-p0
+just bench-memory
+just bench-cli
+```
+
+---
+
+## P2 experiments: applying the uv learnings (C14N allocation hygiene)
+
+Date: 2026-10-07. Five experiments, each implemented, proven byte-identical via
+the xmlsec suites (DSig 447 OK / 0 FAILED, Enc 700 OK / 0 FAILED — the lone Enc
+skip is kryptering 0.6.1 deliberately rejecting weak DH-1024), and measured
+against criterion baselines. All 200+ unit tests pass; zero clippy warnings.
+
+| # | Learning (file) | Change | Result |
+|---|---|---|---|
+| E1 | 01-allocation-hygiene | Stream element names from the arena (no per-element `format!`); zero-alloc `write_to` for ns decls + attrs in inclusive C14N (exclusive already had it); drop defensive `text`/PI clones | inclusive −50…−65% (first measurement); exclusive −13…−17% |
+| E2 | 08-algorithmic-wins | Replace the O(depth)-per-element `collect_inscope_namespaces` ancestor walk with an incrementally maintained in-scope map + undo log (the push/pop pattern exclusive.rs already used) | inclusive additional −12…−60% |
+| E3 | 05-string-interning (rustc-hash) | `NodeSet` storage `HashSet<usize>` → `FxHashSet` (`NodeIdSet` alias), incl. verify.rs id sets | (measured in stack, below) |
+| E4 | 06-io #4 buffer reuse | Pre-size the C14N output sink to `doc.input_text().len()` in `canonicalize_doc_to` | (measured in stack, below) |
+| E5 | 01 #6 borrow, 05 sharing | `Attr` → lifetime-generic with `Cow<'a, str>` fields borrowed from the uppsala arena (was 4 owned `String`s per attribute; ~12.8k allocs per attr_heavy canonicalize) | (measured in stack, below) |
+
+### Measurement caveat
+
+This machine's thermal variance degraded during the session: identical code
+measured parse/saml at 295 µs and 559 µs in consecutive runs (±90% on an
+*untouched* benchmark). Only deltas far outside that band are attributable;
+single-run small deltas are not. The inclusive-C14N wins clear the bar in three
+independent comparisons; exclusive/text_heavy wobbled ±15–30% both directions
+and is reported as noise. Thermal-neutral stash A/B was used for the ambiguous
+cases (it confirmed inclusive/text −23%, i.e. *faster*).
+
+### Cumulative c14n results (vs `e0` baseline = post-P1 tree)
+
+| Benchmark | e0 | after E1–E5 | Delta |
+|---|---:|---:|---:|
+| c14n_inclusive/saml | 807 µs | 210 µs | **−74%** |
+| c14n_inclusive/attr_heavy | 1409 µs | 449 µs | **−68%** |
+| c14n_inclusive/text_heavy | 75 µs | 58 µs | −22% |
+| c14n_exclusive/saml | 232 µs | 176 µs | −24% |
+| c14n_exclusive/attr_heavy | 490 µs | 442 µs | −11% |
+| c14n_exclusive/text_heavy | 76 µs | ~85 µs | noise |
+
+### End-to-end dsig_e2e (vs `plan-p0` = the pre-P1 baseline)
+
+`plan-p0` was saved before the P1 build profile landed, so the deltas in the
+first pair of columns include the P1 profile gains as well as E1–E5. The
+"post-P1" column repeats the After-P1 table above where a value was
+recorded, so the C14N/rendering stage can be attributed on its own.
+
+| Benchmark | plan-p0 (pre-P1) | post-P1 | after E1–E5 | Delta vs pre-P1 | Delta vs post-P1 |
+|---|---:|---:|---:|---:|---:|
+| verify/enveloped_hmac_40 | 922 µs | 778 µs | 680 µs | **−28%** | −13% |
+| verify/enveloped_hmac_400 | 8.37 ms | 7.00 ms | 6.52 ms | **−22%** | −7% |
+| sign/enveloped_hmac_40 | 966 µs | n/a | 901 µs | −12% | n/a |
+| sign/enveloped_rsa_40 | 3.92 ms | 3.96 ms | 3.59 ms | −8% | −9% |
+| verify/enveloped_rsa_40 | 1.20 ms | n/a | 1.07 ms | −3% (noise band) | n/a |
+| sign/enveloped_hmac_400 | 8.32 ms | n/a | 8.04 ms | noise band | n/a |
+
+### Design notes
+
+- E2's incremental in-scope map preserves the exact undeclaration semantics of
+  the old walk (`xmlns=""` stays an empty-string entry; prefixed
+  undeclarations remove the prefix) and the ns-filter `child_ns` scoping, so
+  byte-identity is structural, not test-luck.
+- E5 keeps `NsDecl` owned for now (1–3 per element vs 8+ attributes; the Cow
+  clone from uppsala is a pointer copy in the common Borrowed case).
+- The `unwrap()` discipline was tightened while here: all
+  `doc.element(id).unwrap()` panics in serialization paths became
+  `element_of()` → `Error::Canonicalization`, and guarded `Option::unwrap()`s
+  were restructured — a security library must not abort on an inconsistent
+  arena.
+
+### Not applied (with reasons)
+
+- 03 rkyv / 07 rayon: N/A (rkyv has no repeated-deserialize workload;
+  verify_all parallelism is the open P5 item and needs DOM aliasing analysis
+  first).
+- 04 OnceMap: no concurrent same-work dedup hotspot in a single-operation CLI.
+- 10 caching/startup: startup measured 3.2–3.8 ms — no work needed.
+- 12 fork upstream: uppsala is not the bottleneck anymore (parse benches are
+  drift-bound and untouched by all of the above).
+
+---
+
+## Python binding layer: optimized crates + GIL release (pybergshamra)
+
+Date: 2026-10-07. The same optimizations now measured through
+`../pybergshamra` (PyO3 extension, lesson 13):
+
+- pybergshamra builds against this workspace via `[patch.crates-io]` plus its
+  own fat-LTO release profile.
+- All hot entry points now release the GIL (`py.detach`): verify, verify_all,
+  sign, sign_enveloped, canonicalize, canonicalize_subtree, encrypt/decrypt.
+
+Python-layer medians (`pybergshamra/benchmarks/pybench.py`, HMAC fixtures):
+
+| Benchmark | published 0.9.2 | optimized + GIL release |
+|---|---:|---:|
+| canonicalize/large (10.7 MB) | 461 ms | ~210 ms (**−55%**) |
+| verify/hmac_large | 332 ms | ~260 ms (−20%) |
+| sign_enveloped/hmac_small | 2.96 ms | 1.72 ms (−42%) |
+| verify_small × 4 threads (wall) | 7.56 ms | 3.0–3.3 ms (**−57%**) |
+| thread scaling | 0.41× | 0.81–1.29× |
+
+Full tables: `pybergshamra/docs/performance/20261007-optimized-crates-gil-release.md`.
+
+---
+
+## uppsala 0.12.0 bump (ported P0–P2 tree)
+
+Date: 2026-10-09. The P0–P2 work above was ported onto `main` and the
+`uppsala` requirement raised from 0.10.1 to the published 0.12.0, which
+brings direct DOM construction (ADR 0019), fused descendant XPath walks
+(ADR 0020), pre-sized serialization buffers, and dependency-free fast hashing
+for node-ID maps. Bergshamra's C14N and NodeSet code is identical in both
+columns, so the parse and end-to-end deltas isolate the uppsala upgrade; the
+C14N rows act as the noise-floor control.
+
+A/B method: both trees built with the same toolchain and release profile
+(fat LTO), harnesses run back to back on the same machine, two runs each for
+c14n, best-of-two medians compared. The perf_work column was
+built against the local kryptering 0.6.1 working tree; this tree uses
+kryptering 0.6.0 from crates.io, so the RSA rows carry a crypto-path confound.
+
+| Benchmark | uppsala 0.10.1 | uppsala 0.12.0 | Delta |
+|---|---:|---:|---:|
+| parse/saml | 259 µs | 180 µs | **−31%** |
+| parse/text_heavy | 248 µs | 207 µs | **−16%** |
+| parse/attr_heavy | 680 µs | 640 µs | −6% |
+| c14n_inclusive/saml | 184 µs | 179 µs | noise (control) |
+| c14n_inclusive/attr_heavy | 470 µs | 449 µs | noise (control) |
+| c14n_exclusive/saml | 185 µs | 178 µs | noise (control) |
+| c14n_exclusive/attr_heavy | 471 µs | 495 µs | noise (control) |
+| verify/enveloped_hmac_40 | 669 µs | 524 µs | **−22%** |
+| verify/enveloped_hmac_400 | 6.43 ms | 5.09 ms | **−21%** |
+| sign/enveloped_hmac_40 | 776 µs | 655 µs | **−16%** |
+| sign/enveloped_hmac_400 | 7.40 ms | 6.54 ms | −12% |
+| verify/enveloped_rsa_40 | 1.01 ms | 0.92 ms | −9% |
+| sign/enveloped_rsa_40 | 3.72 ms | 3.99 ms | +7% (kryptering confound + RSA noise) |
+
+The end-to-end HMAC wins exceed the parse wins alone because every verify
+and sign reparses for same-document references (the parse-once audit, open
+item P4 above, is still pending) — each saved parse is paid several times per
+operation. Correctness gates unchanged: xmlsec DSig 447 OK / 0 FAILED /
+3 SKIPPED, Enc 700 OK / 0 FAILED / 1 SKIPPED (the deliberate DH-1024
+rejection), 181 unit tests, zero clippy warnings on both the default and the
+`--no-default-features` CI feature sets.

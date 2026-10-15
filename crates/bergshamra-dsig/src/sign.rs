@@ -483,6 +483,19 @@ pub fn sign_enveloped_document(
     doc: &mut Document<'_>,
     options: EnvelopedSignatureOptions<'_>,
 ) -> Result<(), Error> {
+    sign_enveloped_document_with_node(ctx, doc, options).map(|_| ())
+}
+
+/// Like [`sign_enveloped_document`], additionally returning the [`NodeId`] of
+/// the `<ds:Signature>` element that was inserted and signed.
+///
+/// Bindings that mirror the document in another DOM use the node to serialize
+/// just the signature fragment instead of the whole signed document.
+pub fn sign_enveloped_document_with_node(
+    ctx: &DsigContext,
+    doc: &mut Document<'_>,
+    options: EnvelopedSignatureOptions<'_>,
+) -> Result<NodeId, Error> {
     let sig_method = validate_signature_method(options.signature_method)?;
     let dig_method = validate_digest_method(options.digest_method)?;
     let c14n = validate_c14n_method(options.c14n_method)?;
@@ -542,25 +555,67 @@ pub fn sign_enveloped_document(
         doc.append_child(root, imported_sig);
     }
 
-    sign_document(ctx, doc)
+    // Sign the node we inserted, not whichever `<ds:Signature>` happens to
+    // come first in document order: the document element itself could be a
+    // Signature, and the returned node must be the one that was populated.
+    sign_document_node(ctx, doc, imported_sig)?;
+    Ok(imported_sig)
 }
 
 /// Sign a parsed XML template document in place.
 ///
 /// The document must contain a `<Signature>` skeleton with empty
-/// `<DigestValue>` and `<SignatureValue>` elements. Common same-document C14N
-/// transform chains are processed directly against the live DOM. Less common
-/// transform chains serialize the current DOM only for that transform pipeline,
-/// preserving behavior while still avoiding the caller-visible serialize/parse
-/// round trip.
+/// `<DigestValue>` and `<SignatureValue>` elements; the first `<ds:Signature>`
+/// in document order is signed. Use [`sign_document_node`] to target a
+/// specific signature. Common same-document C14N transform chains are
+/// processed directly against the live DOM. Less common transform chains
+/// serialize the current DOM only for that transform pipeline, preserving
+/// behavior while still avoiding the caller-visible serialize/parse round
+/// trip.
 pub fn sign_document(ctx: &DsigContext, doc: &mut Document<'_>) -> Result<(), Error> {
+    let sig_node = find_element(doc, ns::DSIG, ns::node::SIGNATURE)
+        .ok_or_else(|| Error::MissingElement("Signature".into()))?;
+    sign_document_node(ctx, doc, sig_node)
+}
+
+/// Sign the `<ds:Signature>` skeleton at `sig_node` in place.
+///
+/// This is the signing core behind [`sign_document`]; it takes the target
+/// node instead of searching for one, so callers that inserted a signature
+/// themselves, or that hold a document with several signatures, sign exactly
+/// the element they mean to. `sig_node` must be a `<ds:Signature>` element
+/// with empty `<DigestValue>` and `<SignatureValue>` children.
+pub fn sign_document_node(
+    ctx: &DsigContext,
+    doc: &mut Document<'_>,
+    sig_node: NodeId,
+) -> Result<(), Error> {
+    let is_signature = doc.element(sig_node).is_some_and(|e| {
+        e.name.local_name.as_ref() == ns::node::SIGNATURE
+            && e.name.namespace_uri.as_deref() == Some(ns::DSIG)
+    });
+    if !is_signature {
+        return Err(Error::XmlStructure(format!(
+            "node {sig_node:?} is not a {{{}}}{} element",
+            ns::DSIG,
+            ns::node::SIGNATURE
+        )));
+    }
+    // A Signature that was imported or created but never attached is not
+    // part of the document: canonicalizing its SignedInfo as a document
+    // subset would traverse from the root, find nothing, and happily sign an
+    // empty message. Reject it before any digest is computed.
+    if element_path(doc, sig_node).is_none() {
+        return Err(Error::XmlStructure(format!(
+            "node {sig_node:?} is a Signature element that is not attached to the document"
+        )));
+    }
+
     let mut id_attrs: Vec<&str> = vec!["Id", "ID", "id", "AssertionID"];
     let extra: Vec<&str> = ctx.id_attrs.iter().map(|s| s.as_str()).collect();
     id_attrs.extend(extra);
     let id_map = build_id_map(doc, &id_attrs)?;
 
-    let sig_node = find_element(doc, ns::DSIG, ns::node::SIGNATURE)
-        .ok_or_else(|| Error::MissingElement("Signature".into()))?;
     let signed_info = find_child_element(doc, sig_node, ns::DSIG, ns::node::SIGNED_INFO)
         .ok_or_else(|| Error::MissingElement("SignedInfo".into()))?;
 
@@ -622,7 +677,7 @@ pub fn sign_document(ctx: &DsigContext, doc: &mut Document<'_>) -> Result<(), Er
                 ctx,
                 doc,
                 sig_node,
-                &id_map,
+                &id_attrs,
                 &uri,
                 transforms_node,
                 &digest_uri,
@@ -734,24 +789,123 @@ pub fn sign_document(ctx: &DsigContext, doc: &mut Document<'_>) -> Result<(), Er
     if ctx.hsm_signer.is_none() {
         let key = ctx.keys_manager.first_key()?;
         if !key.x509_chain.is_empty() {
-            populate_x509_data_document(doc, &key.x509_chain);
+            populate_x509_data_document(doc, sig_node, &key.x509_chain);
         }
     }
 
     Ok(())
 }
 
+/// Ordinal path of element `id` from the document root.
+///
+/// Each entry is the number of preceding *element* siblings at that level.
+/// Only elements are counted because a serialize/parse round trip can merge
+/// adjacent text nodes or drop nothing but never changes element structure,
+/// so the path resolves to the same element in a re-parsed copy. Returns
+/// `None` for a detached node.
+fn element_path(doc: &Document<'_>, id: NodeId) -> Option<Vec<usize>> {
+    let mut path = Vec::new();
+    let mut current = id;
+    while let Some(parent) = doc.parent(current) {
+        let ordinal = doc
+            .children(parent)
+            .into_iter()
+            .take_while(|&child| child != current)
+            .filter(|&child| doc.element(child).is_some())
+            .count();
+        path.push(ordinal);
+        current = parent;
+    }
+    if current != doc.root() {
+        return None;
+    }
+    path.reverse();
+    Some(path)
+}
+
+/// Resolve an [`element_path`] in `doc`.
+fn resolve_element_path(doc: &Document<'_>, path: &[usize]) -> Option<NodeId> {
+    let mut current = doc.root();
+    for &ordinal in path {
+        current = doc
+            .children(current)
+            .into_iter()
+            .filter(|&child| doc.element(child).is_some())
+            .nth(ordinal)?;
+    }
+    Some(current)
+}
+
+/// Find the element in `snapshot` that corresponds to `id` in `live`.
+///
+/// `snapshot` must be a parse of `live`'s current serialization. The result
+/// is checked to carry the same expanded name as the original so a structural
+/// mismatch surfaces as an error instead of a wrong-node digest.
+fn remap_node_into_snapshot(
+    live: &Document<'_>,
+    id: NodeId,
+    snapshot: &Document<'_>,
+) -> Result<NodeId, Error> {
+    let path = element_path(live, id).ok_or_else(|| {
+        Error::XmlStructure(format!(
+            "node {id:?} is detached from the document being signed"
+        ))
+    })?;
+    let mapped = resolve_element_path(snapshot, &path).ok_or_else(|| {
+        Error::XmlStructure(format!(
+            "node {id:?} has no counterpart in the serialized document (path {path:?})"
+        ))
+    })?;
+    let same_name = match (live.element(id), snapshot.element(mapped)) {
+        (Some(a), Some(b)) => {
+            a.name.local_name == b.name.local_name && a.name.namespace_uri == b.name.namespace_uri
+        }
+        _ => false,
+    };
+    if !same_name {
+        return Err(Error::XmlStructure(format!(
+            "node {id:?} maps to a different element after serialization (path {path:?})"
+        )));
+    }
+    Ok(mapped)
+}
+
+/// Generic transform-pipeline fallback for a `<Reference>` digest.
+///
+/// The transforms in `bergshamra-transforms` and `verify::apply_transform`
+/// each parse the serialized XML into their own arena, so every `NodeId` they
+/// receive must belong to that arena rather than to the live, possibly
+/// mutated, document. A signature inserted by the caller typically has a high
+/// index in the live arena and a low one after re-parsing; passing the live
+/// index would make the enveloped transform remove the wrong node or none.
+/// This function therefore parses the serialized text once, remaps the
+/// signature and transform elements into that snapshot by element path, and
+/// derives node sets and the ID map from the snapshot. All parses of the same
+/// text assign the same indexes, which is what the transforms already rely
+/// on.
 #[allow(clippy::too_many_arguments)]
 fn compute_reference_digest_via_transform_pipeline(
     ctx: &DsigContext,
-    doc: &Document<'_>,
-    sig_node: NodeId,
-    id_map: &HashMap<String, NodeId>,
+    live_doc: &Document<'_>,
+    live_sig_node: NodeId,
+    id_attrs: &[&str],
     uri: &str,
-    transforms_node: Option<NodeId>,
+    live_transforms_node: Option<NodeId>,
     digest_uri: &str,
 ) -> Result<Vec<u8>, Error> {
-    let current_xml = doc.to_xml();
+    let current_xml = live_doc.to_xml();
+    let snapshot = uppsala::parse(&current_xml).map_err(|e| {
+        Error::XmlParse(format!(
+            "re-parsing the serialized document for the transform pipeline: {e}"
+        ))
+    })?;
+    let doc = &snapshot;
+    let sig_node = remap_node_into_snapshot(live_doc, live_sig_node, doc)?;
+    let transforms_node = live_transforms_node
+        .map(|node| remap_node_into_snapshot(live_doc, node, doc))
+        .transpose()?;
+    let id_map = &build_id_map(doc, id_attrs)?;
+
     let mut data = if uri.is_empty() {
         let ns = NodeSet::all_without_comments(doc);
         bergshamra_transforms::TransformData::xml_borrowed(&current_xml, Some(ns))
@@ -816,13 +970,22 @@ fn replace_element_text(doc: &mut Document<'_>, element: NodeId, content: String
     doc.append_child(element, text);
 }
 
-fn populate_x509_data_document(doc: &mut Document<'_>, x509_chain: &[Vec<u8>]) {
-    let Some(x509_data_id) = doc.descendants(doc.root()).into_iter().find(|&id| {
-        doc.element(id).is_some_and(|elem| {
-            &*elem.name.local_name == ns::node::X509_DATA
-                && elem.name.namespace_uri.as_deref().unwrap_or("") == ns::DSIG
-        })
-    }) else {
+/// Fill the empty `<X509Data>` inside `sig_node`'s own `<KeyInfo>` with the
+/// signing key's certificate chain.
+///
+/// Only the target signature's direct `<KeyInfo>`/`<X509Data>` is considered.
+/// A document-wide search for the first `<X509Data>` would, in a document
+/// with several signatures, either leave the target without its certificate
+/// (an earlier container is already populated) or modify another
+/// signature's container. The population runs after the digests were
+/// computed, so with a whole-document enveloped reference that modification
+/// lands inside the just-signed bytes and invalidates the new signature.
+fn populate_x509_data_document(doc: &mut Document<'_>, sig_node: NodeId, x509_chain: &[Vec<u8>]) {
+    let Some(key_info_id) = find_child_element(doc, sig_node, ns::DSIG, ns::node::KEY_INFO) else {
+        return;
+    };
+    let Some(x509_data_id) = find_child_element(doc, key_info_id, ns::DSIG, ns::node::X509_DATA)
+    else {
         return;
     };
 
@@ -2218,6 +2381,360 @@ mod tests {
         let result = crate::verify::verify_document(&ctx, &doc)
             .expect("document-native verify should not error");
         assert!(result.is_valid(), "signed document must verify: {result:?}");
+    }
+
+    #[test]
+    fn sign_enveloped_document_with_node_returns_populated_signature_node() {
+        let ctx = hmac_signing_context();
+        let mut doc = uppsala::parse(r#"<Root ID="abc"><Data>hello</Data></Root>"#)
+            .expect("test XML must parse")
+            .into_static();
+        let options = EnvelopedSignatureOptions::new(
+            Some("abc"),
+            algorithm::HMAC_SHA256,
+            algorithm::SHA256,
+            algorithm::EXC_C14N,
+            None,
+        );
+
+        let sig_node = sign_enveloped_document_with_node(&ctx, &mut doc, options)
+            .expect("document-native enveloped signing should succeed");
+
+        // The returned node is the ds:Signature element that was inserted as
+        // the first child of the document element.
+        let element = doc
+            .element(sig_node)
+            .expect("returned node must be an element");
+        assert_eq!(element.name.local_name.as_ref(), ns::node::SIGNATURE);
+        assert_eq!(element.name.namespace_uri.as_deref(), Some(ns::DSIG));
+        let root = doc.document_element().expect("document element");
+        assert_eq!(doc.parent(sig_node), Some(root));
+        assert_eq!(doc.first_child(root), Some(sig_node));
+        assert_eq!(
+            find_element(&doc, ns::DSIG, ns::node::SIGNATURE),
+            Some(sig_node),
+            "the returned node must be the only Signature in the document"
+        );
+
+        // The fragment serialized from that node alone is the populated
+        // signature, which is what bindings splice into their own DOM.
+        let fragment = doc.node_to_xml(sig_node);
+        assert!(fragment.starts_with("<ds:Signature"));
+        assert!(fragment.ends_with("</ds:Signature>"));
+        assert!(!fragment.contains("<ds:DigestValue></ds:DigestValue>"));
+        assert!(!fragment.contains("<ds:SignatureValue></ds:SignatureValue>"));
+        assert!(!fragment.contains("<Root"));
+
+        let result = crate::verify::verify_document(&ctx, &doc)
+            .expect("document-native verify should not error");
+        assert!(result.is_valid(), "signed document must verify: {result:?}");
+    }
+
+    #[test]
+    fn sign_enveloped_document_with_node_signs_inserted_node_not_first_signature() {
+        // The document element is itself a ds:Signature, so a lookup-based
+        // core would find it first (and fail on its missing SignedInfo) while
+        // the inserted skeleton stayed empty. The node-targeted core must sign
+        // the node it returns.
+        let ctx = hmac_signing_context();
+        let mut doc = uppsala::parse(
+            r#"<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#" ID="outer"><Data ID="abc">hello</Data></ds:Signature>"#,
+        )
+        .expect("test XML must parse")
+        .into_static();
+        let options = EnvelopedSignatureOptions::new(
+            Some("abc"),
+            algorithm::HMAC_SHA256,
+            algorithm::SHA256,
+            algorithm::EXC_C14N,
+            None,
+        );
+
+        let sig_node = sign_enveloped_document_with_node(&ctx, &mut doc, options)
+            .expect("the inserted Signature must be signed even behind an earlier one");
+
+        let root = doc.document_element().expect("document element");
+        assert_ne!(sig_node, root, "the returned node must be the inserted one");
+        assert_eq!(doc.parent(sig_node), Some(root));
+        assert_eq!(
+            find_element(&doc, ns::DSIG, ns::node::SIGNATURE),
+            Some(root),
+            "the pre-existing Signature still comes first in document order"
+        );
+
+        let fragment = doc.node_to_xml(sig_node);
+        assert!(!fragment.contains("<ds:DigestValue></ds:DigestValue>"));
+        assert!(!fragment.contains("<ds:SignatureValue></ds:SignatureValue>"));
+        assert!(
+            !fragment.contains("ID=\"outer\""),
+            "fragment must be the inserted signature only"
+        );
+    }
+
+    #[test]
+    fn sign_document_node_keeps_inserted_signature_identity_through_transform_fallback() {
+        // An XPath transform is outside the fast path, so this reference goes
+        // through the generic pipeline, which serializes and re-parses the
+        // document. The enveloped-pattern XPath is executed with the Signature
+        // node's index; the inserted signature has a high index in the live
+        // arena and a low one after re-parsing, so a stale index removes the
+        // wrong subtree and the digest does not verify.
+        let ctx = hmac_signing_context();
+        let template = r#"<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/><ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#hmac-sha256"/><ds:Reference URI=""><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/TR/1999/REC-xpath-19991116"><ds:XPath>not(ancestor-or-self::ds:Signature)</ds:XPath></ds:Transform><ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue></ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue></ds:SignatureValue></ds:Signature>"#;
+        let body = r#"<Data ID="abc">hello</Data><More>world</More>"#;
+
+        let mut doc = uppsala::parse(&format!("<Root>{body}</Root>"))
+            .expect("test XML must parse")
+            .into_static();
+        let sig_doc = uppsala::parse(template).expect("template must parse");
+        let sig_root = sig_doc.document_element().expect("template root");
+        let inserted = doc
+            .import_subtree(&sig_doc, sig_root)
+            .expect("import must succeed");
+        let root = doc.document_element().expect("document element");
+        let first = doc.first_child(root).expect("Root has children");
+        doc.insert_before(root, inserted, first);
+        assert!(
+            inserted.index() > first.index(),
+            "the inserted node must sit above the original nodes in the arena"
+        );
+
+        sign_document_node(&ctx, &mut doc, inserted)
+            .expect("signing the inserted node through the generic pipeline must succeed");
+
+        let signed = doc.to_xml();
+        let result = crate::verify::verify(&ctx, &signed)
+            .expect("verification of the serialized result must not error");
+        assert!(result.is_valid(), "signed document must verify: {result:?}");
+
+        // The same template signed from text is the ground truth: the digest
+        // over the same content must be byte-identical.
+        let from_text = sign(&ctx, &format!("<Root>{template}{body}</Root>"))
+            .expect("text-path signing must succeed");
+        let digest_of = |xml: &str| {
+            let start =
+                xml.find("<ds:DigestValue>").expect("DigestValue") + "<ds:DigestValue>".len();
+            let end = xml[start..]
+                .find("</ds:DigestValue>")
+                .expect("DigestValue end")
+                + start;
+            xml[start..end].to_owned()
+        };
+        assert_eq!(digest_of(&signed), digest_of(&from_text));
+    }
+
+    #[test]
+    fn element_path_round_trips_through_serialization() {
+        let mut doc = uppsala::parse("<Root><!-- c --><A/>text<B><C/><D/></B></Root>")
+            .expect("test XML must parse")
+            .into_static();
+        let root = doc.document_element().expect("document element");
+        let b = doc
+            .children(root)
+            .into_iter()
+            .nth(3)
+            .expect("<B> is the fourth child");
+        let d = doc.children(b).into_iter().nth(1).expect("<D>");
+        assert_eq!(element_path(&doc, d), Some(vec![0, 1, 1]));
+
+        // Mutate so the live arena no longer matches a fresh parse.
+        let extra = doc.create_element(QName::local("Z"));
+        doc.insert_before(root, extra, doc.first_child(root).expect("first child"));
+        let serialized = doc.to_xml();
+        let snapshot = uppsala::parse(&serialized).expect("serialized output must parse");
+        let mapped = remap_node_into_snapshot(&doc, d, &snapshot).expect("remap must succeed");
+        assert_ne!(mapped, d, "indexes differ once the arena was mutated");
+        assert_eq!(
+            snapshot.element(mapped).map(|e| e.name.local_name.as_ref()),
+            Some("D")
+        );
+        assert_eq!(element_path(&snapshot, mapped), Some(vec![0, 2, 1]));
+
+        let detached = doc.create_element(QName::local("Loose"));
+        assert_eq!(element_path(&doc, detached), None);
+        assert!(remap_node_into_snapshot(&doc, detached, &snapshot).is_err());
+    }
+
+    /// RSA-2048 key with its certificate attached, from the xmlsec test keys.
+    fn rsa_cert_signing_context() -> DsigContext {
+        let base = concat!(env!("CARGO_MANIFEST_DIR"), "/../../test-data/keys/rsa/");
+        let key_pem = std::fs::read(format!("{base}rsa-2048-key.pem"))
+            .expect("test-data RSA private key PEM must be readable");
+        let cert_der = std::fs::read(format!("{base}rsa-2048-cert.der"))
+            .expect("test-data RSA certificate must be readable");
+        let mut key = bergshamra_keys::loader::load_rsa_private_pem(&key_pem)
+            .expect("unencrypted PKCS#8 RSA PEM must load");
+        key.usage = bergshamra_keys::KeyUsage::Any;
+        key.x509_chain = vec![cert_der];
+        let mut keys = bergshamra_keys::KeysManager::new();
+        keys.add_key(key);
+        DsigContext::new_permissive(keys)
+    }
+
+    fn x509_data_of(doc: &Document<'_>, sig: NodeId) -> NodeId {
+        let key_info = find_child_element(doc, sig, ns::DSIG, ns::node::KEY_INFO)
+            .expect("KeyInfo under Signature");
+        find_child_element(doc, key_info, ns::DSIG, ns::node::X509_DATA)
+            .expect("X509Data under KeyInfo")
+    }
+
+    #[test]
+    fn sign_document_node_populates_only_the_target_signatures_x509_data() {
+        // Two enveloped signature skeletons with empty X509Data containers.
+        // Signing the second must fill the second container and leave the
+        // first untouched: the first lies inside the whole-document reference
+        // just digested, so touching it after the fact would invalidate the
+        // signature, and the target would be left without its certificate.
+        let ctx = rsa_cert_signing_context();
+        let skeleton = |id: &str| {
+            format!(
+                r#"<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#" Id="{id}"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="{exc}"/><ds:SignatureMethod Algorithm="{rsa}"/><ds:Reference URI=""><ds:Transforms><ds:Transform Algorithm="{env}"/><ds:Transform Algorithm="{exc}"/></ds:Transforms><ds:DigestMethod Algorithm="{sha}"/><ds:DigestValue></ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue></ds:SignatureValue><ds:KeyInfo><ds:X509Data></ds:X509Data></ds:KeyInfo></ds:Signature>"#,
+                exc = algorithm::EXC_C14N,
+                rsa = algorithm::RSA_SHA256,
+                env = algorithm::ENVELOPED_SIGNATURE,
+                sha = algorithm::SHA256,
+            )
+        };
+        let xml = format!(
+            "<Root>{}<Data>hello</Data>{}</Root>",
+            skeleton("first"),
+            skeleton("second")
+        );
+        let mut doc = uppsala::parse(&xml)
+            .expect("test XML must parse")
+            .into_static();
+        let signatures = doc.get_elements_by_tag_name(ns::node::SIGNATURE);
+        assert_eq!(signatures.len(), 2);
+        let (first, second) = (signatures[0], signatures[1]);
+
+        sign_document_node(&ctx, &mut doc, second).expect("signing the second skeleton");
+
+        let is_cert = |doc: &Document<'_>, id: NodeId| {
+            doc.element(id).is_some_and(|e| {
+                e.name.local_name.as_ref() == ns::node::X509_CERTIFICATE
+                    && e.name.namespace_uri.as_deref() == Some(ns::DSIG)
+            })
+        };
+        let target = x509_data_of(&doc, second);
+        assert!(
+            doc.children(target).into_iter().any(|c| is_cert(&doc, c)),
+            "the target signature's X509Data must receive the certificate"
+        );
+        let other = x509_data_of(&doc, first);
+        assert!(
+            doc.children(other)
+                .into_iter()
+                .all(|c| doc.element(c).is_none()),
+            "the other signature's X509Data must stay untouched"
+        );
+
+        let results = crate::verify::verify_all(&ctx, &doc.to_xml())
+            .expect("verify_all must not fail at document level");
+        assert_eq!(results.len(), 2);
+        assert!(
+            results[1].is_valid(),
+            "the signed second signature must verify: {:?}",
+            results[1]
+        );
+        assert!(
+            !results[0].is_valid(),
+            "the unsigned first skeleton is not valid"
+        );
+    }
+
+    #[test]
+    fn sign_document_node_leaves_an_already_populated_target_x509_data_alone() {
+        let ctx = rsa_cert_signing_context();
+        let xml = format!(
+            r#"<Root><ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="{exc}"/><ds:SignatureMethod Algorithm="{rsa}"/><ds:Reference URI=""><ds:Transforms><ds:Transform Algorithm="{env}"/><ds:Transform Algorithm="{exc}"/></ds:Transforms><ds:DigestMethod Algorithm="{sha}"/><ds:DigestValue></ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue></ds:SignatureValue><ds:KeyInfo><ds:X509Data><ds:X509SubjectName>CN=preset</ds:X509SubjectName></ds:X509Data></ds:KeyInfo></ds:Signature><Data>hello</Data></Root>"#,
+            exc = algorithm::EXC_C14N,
+            rsa = algorithm::RSA_SHA256,
+            env = algorithm::ENVELOPED_SIGNATURE,
+            sha = algorithm::SHA256,
+        );
+        let mut doc = uppsala::parse(&xml)
+            .expect("test XML must parse")
+            .into_static();
+        let sig = doc.get_elements_by_tag_name(ns::node::SIGNATURE)[0];
+        sign_document_node(&ctx, &mut doc, sig).expect("signing must succeed");
+        let x509_data = x509_data_of(&doc, sig);
+        let children: Vec<String> = doc
+            .children(x509_data)
+            .into_iter()
+            .filter_map(|c| doc.element(c).map(|e| e.name.local_name.to_string()))
+            .collect();
+        assert_eq!(children, vec!["X509SubjectName".to_string()]);
+    }
+
+    #[test]
+    fn sign_document_node_rejects_detached_signature_node() {
+        // Imported but never attached: the node is a well-formed Signature,
+        // yet it is unreachable from the document root. Signing it would
+        // canonicalize an empty SignedInfo subset and produce a signature
+        // over nothing that can never verify once attached.
+        let ctx = hmac_signing_context();
+        let mut doc = uppsala::parse(r#"<Root ID="abc"><Data>hello</Data></Root>"#)
+            .expect("test XML must parse")
+            .into_static();
+        let template = r#"<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/><ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#hmac-sha256"/><ds:Reference URI=""><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/><ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue></ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue></ds:SignatureValue></ds:Signature>"#;
+        let sig_doc = uppsala::parse(template).expect("template must parse");
+        let sig_root = sig_doc.document_element().expect("template root");
+        let detached = doc
+            .import_subtree(&sig_doc, sig_root)
+            .expect("import must succeed");
+        assert_eq!(doc.parent(detached), None);
+        let before = doc.to_xml();
+
+        let err = sign_document_node(&ctx, &mut doc, detached)
+            .expect_err("a detached Signature must be rejected");
+        assert!(
+            matches!(err, Error::XmlStructure(ref m) if m.contains("not attached")),
+            "unexpected error: {err:?}"
+        );
+        assert_eq!(
+            doc.to_xml(),
+            before,
+            "a rejected target must not modify the document"
+        );
+        let digest_value = doc
+            .descendants(detached)
+            .into_iter()
+            .find(|&id| {
+                doc.element(id)
+                    .is_some_and(|e| e.name.local_name.as_ref() == ns::node::DIGEST_VALUE)
+            })
+            .expect("detached skeleton keeps its DigestValue");
+        assert!(
+            doc.text_content_deep(digest_value).trim().is_empty(),
+            "no digest may be written into the detached skeleton"
+        );
+
+        // The same skeleton signs and verifies once attached.
+        let root = doc.document_element().expect("document element");
+        let first = doc.first_child(root).expect("first child");
+        doc.insert_before(root, detached, first);
+        sign_document_node(&ctx, &mut doc, detached).expect("attached skeleton signs");
+        let result = crate::verify::verify(&ctx, &doc.to_xml()).expect("verify");
+        assert!(
+            result.is_valid(),
+            "attached signature must verify: {result:?}"
+        );
+    }
+
+    #[test]
+    fn sign_document_node_rejects_non_signature_node() {
+        let ctx = hmac_signing_context();
+        let mut doc = uppsala::parse(r#"<Root ID="abc"><Data>hello</Data></Root>"#)
+            .expect("test XML must parse")
+            .into_static();
+        let root = doc.document_element().expect("document element");
+
+        let err = sign_document_node(&ctx, &mut doc, root)
+            .expect_err("a non-Signature target must be rejected");
+        assert!(
+            matches!(err, Error::XmlStructure(ref m) if m.contains("Signature")),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[test]

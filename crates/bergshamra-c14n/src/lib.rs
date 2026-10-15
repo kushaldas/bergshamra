@@ -21,7 +21,7 @@ pub mod render;
 
 use bergshamra_core::{algorithm, Error};
 use bergshamra_xml::NodeSet;
-use uppsala::Document;
+use uppsala::{Document, NodeId};
 
 /// Destination for canonicalized bytes.
 ///
@@ -184,6 +184,66 @@ pub fn canonicalize_doc<S: AsRef<str>>(
     Ok(output)
 }
 
+/// Inverted selections with at most this many exclusions are treated as
+/// whole-document shapes when the parser's source ranges are unavailable.
+///
+/// The compact constructors (`NodeSet::all`, `all_without_comments`, the
+/// document-element subtree) exclude only comments, top-level siblings, or
+/// an enveloped `<ds:Signature>` subtree: a few dozen nodes at most.
+const COMPACT_EXCLUSION_LIMIT: usize = 64;
+
+/// Capacity hint for buffering sinks before canonicalization starts.
+///
+/// Canonical output of a whole document is on the order of the input length,
+/// and growing a `Vec<u8>` through realloc-copies on a 10 MB document is pure
+/// waste, so whole-document selections reserve the input length up front.
+///
+/// Only [`NodeSetType::Invert`] stores exclusions; every other variant,
+/// `TreeInvert` included, materializes its visible node IDs (see
+/// `NodeSet::contains_id`). Materialized selections such as a `<SignedInfo>`
+/// subtree are usually tiny relative to the document; pre-sizing them to the
+/// input would turn a few hundred bytes of output into an input-sized
+/// allocation on every sign and verify, so they return no hint and grow from
+/// their actual output.
+///
+/// An inverted set is not necessarily dense either: `NodeSet::from_ids` and
+/// the set algebra can produce `all - large_normal_set`, whose output is a
+/// small fragment. The hint therefore subtracts the source length of every
+/// excluded node (`Document::node_serialized_size_hint`) from the input
+/// length. Nested exclusions are counted more than once, which only lowers
+/// the estimate; a hint is never an upper bound. When the document was
+/// mutated after parsing those ranges are unavailable, and only exclusion
+/// sets small enough to be a compact shape keep the whole-input hint.
+fn output_size_hint(doc: &Document<'_>, node_set: Option<&NodeSet>) -> Option<usize> {
+    use bergshamra_xml::nodeset::NodeSetType;
+
+    let input_len = doc.input_text().len();
+    let node_set = match node_set {
+        None => return Some(input_len),
+        Some(set) => set,
+    };
+    match node_set.set_type() {
+        NodeSetType::Invert => {
+            let excluded_ids = node_set.node_ids();
+            if excluded_ids.is_empty() {
+                return Some(input_len);
+            }
+            if doc.node_serialized_size_hint(doc.root()) == 0 {
+                // Source ranges are gone (mutated or programmatic document).
+                return (excluded_ids.len() <= COMPACT_EXCLUSION_LIMIT).then_some(input_len);
+            }
+            let excluded_bytes = excluded_ids.iter().fold(0usize, |acc, &index| {
+                acc.saturating_add(doc.node_serialized_size_hint(NodeId::new(index)))
+            });
+            Some(input_len.saturating_sub(excluded_bytes))
+        }
+        NodeSetType::Normal
+        | NodeSetType::Tree
+        | NodeSetType::TreeWithoutComments
+        | NodeSetType::TreeInvert => None,
+    }
+}
+
 /// Canonicalize an already parsed document into a byte sink.
 ///
 /// This is the streaming form of [`canonicalize_doc`]. It is useful when the
@@ -203,6 +263,9 @@ pub fn canonicalize_doc_to<S: AsRef<str>, W: C14nSink>(
     inclusive_prefixes: &[S],
     output: &mut W,
 ) -> Result<(), Error> {
+    if let Some(hint) = output_size_hint(doc, node_set) {
+        output.reserve(hint);
+    }
     match mode {
         C14nMode::Inclusive | C14nMode::InclusiveWithComments => {
             inclusive::canonicalize_to(doc, mode.with_comments(), node_set, output)
@@ -217,5 +280,174 @@ pub fn canonicalize_doc_to<S: AsRef<str>, W: C14nSink>(
             inclusive_prefixes,
             output,
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bergshamra_xml::nodeset::{NodeIdSet, NodeSetType};
+
+    /// Sink that records every capacity hint it receives.
+    #[derive(Default)]
+    struct RecordingSink {
+        reserved: Vec<usize>,
+        bytes: Vec<u8>,
+    }
+
+    impl C14nSink for RecordingSink {
+        fn reserve(&mut self, additional: usize) {
+            self.reserved.push(additional);
+        }
+
+        fn write(&mut self, bytes: &[u8]) {
+            self.bytes.extend_from_slice(bytes);
+        }
+    }
+
+    const XML: &str = r#"<Root xmlns="urn:x"><A><B>text</B></A><C>more</C></Root>"#;
+
+    fn canonicalize_recording(node_set: Option<&NodeSet>) -> RecordingSink {
+        let doc = uppsala::parse(XML).expect("fixture must parse");
+        let mut sink = RecordingSink::default();
+        canonicalize_doc_to::<&str, _>(&doc, C14nMode::Exclusive, node_set, &[], &mut sink)
+            .expect("canonicalization must succeed");
+        sink
+    }
+
+    /// The serializers issue small per-node hints of their own; only the
+    /// leading, input-sized hint from `canonicalize_doc_to` is under test.
+    fn input_sized_hints(sink: &RecordingSink) -> Vec<usize> {
+        sink.reserved
+            .iter()
+            .copied()
+            .filter(|&n| n >= XML.len())
+            .collect()
+    }
+
+    #[test]
+    fn owned_document_canonicalizes_identically_to_borrowed() {
+        // `into_static` turns every arena string into `Cow::Owned`; the
+        // serializers must borrow from the document rather than clone, and
+        // the bytes must not depend on which storage the arena uses.
+        let xml = r#"<r xmlns="urn:d" xmlns:p="urn:p" xml:lang="en" p:a="1" b="&lt;&amp;"><p:c xml:space="preserve">t</p:c><!-- k --><d/></r>"#;
+        let borrowed = uppsala::parse(xml).expect("fixture must parse");
+        let owned = uppsala::parse(xml)
+            .expect("fixture must parse")
+            .into_static();
+        for mode in [
+            C14nMode::Inclusive,
+            C14nMode::InclusiveWithComments,
+            C14nMode::Inclusive11,
+            C14nMode::Exclusive,
+            C14nMode::ExclusiveWithComments,
+        ] {
+            let a = canonicalize_doc::<&str>(&borrowed, mode, None, &[]).expect("borrowed");
+            let b = canonicalize_doc::<&str>(&owned, mode, None, &[]).expect("owned");
+            assert_eq!(a, b, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn whole_document_reserves_input_length() {
+        let sink = canonicalize_recording(None);
+        assert_eq!(sink.reserved.first(), Some(&XML.len()));
+        assert_eq!(input_sized_hints(&sink), vec![XML.len()]);
+        assert!(!sink.bytes.is_empty());
+    }
+
+    #[test]
+    fn compact_inverted_set_reserves_input_length() {
+        let doc = uppsala::parse(XML).expect("fixture must parse");
+        let all = NodeSet::all_without_comments(&doc);
+        assert_eq!(all.set_type(), NodeSetType::Invert);
+        let sink = canonicalize_recording(Some(&all));
+        assert_eq!(sink.reserved.first(), Some(&XML.len()));
+        assert_eq!(input_sized_hints(&sink), vec![XML.len()]);
+    }
+
+    #[test]
+    fn sparse_inverted_set_reserves_only_the_visible_remainder() {
+        // all - <A> subtree: an inverted set whose output is the small
+        // remainder, so the hint must shrink by the excluded source bytes.
+        let doc = uppsala::parse(XML).expect("fixture must parse");
+        let root = doc.document_element().expect("document element");
+        let a = doc.first_child(root).expect("Root must have <A>");
+        let a_len = doc.node_serialized_size_hint(a);
+        assert!(a_len > 0, "parsed nodes carry a source range");
+        let subtree = NodeSet::tree_without_comments(a, &doc);
+        let sparse = NodeSet::all_without_comments(&doc).subtract(&subtree);
+        assert_eq!(sparse.set_type(), NodeSetType::Invert);
+
+        let hint = output_size_hint(&doc, Some(&sparse)).expect("inverted sets get a hint");
+        assert!(
+            hint < XML.len() && hint <= XML.len() - a_len,
+            "hint {hint} must drop at least the excluded {a_len} bytes of {}",
+            XML.len()
+        );
+        let sink = canonicalize_recording(Some(&sparse));
+        assert!(input_sized_hints(&sink).is_empty(), "{:?}", sink.reserved);
+        assert_eq!(sink.bytes, b"<Root xmlns=\"urn:x\"><C>more</C></Root>");
+    }
+
+    #[test]
+    fn mutated_document_keeps_hint_only_for_compact_exclusion_sets() {
+        // After a mutation the parser ranges are invalid, so the hint falls
+        // back to the exclusion cardinality: a handful of exclusions is a
+        // compact shape, a large exclusion set is not.
+        // Borrowed parse: `into_static` drops the input text (its hint is
+        // always 0), whereas a mutation keeps the text but invalidates ranges.
+        let mut doc = uppsala::parse(XML).expect("fixture must parse");
+        let root = doc.document_element().expect("document element");
+        let extra = doc.create_element(uppsala::QName {
+            namespace_uri: None,
+            prefix: None,
+            local_name: std::borrow::Cow::Borrowed("D"),
+        });
+        doc.append_child(root, extra);
+        assert_eq!(doc.node_serialized_size_hint(doc.root()), 0);
+
+        let few = NodeSet::all_without_comments(&doc);
+        assert_eq!(output_size_hint(&doc, Some(&few)), Some(XML.len()));
+
+        let many: NodeIdSet = (0..=COMPACT_EXCLUSION_LIMIT).collect();
+        let sparse = NodeSet::from_ids(many, NodeSetType::Invert);
+        assert_eq!(output_size_hint(&doc, Some(&sparse)), None);
+    }
+
+    #[test]
+    fn sparse_normal_set_gets_no_capacity_hint() {
+        let doc = uppsala::parse(XML).expect("fixture must parse");
+        let root = doc.document_element().expect("document element");
+        let a = doc
+            .first_child(root)
+            .expect("Root must have a first child element");
+        let subtree = NodeSet::tree_without_comments(a, &doc);
+        assert_eq!(subtree.set_type(), NodeSetType::Normal);
+        let sink = canonicalize_recording(Some(&subtree));
+        assert!(
+            input_sized_hints(&sink).is_empty(),
+            "a materialized subtree must not reserve input-sized capacity: {:?}",
+            sink.reserved
+        );
+        assert_eq!(sink.bytes, b"<A xmlns=\"urn:x\"><B>text</B></A>");
+
+        for set_type in [
+            NodeSetType::Normal,
+            NodeSetType::Tree,
+            NodeSetType::TreeWithoutComments,
+            NodeSetType::TreeInvert,
+        ] {
+            // Every materialized variant, TreeInvert included, stores visible
+            // IDs directly and must not reserve input-sized capacity.
+            let explicit = NodeSet::from_ids(NodeIdSet::default(), set_type);
+            let sink = canonicalize_recording(Some(&explicit));
+            assert!(
+                sink.reserved.is_empty(),
+                "{set_type:?} must not reserve: {:?}",
+                sink.reserved
+            );
+            assert!(sink.bytes.is_empty());
+        }
     }
 }

@@ -1,5 +1,61 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Require `uppsala` 0.12.0, picking up its direct DOM construction, fused
+  descendant XPath walks, and pre-sized serialization buffers.
+- Inclusive C14N maintains the in-scope namespace map incrementally with an
+  undo log instead of walking every ancestor for each element, and streams
+  element names, namespace declarations, and attributes straight to the sink
+  without per-node `String` allocation. Exclusive C14N drops its remaining
+  per-node text, processing-instruction, and element-name clones. Children
+  still inherit the bindings rendered by visible ancestors overlaid with the
+  current scope, so a prefixed undeclaration followed by a rebinding to the
+  same URI emits no redundant declaration. Attribute names and values are
+  borrowed from the document borrow rather than cloned out of the arena, so
+  owned documents (`into_static`) no longer allocate per attribute.
+- `bergshamra_c14n::render::Attr` is now lifetime-generic with
+  `Cow<'a, str>` fields borrowed from the document arena and carries a
+  separate `prefix` instead of a pre-formatted `qualified_name`. Equality
+  follows the canonical ordering key (namespace URI and local name).
+- `NodeSet` stores node indexes in an `FxHashSet` exposed as the
+  `NodeIdSet` alias; `NodeSet::from_ids` and `NodeSet::node_ids` use it.
+- `canonicalize_doc_to` pre-sizes buffering sinks for whole-document and
+  inverted selections, subtracting the source length of excluded nodes so a
+  sparse inverted set reserves only its visible remainder; materialized
+  subsets such as `<SignedInfo>` grow from their actual output instead.
+- Element lookups inside the C14N serializers return
+  `Error::Canonicalization` on an inconsistent arena instead of panicking.
+- The release profile uses fat LTO, a single codegen unit, and symbol
+  stripping; a `profiling` profile keeps full debug info for flamegraphs.
+- The design, invariants, and measurements for the above are recorded in
+  `docs/adr/0012-incremental-inclusive-c14n-and-borrowed-rendering.md`,
+  which supersedes ADR-0010.
+
+### Added
+
+- `bergshamra_dsig::sign::sign_enveloped_document_with_node` signs like
+  `sign_enveloped_document` and returns the `NodeId` of the inserted
+  `<ds:Signature>`, so bindings can serialize just the signature fragment.
+  It signs exactly the node it inserted, even when an earlier
+  `<ds:Signature>` exists in document order.
+- `bergshamra_dsig::sign::sign_document_node` signs a specific
+  `<ds:Signature>` skeleton by `NodeId`; `sign_document` is now the
+  first-in-document-order wrapper around it. Certificate population fills
+  only the target signature's own `<KeyInfo>/<X509Data>`, never the first
+  `<X509Data>` anywhere in the document. A target that is not attached to
+  the document is rejected with `Error::XmlStructure` before any digest is
+  computed. The generic transform fallback
+  re-parses the serialized document once and remaps the signature and
+  transform nodes into that arena by element path, so a signature inserted
+  into a mutated document keeps its identity through transforms such as
+  XPath that run outside the fast path.
+- End-to-end DSig benchmark (`cargo bench -p bergshamra-dsig --bench dsig_e2e`),
+  peak-RSS and CLI wall-time harnesses under `scripts/`, and matching
+  `just bench-*` recipes.
+
 ## 0.9.2 [2026-09-28]
 
 ### Changed

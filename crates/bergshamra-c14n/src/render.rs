@@ -7,6 +7,8 @@
 //! the required escaping. Most users should call the `canonicalize*` functions
 //! instead of using this module directly.
 
+use std::borrow::Cow;
+
 use crate::{escape, C14nSink};
 
 /// A namespace declaration prepared for canonical XML output.
@@ -81,19 +83,30 @@ impl PartialOrd for NsDecl {
 /// local name, followed by namespaced attributes by namespace URI and local
 /// name. Namespace declaration attributes are represented separately as
 /// [`NsDecl`] values.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Attr {
+///
+/// All names are borrowed from the document arena and the value is a
+/// copy-on-write over the arena string, so rendering an attribute costs no
+/// allocation (the previous four owned `String`s per attribute were the
+/// dominant per-element allocation source on attribute-heavy documents).
+///
+/// Equality and ordering follow the canonical ordering key (namespace URI and
+/// local name) and are implemented by hand below; `Debug` and `Clone` are
+/// derived so the type stays as usable as the owned version it replaced.
+#[derive(Debug, Clone)]
+pub struct Attr<'a> {
     /// The namespace URI of the attribute ("" for no namespace).
-    pub ns_uri: String,
+    pub ns_uri: Cow<'a, str>,
+    /// The attribute prefix for the qualified name. `None` renders an
+    /// unqualified name; `Some("xml")` is used for synthesized `xml:*`
+    /// inheritance attributes.
+    pub prefix: Option<Cow<'a, str>>,
     /// The local name.
-    pub local_name: String,
-    /// The qualified name (prefix:local or just local).
-    pub qualified_name: String,
-    /// The attribute value.
-    pub value: String,
+    pub local_name: Cow<'a, str>,
+    /// The attribute value: borrowed from the arena when possible.
+    pub value: Cow<'a, str>,
 }
 
-impl Attr {
+impl<'a> Attr<'a> {
     /// Write this attribute directly into a canonical byte sink.
     ///
     /// This avoids allocating the escaped value and formatted attribute
@@ -101,7 +114,11 @@ impl Attr {
     /// [`Self::render`], including its leading space.
     pub fn write_to<W: C14nSink>(&self, output: &mut W) {
         output.write_byte(b' ');
-        output.write(self.qualified_name.as_bytes());
+        if let Some(prefix) = &self.prefix {
+            output.write(prefix.as_bytes());
+            output.write_byte(b':');
+        }
+        output.write(self.local_name.as_bytes());
         output.write(b"=\"");
         escape::escape_attr_into(output, &self.value);
         output.write_byte(b'"');
@@ -113,15 +130,30 @@ impl Attr {
     /// name, so it can be appended directly to an element start tag. The
     /// attribute value is escaped with canonical XML attribute escaping.
     pub fn render(&self) -> String {
-        format!(
-            " {}=\"{}\"",
-            self.qualified_name,
-            escape::escape_attr(&self.value)
-        )
+        let mut out = String::new();
+        out.push(' ');
+        if let Some(prefix) = &self.prefix {
+            out.push_str(prefix.as_ref());
+            out.push(':');
+        }
+        out.push_str(self.local_name.as_ref());
+        out.push_str("=\"");
+        out.push_str(&escape::escape_attr(&self.value));
+        out.push('"');
+        out
     }
 }
 
-impl Ord for Attr {
+impl<'a> PartialEq for Attr<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        self.ns_uri.as_ref() == other.ns_uri.as_ref()
+            && self.local_name.as_ref() == other.local_name.as_ref()
+    }
+}
+
+impl<'a> Eq for Attr<'a> {}
+
+impl Ord for Attr<'_> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Attributes with no namespace come before those with a namespace.
         // Among those with namespaces, sort by (ns_uri, local_name).
@@ -138,7 +170,7 @@ impl Ord for Attr {
     }
 }
 
-impl PartialOrd for Attr {
+impl PartialOrd for Attr<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
@@ -162,10 +194,10 @@ mod tests {
     #[test]
     fn streaming_attribute_render_matches_allocating_render() {
         let attribute = Attr {
-            ns_uri: "urn:test".to_owned(),
-            local_name: "type".to_owned(),
-            qualified_name: "schema:type".to_owned(),
-            value: "A&B\"<\t\n\r".to_owned(),
+            ns_uri: Cow::Borrowed("urn:test"),
+            prefix: Some(Cow::Borrowed("schema")),
+            local_name: Cow::Borrowed("type"),
+            value: Cow::Borrowed("A&B\"<\t\n\r"),
         };
         let mut streamed = Vec::new();
         attribute.write_to(&mut streamed);

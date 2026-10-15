@@ -11,3 +11,4 @@ description = "XML DOM abstraction for Bergshamra XML Security library"
 [dependencies]
 bergshamra-core.workspace = true
 uppsala.workspace = true
+rustc-hash.workspace = true

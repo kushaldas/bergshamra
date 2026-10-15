@@ -70,6 +70,10 @@ selects AWS-LC, is incompatible with RustCrypto, and requires explicit
 intentionally invalid. AWS-LC builds are initially supported on Linux
 x86_64/aarch64.
 
+Bergshamra ships no C code: every crate in the default dependency graph is
+Rust. Benchmarks, methodology, and measured trade-offs are recorded in
+`performance.md`.
+
 ## xmlsec test suite compatibility
 
 Bergshamra's default RustCrypto configuration is tested against the full
