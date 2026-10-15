@@ -91,6 +91,15 @@ pub const ML_DSA_44: &str = "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#
 pub const ML_DSA_65: &str = "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#ml-dsa-65";
 pub const ML_DSA_87: &str = "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#ml-dsa-87";
 
+// W3C `xmldsig-more` (2026/08) identifiers for the same ML-DSA parameter
+// sets, as used by SAML metadata feeds signed with the W3C namespace. They
+// are accepted wherever the xmlsec identifiers above are; a template keeps
+// whichever identifier it declares.
+
+pub const ML_DSA_44_W3C: &str = "http://www.w3.org/2026/08/xmldsig-more#ml-dsa-44";
+pub const ML_DSA_65_W3C: &str = "http://www.w3.org/2026/08/xmldsig-more#ml-dsa-65";
+pub const ML_DSA_87_W3C: &str = "http://www.w3.org/2026/08/xmldsig-more#ml-dsa-87";
+
 // ── SLH-DSA (FIPS-205) signature algorithms ───────────────────────────
 
 pub const SLH_DSA_SHA2_128F: &str =

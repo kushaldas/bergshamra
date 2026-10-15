@@ -278,8 +278,13 @@ pub fn sign_owned(ctx: &DsigContext, mut result_xml: String) -> Result<String, E
         // otherwise the emitted document would declare one algorithm while the
         // SignatureValue was produced with another, making it self-inconsistent
         // and likely to fail interop verification.
-        let signer_uri = bergshamra_crypto::sign::kryptering_algorithm_uri(hsm_signer.algorithm());
-        if signer_uri != Some(sig_method_uri.as_str()) {
+        // The comparison is alias-aware: a W3C ML-DSA identifier names the
+        // same algorithm as the xmlsec one, and the document keeps the
+        // identifier the template declared.
+        if !bergshamra_crypto::sign::uri_matches_algorithm(&sig_method_uri, hsm_signer.algorithm())
+        {
+            let signer_uri =
+                bergshamra_crypto::sign::kryptering_algorithm_uri(hsm_signer.algorithm());
             return Err(Error::UnsupportedAlgorithm(format!(
                 "HSM signer algorithm {:?} (URI {}) does not match the template's SignatureMethod {sig_method_uri}",
                 hsm_signer.algorithm(),
@@ -703,8 +708,11 @@ pub fn sign_document_node(
     )?;
 
     let signature = if let Some(ref hsm_signer) = ctx.hsm_signer {
-        let signer_uri = bergshamra_crypto::sign::kryptering_algorithm_uri(hsm_signer.algorithm());
-        if signer_uri != Some(sig_method_uri.as_str()) {
+        // Alias-aware, like the text path above.
+        if !bergshamra_crypto::sign::uri_matches_algorithm(&sig_method_uri, hsm_signer.algorithm())
+        {
+            let signer_uri =
+                bergshamra_crypto::sign::kryptering_algorithm_uri(hsm_signer.algorithm());
             return Err(Error::UnsupportedAlgorithm(format!(
                 "HSM signer algorithm {:?} (URI {}) does not match the template's SignatureMethod {sig_method_uri}",
                 hsm_signer.algorithm(),
@@ -2381,6 +2389,146 @@ mod tests {
         let result = crate::verify::verify_document(&ctx, &doc)
             .expect("document-native verify should not error");
         assert!(result.is_valid(), "signed document must verify: {result:?}");
+    }
+
+    /// Regression: a `<SignatureMethod>` using the W3C
+    /// `2026/08/xmldsig-more#ml-dsa-*` identifier (as published by real
+    /// metadata feeds) must sign and verify like the xmlsec identifier, and
+    /// the signed output must keep the identifier the template declared.
+    #[cfg(feature = "post-quantum")]
+    #[test]
+    fn w3c_ml_dsa_signature_method_signs_and_verifies() {
+        let p12 = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../test-data/keys/ml-dsa/ml-dsa-44-key.p12"
+        );
+        let Ok(data) = std::fs::read(p12) else {
+            eprintln!("skipping test: {p12} not found");
+            return;
+        };
+        let mut key = bergshamra_keys::loader::load_pkcs12(&data, "secret123")
+            .expect("ML-DSA-44 PKCS#12 must load");
+        key.usage = bergshamra_keys::KeyUsage::Any;
+        let mut keys = bergshamra_keys::KeysManager::new();
+        keys.add_key(key);
+        let ctx = DsigContext::new_permissive(keys);
+
+        let template = w3c_ml_dsa_44_template();
+
+        let signed = sign(&ctx, &template).expect("W3C ML-DSA-44 identifier must sign");
+        assert!(
+            signed.contains(algorithm::ML_DSA_44_W3C),
+            "signed output must keep the W3C identifier: {signed}"
+        );
+        assert!(!signed.contains(algorithm::ML_DSA_44));
+        let result = crate::verify::verify(&ctx, &signed).expect("verify must not error");
+        assert!(
+            result.is_valid(),
+            "W3C ML-DSA-44 signature must verify: {result:?}"
+        );
+
+        // Tampering with the signed content must still be detected.
+        let tampered = signed.replace("<Data>hello</Data>", "<Data>HELLO</Data>");
+        let result = crate::verify::verify(&ctx, &tampered).expect("verify must not error");
+        assert!(
+            !result.is_valid(),
+            "tampered W3C ML-DSA-44 signature must fail"
+        );
+    }
+
+    /// Load the test-data ML-DSA-44 key as a kryptering software key for
+    /// injected signer and verifier tests.
+    #[cfg(feature = "post-quantum")]
+    fn ml_dsa_44_software_key() -> Option<bergshamra_crypto::sign::SigningKey> {
+        let p12 = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../test-data/keys/ml-dsa/ml-dsa-44-key.p12"
+        );
+        let Ok(data) = std::fs::read(p12) else {
+            eprintln!("skipping test: {p12} not found");
+            return None;
+        };
+        let key = bergshamra_keys::loader::load_pkcs12(&data, "secret123")
+            .expect("ML-DSA-44 PKCS#12 must load");
+        Some(
+            key.to_signing_key()
+                .expect("ML-DSA-44 key must convert")
+                .expect("ML-DSA-44 key must carry private material"),
+        )
+    }
+
+    #[cfg(feature = "post-quantum")]
+    fn w3c_ml_dsa_44_template() -> String {
+        format!(
+            r##"<Root ID="abc"><Data>hello</Data><ds:Signature xmlns:ds="{dsig}"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="{c14n}"/><ds:SignatureMethod Algorithm="{sig}"/><ds:Reference URI="#abc"><ds:Transforms><ds:Transform Algorithm="{env}"/><ds:Transform Algorithm="{c14n}"/></ds:Transforms><ds:DigestMethod Algorithm="{digest}"/><ds:DigestValue></ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue></ds:SignatureValue></ds:Signature></Root>"##,
+            dsig = ns::DSIG,
+            c14n = algorithm::EXC_C14N,
+            sig = algorithm::ML_DSA_44_W3C,
+            env = algorithm::ENVELOPED_SIGNATURE,
+            digest = algorithm::SHA256,
+        )
+    }
+
+    /// Regression: the injected signer and verifier paths compared the
+    /// declared `SignatureMethod` URI with the canonical xmlsec spelling, so
+    /// a template using the W3C ML-DSA identifier was rejected as an
+    /// algorithm mismatch by the signer and reported invalid by the
+    /// verifier. Both must accept the alias, keep the declared identifier in
+    /// the output, and still reject a different parameter set.
+    #[cfg(feature = "post-quantum")]
+    #[test]
+    fn w3c_ml_dsa_identifier_works_with_injected_signer_and_verifier() {
+        use kryptering::{MlDsaVariant as M, SignatureAlgorithm as S};
+
+        let Some(key) = ml_dsa_44_software_key() else {
+            return;
+        };
+        let signer = kryptering::SoftwareSigner::new(S::MlDsa(M::MlDsa44), key.clone())
+            .expect("software ML-DSA-44 signer");
+        let sign_ctx = DsigContext::new_permissive(bergshamra_keys::KeysManager::new())
+            .with_hsm_signer(Box::new(signer));
+        let verifier = kryptering::SoftwareVerifier::new(S::MlDsa(M::MlDsa44), key.clone())
+            .expect("software ML-DSA-44 verifier");
+        let verify_ctx = DsigContext::new_permissive(bergshamra_keys::KeysManager::new())
+            .with_hsm_verifier(Box::new(verifier));
+
+        // Text signing path.
+        let signed = sign(&sign_ctx, &w3c_ml_dsa_44_template())
+            .expect("injected ML-DSA-44 signer must accept the W3C identifier");
+        assert!(signed.contains(algorithm::ML_DSA_44_W3C));
+        assert!(!signed.contains(algorithm::ML_DSA_44));
+        let result = crate::verify::verify(&verify_ctx, &signed).expect("verify must not error");
+        assert!(
+            result.is_valid(),
+            "injected verifier must accept the W3C identifier: {result:?}"
+        );
+
+        // Document-native signing path.
+        let mut doc = uppsala::parse(&w3c_ml_dsa_44_template())
+            .expect("template must parse")
+            .into_static();
+        sign_document(&sign_ctx, &mut doc)
+            .expect("document-native injected signing must accept the W3C identifier");
+        let result = crate::verify::verify_document(&verify_ctx, &doc)
+            .expect("verify_document must not error");
+        assert!(
+            result.is_valid(),
+            "document-native signature must verify: {result:?}"
+        );
+
+        // A different parameter set is still a mismatch on both sides.
+        let other =
+            w3c_ml_dsa_44_template().replace(algorithm::ML_DSA_44_W3C, algorithm::ML_DSA_65_W3C);
+        let err = sign(&sign_ctx, &other)
+            .expect_err("ML-DSA-44 signer must reject an ML-DSA-65 template");
+        assert!(matches!(err, Error::UnsupportedAlgorithm(_)), "{err:?}");
+        let relabelled = signed.replace(algorithm::ML_DSA_44_W3C, algorithm::ML_DSA_65_W3C);
+        let result =
+            crate::verify::verify(&verify_ctx, &relabelled).expect("verify must not error");
+        assert!(
+            !result.is_valid(),
+            "relabelled parameter set must not verify"
+        );
     }
 
     #[test]
