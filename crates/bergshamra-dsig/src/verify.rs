@@ -467,9 +467,12 @@ fn verify_signature_node(
         // never claimed (or silently accept an algorithm-confusion attempt).
         // Treat a mismatch as an invalid signature rather than a hard error so
         // callers get a normal verification verdict.
-        let verifier_uri =
-            bergshamra_crypto::sign::kryptering_algorithm_uri(hsm_verifier.algorithm());
-        if verifier_uri != Some(sig_method_uri) {
+        // The comparison is alias-aware so a W3C ML-DSA identifier matches a
+        // verifier configured with the same parameter set.
+        if !bergshamra_crypto::sign::uri_matches_algorithm(sig_method_uri, hsm_verifier.algorithm())
+        {
+            let verifier_uri =
+                bergshamra_crypto::sign::kryptering_algorithm_uri(hsm_verifier.algorithm());
             return Ok(VerifyResult::Invalid {
                 reason: format!(
                     "SignatureMethod {sig_method_uri} does not match HSM verifier algorithm {:?} (URI {})",

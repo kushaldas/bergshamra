@@ -165,6 +165,9 @@ pub fn is_pq_algorithm(uri: &str) -> bool {
         algorithm::ML_DSA_44
             | algorithm::ML_DSA_65
             | algorithm::ML_DSA_87
+            | algorithm::ML_DSA_44_W3C
+            | algorithm::ML_DSA_65_W3C
+            | algorithm::ML_DSA_87_W3C
             | algorithm::SLH_DSA_SHA2_128F
             | algorithm::SLH_DSA_SHA2_128S
             | algorithm::SLH_DSA_SHA2_192F
@@ -188,13 +191,13 @@ pub fn is_hmac_algorithm(uri: &str) -> bool {
     )
 }
 
-pub fn from_uri_with_context(
-    uri: &str,
-    context: Option<Vec<u8>>,
-) -> Result<Box<dyn SignatureAlgorithm>, Error> {
+/// Resolve an XML-DSig `SignatureMethod` URI to the provider algorithm it
+/// names. Alias spellings (the W3C and xmlsec ML-DSA identifiers) resolve
+/// to the same algorithm; unknown URIs are rejected.
+fn algorithm_for_uri(uri: &str) -> Result<kryptering::SignatureAlgorithm, Error> {
     use kryptering::{EcCurve as C, HashAlgorithm as H, SignatureAlgorithm as S};
 
-    let algorithm = match uri {
+    Ok(match uri {
         algorithm::RSA_SHA1 => S::RsaPkcs1v15(H::Sha1),
         algorithm::RSA_SHA224 => S::RsaPkcs1v15(H::Sha224),
         algorithm::RSA_SHA256 => S::RsaPkcs1v15(H::Sha256),
@@ -239,11 +242,17 @@ pub fn from_uri_with_context(
         #[cfg(feature = "legacy-algorithms")]
         algorithm::DSA_SHA256 => S::Dsa(H::Sha256),
         #[cfg(feature = "post-quantum")]
-        algorithm::ML_DSA_44 => S::MlDsa(kryptering::MlDsaVariant::MlDsa44),
+        algorithm::ML_DSA_44 | algorithm::ML_DSA_44_W3C => {
+            S::MlDsa(kryptering::MlDsaVariant::MlDsa44)
+        }
         #[cfg(feature = "post-quantum")]
-        algorithm::ML_DSA_65 => S::MlDsa(kryptering::MlDsaVariant::MlDsa65),
+        algorithm::ML_DSA_65 | algorithm::ML_DSA_65_W3C => {
+            S::MlDsa(kryptering::MlDsaVariant::MlDsa65)
+        }
         #[cfg(feature = "post-quantum")]
-        algorithm::ML_DSA_87 => S::MlDsa(kryptering::MlDsaVariant::MlDsa87),
+        algorithm::ML_DSA_87 | algorithm::ML_DSA_87_W3C => {
+            S::MlDsa(kryptering::MlDsaVariant::MlDsa87)
+        }
         #[cfg(feature = "post-quantum")]
         algorithm::SLH_DSA_SHA2_128F => S::SlhDsa(kryptering::SlhDsaVariant::Sha2_128f),
         #[cfg(feature = "post-quantum")]
@@ -261,11 +270,39 @@ pub fn from_uri_with_context(
                 "signature algorithm: {uri}"
             )))
         }
-    };
+    })
+}
+
+/// Return the canonical URI spelling for any accepted `SignatureMethod` URI,
+/// or `None` when the URI names no supported algorithm. Alias spellings map
+/// to the canonical one, so two URIs name the same algorithm exactly when
+/// their canonical spellings are equal.
+pub fn canonical_signature_uri(uri: &str) -> Option<&'static str> {
+    algorithm_for_uri(uri).ok().and_then(canonical_uri)
+}
+
+/// Whether a declared `SignatureMethod` URI names the algorithm an injected
+/// signer or verifier reports, accepting alias spellings of the same
+/// algorithm and rejecting everything else (including unmapped algorithms).
+pub fn uri_matches_algorithm(uri: &str, algorithm: kryptering::SignatureAlgorithm) -> bool {
+    match canonical_uri(algorithm) {
+        Some(expected) => canonical_signature_uri(uri) == Some(expected),
+        None => false,
+    }
+}
+
+pub fn from_uri_with_context(
+    uri: &str,
+    context: Option<Vec<u8>>,
+) -> Result<Box<dyn SignatureAlgorithm>, Error> {
+    let algorithm = algorithm_for_uri(uri)?;
 
     let context = context.unwrap_or_default();
     #[cfg(feature = "post-quantum")]
-    let accepts_context = matches!(algorithm, S::MlDsa(_) | S::SlhDsa(_));
+    let accepts_context = matches!(
+        algorithm,
+        kryptering::SignatureAlgorithm::MlDsa(_) | kryptering::SignatureAlgorithm::SlhDsa(_)
+    );
     #[cfg(not(feature = "post-quantum"))]
     let accepts_context = false;
     if !context.is_empty() && !accepts_context {
@@ -370,5 +407,90 @@ mod tests {
         assert!(!algorithm
             .verify_truncated(&key, b"payload", &signature[..9], 10)
             .unwrap());
+    }
+
+    /// Regression: feeds signed with the W3C `2026/08/xmldsig-more` ML-DSA
+    /// identifiers were rejected as unsupported although the parameter sets
+    /// are the ones behind the xmlsec identifiers. Both spellings must
+    /// resolve to the same algorithm and be recognised as context-string
+    /// algorithms.
+    #[cfg(feature = "post-quantum")]
+    #[test]
+    fn w3c_ml_dsa_uris_resolve_to_the_xmlsec_algorithms() {
+        for (w3c, xmlsec) in [
+            (algorithm::ML_DSA_44_W3C, algorithm::ML_DSA_44),
+            (algorithm::ML_DSA_65_W3C, algorithm::ML_DSA_65),
+            (algorithm::ML_DSA_87_W3C, algorithm::ML_DSA_87),
+        ] {
+            assert!(is_pq_algorithm(w3c), "{w3c} must take a context string");
+            let via_w3c = from_uri(w3c).unwrap_or_else(|e| panic!("{w3c}: {e}"));
+            let via_xmlsec = from_uri(xmlsec).unwrap_or_else(|e| panic!("{xmlsec}: {e}"));
+            assert_eq!(via_w3c.uri(), via_xmlsec.uri(), "{w3c} must alias {xmlsec}");
+            assert!(
+                from_uri_with_context(w3c, Some(b"ctx".to_vec())).is_ok(),
+                "{w3c} must accept a context string"
+            );
+        }
+        assert!(
+            from_uri("http://www.w3.org/2026/08/xmldsig-more#ml-dsa-99").is_err(),
+            "unknown W3C parameter sets must still be rejected"
+        );
+    }
+
+    /// Regression: injected signers and verifiers compared the declared URI
+    /// with the canonical spelling only, so a W3C alias was reported as an
+    /// algorithm mismatch. The comparison must be alias-aware while still
+    /// rejecting different algorithms and unknown URIs.
+    #[cfg(feature = "post-quantum")]
+    #[test]
+    fn alias_aware_uri_matching_for_injected_providers() {
+        use kryptering::{HashAlgorithm as H, MlDsaVariant as M, SignatureAlgorithm as S};
+
+        assert_eq!(
+            canonical_signature_uri(algorithm::ML_DSA_87_W3C),
+            Some(algorithm::ML_DSA_87)
+        );
+        assert_eq!(
+            canonical_signature_uri(algorithm::ML_DSA_87),
+            Some(algorithm::ML_DSA_87)
+        );
+        assert_eq!(
+            canonical_signature_uri(algorithm::RSA_SHA256),
+            Some(algorithm::RSA_SHA256)
+        );
+        assert_eq!(canonical_signature_uri("urn:nope"), None);
+
+        for (w3c, xmlsec, variant) in [
+            (algorithm::ML_DSA_44_W3C, algorithm::ML_DSA_44, M::MlDsa44),
+            (algorithm::ML_DSA_65_W3C, algorithm::ML_DSA_65, M::MlDsa65),
+            (algorithm::ML_DSA_87_W3C, algorithm::ML_DSA_87, M::MlDsa87),
+        ] {
+            assert!(uri_matches_algorithm(w3c, S::MlDsa(variant)), "{w3c}");
+            assert!(uri_matches_algorithm(xmlsec, S::MlDsa(variant)), "{xmlsec}");
+        }
+        // A different parameter set, a different family, and an unknown URI
+        // are still mismatches.
+        assert!(!uri_matches_algorithm(
+            algorithm::ML_DSA_65_W3C,
+            S::MlDsa(M::MlDsa44)
+        ));
+        assert!(!uri_matches_algorithm(
+            algorithm::RSA_SHA256,
+            S::MlDsa(M::MlDsa44)
+        ));
+        assert!(!uri_matches_algorithm(
+            algorithm::ML_DSA_44_W3C,
+            S::RsaPkcs1v15(H::Sha256)
+        ));
+        assert!(!uri_matches_algorithm("urn:nope", S::MlDsa(M::MlDsa44)));
+        // Existing non-alias behaviour is unchanged.
+        assert!(uri_matches_algorithm(
+            algorithm::RSA_SHA256,
+            S::RsaPkcs1v15(H::Sha256)
+        ));
+        assert!(!uri_matches_algorithm(
+            algorithm::RSA_SHA256,
+            S::RsaPkcs1v15(H::Sha512)
+        ));
     }
 }

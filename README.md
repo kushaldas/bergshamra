@@ -4,8 +4,8 @@ XML Security library implementing the W3C XML Digital Signatures
 (XML-DSig), XML Encryption (XML-Enc), and XML Canonicalization (C14N)
 specifications. Document cryptography is selectable between RustCrypto and
 AWS-LC through Kryptering; XML parsing uses
-[Uppsala](https://crates.io/crates/uppsala) 0.10.1. Bergshamra 0.9.2 is
-released on September 28, 2026, and requires Rust 1.88.
+[Uppsala](https://crates.io/crates/uppsala) 0.12.0. Bergshamra 0.10.0 is
+released on October 15, 2026, and requires Rust 1.88.
 
 ## Features
 
@@ -36,7 +36,7 @@ released on September 28, 2026, and requires Rust 1.88.
 | Signature (RSA) | RSA PKCS#1 v1.5 (SHA-1/224/256/384/512, MD5†, RIPEMD-160†), RSA-PSS (SHA-1/224/256/384/512, SHA3-224/256/384/512) |
 | Signature (EC) | ECDSA (P-256/P-384/P-521 × SHA-1/224/256/384/512, SHA3-224/256/384/512, RIPEMD-160†) |
 | Signature (other) | DSA (SHA-1, SHA-256), Ed25519, HMAC (SHA-1/224/256/384/512, MD5†, RIPEMD-160†) |
-| Post-quantum | ML-DSA-44/65/87 (FIPS 204), SLH-DSA SHA2-128f/128s/192f/192s/256f/256s (FIPS 205) |
+| Post-quantum | ML-DSA-44/65/87 (FIPS 204; xmlsec and W3C `2026/08/xmldsig-more` identifiers), SLH-DSA SHA2-128f/128s/192f/192s/256f/256s (FIPS 205) |
 | Block cipher | AES-128/192/256-CBC, AES-128/192/256-GCM, 3DES-CBC |
 | Key wrap | AES-KW-128/192/256 (RFC 3394), 3DES-KW (RFC 3217) |
 | Key transport | RSA PKCS#1 v1.5, RSA-OAEP (SHA-1/224/256/384/512 digest, MGF1-SHA-1/224/256/384/512) |
@@ -171,8 +171,8 @@ let signed = bergshamra::sign(&ctx, template_xml)?;
 let signed = bergshamra::dsig::sign::sign_owned(&ctx, template_xml_string)?;
 ```
 
-Document-native APIs use Uppsala 0.10 types. Callers that pass an
-`uppsala::Document` directly must also use Uppsala 0.10; the same types are
+Document-native APIs use Uppsala 0.12 types. Callers that pass an
+`uppsala::Document` directly must also use Uppsala 0.12; the same types are
 available through the `bergshamra::xml` re-exports.
 
 Use `sign_owned` when the caller already owns a generated template `String` and

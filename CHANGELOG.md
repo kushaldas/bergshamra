@@ -1,9 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 [2026-10-15]
 
 ### Changed
 
+- **Breaking:** workspace crates are version 0.10.0 and use Uppsala 0.12.0
+  types in the document-native APIs; `bergshamra_c14n::render::Attr` gained
+  a lifetime parameter and lost `qualified_name` (see below).
 - Require `uppsala` 0.12.0, picking up its direct DOM construction, fused
   descendant XPath walks, and pre-sized serialization buffers.
 - Inclusive C14N maintains the in-scope namespace map incrementally with an
@@ -52,9 +55,24 @@
   transform nodes into that arena by element path, so a signature inserted
   into a mutated document keeps its identity through transforms such as
   XPath that run outside the fast path.
+- The W3C `http://www.w3.org/2026/08/xmldsig-more#ml-dsa-44`, `#ml-dsa-65`,
+  and `#ml-dsa-87` signature identifiers (`algorithm::ML_DSA_*_W3C`) are
+  accepted alongside the xmlsec `aleksey.com` identifiers for signing and
+  verification, so SAML metadata feeds signed with the W3C namespace, such
+  as the eduID Luxembourg ML-DSA-87 upstream feed, verify instead of failing
+  with an unsupported-algorithm error. Templates keep the identifier they
+  declare, and injected signers and verifiers (`with_hsm_signer`,
+  `with_hsm_verifier`) match the declared identifier alias-aware through
+  `bergshamra_crypto::sign::uri_matches_algorithm`, so a W3C identifier
+  works with a provider configured for the same parameter set while a
+  different algorithm is still rejected.
 - End-to-end DSig benchmark (`cargo bench -p bergshamra-dsig --bench dsig_e2e`),
   peak-RSS and CLI wall-time harnesses under `scripts/`, and matching
   `just bench-*` recipes.
+
+### Security
+
+- Updated `rustls` to 0.23.46.
 
 ## 0.9.2 [2026-09-28]
 
