@@ -668,7 +668,7 @@ pub fn sign_document_node(
                 ctx,
                 doc,
                 sig_node,
-                &id_map,
+                &id_attrs,
                 &uri,
                 transforms_node,
                 &digest_uri,
@@ -787,17 +787,116 @@ pub fn sign_document_node(
     Ok(())
 }
 
+/// Ordinal path of element `id` from the document root.
+///
+/// Each entry is the number of preceding *element* siblings at that level.
+/// Only elements are counted because a serialize/parse round trip can merge
+/// adjacent text nodes or drop nothing but never changes element structure,
+/// so the path resolves to the same element in a re-parsed copy. Returns
+/// `None` for a detached node.
+fn element_path(doc: &Document<'_>, id: NodeId) -> Option<Vec<usize>> {
+    let mut path = Vec::new();
+    let mut current = id;
+    while let Some(parent) = doc.parent(current) {
+        let ordinal = doc
+            .children(parent)
+            .into_iter()
+            .take_while(|&child| child != current)
+            .filter(|&child| doc.element(child).is_some())
+            .count();
+        path.push(ordinal);
+        current = parent;
+    }
+    if current != doc.root() {
+        return None;
+    }
+    path.reverse();
+    Some(path)
+}
+
+/// Resolve an [`element_path`] in `doc`.
+fn resolve_element_path(doc: &Document<'_>, path: &[usize]) -> Option<NodeId> {
+    let mut current = doc.root();
+    for &ordinal in path {
+        current = doc
+            .children(current)
+            .into_iter()
+            .filter(|&child| doc.element(child).is_some())
+            .nth(ordinal)?;
+    }
+    Some(current)
+}
+
+/// Find the element in `snapshot` that corresponds to `id` in `live`.
+///
+/// `snapshot` must be a parse of `live`'s current serialization. The result
+/// is checked to carry the same expanded name as the original so a structural
+/// mismatch surfaces as an error instead of a wrong-node digest.
+fn remap_node_into_snapshot(
+    live: &Document<'_>,
+    id: NodeId,
+    snapshot: &Document<'_>,
+) -> Result<NodeId, Error> {
+    let path = element_path(live, id).ok_or_else(|| {
+        Error::XmlStructure(format!(
+            "node {id:?} is detached from the document being signed"
+        ))
+    })?;
+    let mapped = resolve_element_path(snapshot, &path).ok_or_else(|| {
+        Error::XmlStructure(format!(
+            "node {id:?} has no counterpart in the serialized document (path {path:?})"
+        ))
+    })?;
+    let same_name = match (live.element(id), snapshot.element(mapped)) {
+        (Some(a), Some(b)) => {
+            a.name.local_name == b.name.local_name && a.name.namespace_uri == b.name.namespace_uri
+        }
+        _ => false,
+    };
+    if !same_name {
+        return Err(Error::XmlStructure(format!(
+            "node {id:?} maps to a different element after serialization (path {path:?})"
+        )));
+    }
+    Ok(mapped)
+}
+
+/// Generic transform-pipeline fallback for a `<Reference>` digest.
+///
+/// The transforms in `bergshamra-transforms` and `verify::apply_transform`
+/// each parse the serialized XML into their own arena, so every `NodeId` they
+/// receive must belong to that arena rather than to the live, possibly
+/// mutated, document. A signature inserted by the caller typically has a high
+/// index in the live arena and a low one after re-parsing; passing the live
+/// index would make the enveloped transform remove the wrong node or none.
+/// This function therefore parses the serialized text once, remaps the
+/// signature and transform elements into that snapshot by element path, and
+/// derives node sets and the ID map from the snapshot. All parses of the same
+/// text assign the same indexes, which is what the transforms already rely
+/// on.
 #[allow(clippy::too_many_arguments)]
 fn compute_reference_digest_via_transform_pipeline(
     ctx: &DsigContext,
-    doc: &Document<'_>,
-    sig_node: NodeId,
-    id_map: &HashMap<String, NodeId>,
+    live_doc: &Document<'_>,
+    live_sig_node: NodeId,
+    id_attrs: &[&str],
     uri: &str,
-    transforms_node: Option<NodeId>,
+    live_transforms_node: Option<NodeId>,
     digest_uri: &str,
 ) -> Result<Vec<u8>, Error> {
-    let current_xml = doc.to_xml();
+    let current_xml = live_doc.to_xml();
+    let snapshot = uppsala::parse(&current_xml).map_err(|e| {
+        Error::XmlParse(format!(
+            "re-parsing the serialized document for the transform pipeline: {e}"
+        ))
+    })?;
+    let doc = &snapshot;
+    let sig_node = remap_node_into_snapshot(live_doc, live_sig_node, doc)?;
+    let transforms_node = live_transforms_node
+        .map(|node| remap_node_into_snapshot(live_doc, node, doc))
+        .transpose()?;
+    let id_map = &build_id_map(doc, id_attrs)?;
+
     let mut data = if uri.is_empty() {
         let ns = NodeSet::all_without_comments(doc);
         bergshamra_transforms::TransformData::xml_borrowed(&current_xml, Some(ns))
@@ -2352,6 +2451,90 @@ mod tests {
             !fragment.contains("ID=\"outer\""),
             "fragment must be the inserted signature only"
         );
+    }
+
+    #[test]
+    fn sign_document_node_keeps_inserted_signature_identity_through_transform_fallback() {
+        // An XPath transform is outside the fast path, so this reference goes
+        // through the generic pipeline, which serializes and re-parses the
+        // document. The enveloped-pattern XPath is executed with the Signature
+        // node's index; the inserted signature has a high index in the live
+        // arena and a low one after re-parsing, so a stale index removes the
+        // wrong subtree and the digest does not verify.
+        let ctx = hmac_signing_context();
+        let template = r#"<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/><ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#hmac-sha256"/><ds:Reference URI=""><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/TR/1999/REC-xpath-19991116"><ds:XPath>not(ancestor-or-self::ds:Signature)</ds:XPath></ds:Transform><ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue></ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue></ds:SignatureValue></ds:Signature>"#;
+        let body = r#"<Data ID="abc">hello</Data><More>world</More>"#;
+
+        let mut doc = uppsala::parse(&format!("<Root>{body}</Root>"))
+            .expect("test XML must parse")
+            .into_static();
+        let sig_doc = uppsala::parse(template).expect("template must parse");
+        let sig_root = sig_doc.document_element().expect("template root");
+        let inserted = doc
+            .import_subtree(&sig_doc, sig_root)
+            .expect("import must succeed");
+        let root = doc.document_element().expect("document element");
+        let first = doc.first_child(root).expect("Root has children");
+        doc.insert_before(root, inserted, first);
+        assert!(
+            inserted.index() > first.index(),
+            "the inserted node must sit above the original nodes in the arena"
+        );
+
+        sign_document_node(&ctx, &mut doc, inserted)
+            .expect("signing the inserted node through the generic pipeline must succeed");
+
+        let signed = doc.to_xml();
+        let result = crate::verify::verify(&ctx, &signed)
+            .expect("verification of the serialized result must not error");
+        assert!(result.is_valid(), "signed document must verify: {result:?}");
+
+        // The same template signed from text is the ground truth: the digest
+        // over the same content must be byte-identical.
+        let from_text = sign(&ctx, &format!("<Root>{template}{body}</Root>"))
+            .expect("text-path signing must succeed");
+        let digest_of = |xml: &str| {
+            let start =
+                xml.find("<ds:DigestValue>").expect("DigestValue") + "<ds:DigestValue>".len();
+            let end = xml[start..]
+                .find("</ds:DigestValue>")
+                .expect("DigestValue end")
+                + start;
+            xml[start..end].to_owned()
+        };
+        assert_eq!(digest_of(&signed), digest_of(&from_text));
+    }
+
+    #[test]
+    fn element_path_round_trips_through_serialization() {
+        let mut doc = uppsala::parse("<Root><!-- c --><A/>text<B><C/><D/></B></Root>")
+            .expect("test XML must parse")
+            .into_static();
+        let root = doc.document_element().expect("document element");
+        let b = doc
+            .children(root)
+            .into_iter()
+            .nth(3)
+            .expect("<B> is the fourth child");
+        let d = doc.children(b).into_iter().nth(1).expect("<D>");
+        assert_eq!(element_path(&doc, d), Some(vec![0, 1, 1]));
+
+        // Mutate so the live arena no longer matches a fresh parse.
+        let extra = doc.create_element(QName::local("Z"));
+        doc.insert_before(root, extra, doc.first_child(root).expect("first child"));
+        let serialized = doc.to_xml();
+        let snapshot = uppsala::parse(&serialized).expect("serialized output must parse");
+        let mapped = remap_node_into_snapshot(&doc, d, &snapshot).expect("remap must succeed");
+        assert_ne!(mapped, d, "indexes differ once the arena was mutated");
+        assert_eq!(
+            snapshot.element(mapped).map(|e| e.name.local_name.as_ref()),
+            Some("D")
+        );
+        assert_eq!(element_path(&snapshot, mapped), Some(vec![0, 2, 1]));
+
+        let detached = doc.create_element(QName::local("Loose"));
+        assert_eq!(element_path(&doc, detached), None);
+        assert!(remap_node_into_snapshot(&doc, detached, &snapshot).is_err());
     }
 
     #[test]

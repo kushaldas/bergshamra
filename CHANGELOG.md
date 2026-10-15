@@ -38,7 +38,11 @@
   `<ds:Signature>` exists in document order.
 - `bergshamra_dsig::sign::sign_document_node` signs a specific
   `<ds:Signature>` skeleton by `NodeId`; `sign_document` is now the
-  first-in-document-order wrapper around it.
+  first-in-document-order wrapper around it. The generic transform fallback
+  re-parses the serialized document once and remaps the signature and
+  transform nodes into that arena by element path, so a signature inserted
+  into a mutated document keeps its identity through transforms such as
+  XPath that run outside the fast path.
 - End-to-end DSig benchmark (`cargo bench -p bergshamra-dsig --bench dsig_e2e`),
   peak-RSS and CLI wall-time harnesses under `scripts/`, and matching
   `just bench-*` recipes.
