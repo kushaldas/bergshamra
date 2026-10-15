@@ -326,6 +326,29 @@ mod tests {
     }
 
     #[test]
+    fn owned_document_canonicalizes_identically_to_borrowed() {
+        // `into_static` turns every arena string into `Cow::Owned`; the
+        // serializers must borrow from the document rather than clone, and
+        // the bytes must not depend on which storage the arena uses.
+        let xml = r#"<r xmlns="urn:d" xmlns:p="urn:p" xml:lang="en" p:a="1" b="&lt;&amp;"><p:c xml:space="preserve">t</p:c><!-- k --><d/></r>"#;
+        let borrowed = uppsala::parse(xml).expect("fixture must parse");
+        let owned = uppsala::parse(xml)
+            .expect("fixture must parse")
+            .into_static();
+        for mode in [
+            C14nMode::Inclusive,
+            C14nMode::InclusiveWithComments,
+            C14nMode::Inclusive11,
+            C14nMode::Exclusive,
+            C14nMode::ExclusiveWithComments,
+        ] {
+            let a = canonicalize_doc::<&str>(&borrowed, mode, None, &[]).expect("borrowed");
+            let b = canonicalize_doc::<&str>(&owned, mode, None, &[]).expect("owned");
+            assert_eq!(a, b, "{mode:?}");
+        }
+    }
+
+    #[test]
     fn whole_document_reserves_input_length() {
         let sink = canonicalize_recording(None);
         assert_eq!(sink.reserved.first(), Some(&XML.len()));

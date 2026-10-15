@@ -312,11 +312,14 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
             if !attrs_excluded {
                 let elem = element_of(self.doc, id)?;
                 for attr in &elem.attributes {
+                    // Borrow from the document borrow (`'a`), not by cloning
+                    // the arena `Cow`s: for an owned document (`into_static`)
+                    // a `Cow::clone` deep-copies every string.
                     attrs.push(Attr {
-                        ns_uri: attr.name.namespace_uri.clone().unwrap_or(Cow::Borrowed("")),
+                        ns_uri: Cow::Borrowed(attr.name.namespace_uri.as_deref().unwrap_or("")),
                         prefix: find_attr_prefix(attr),
-                        local_name: attr.name.local_name.clone(),
-                        value: attr.value.clone(),
+                        local_name: Cow::Borrowed(attr.name.local_name.as_ref()),
+                        value: Cow::Borrowed(attr.value.as_ref()),
                     });
                 }
             } // end if !attrs_excluded
@@ -404,11 +407,22 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
                 }
                 cn
             } else {
-                // Without namespace filtering, children inherit the full
-                // in-scope map maintained by the traversal (identical to the
-                // previous `inherited_ns`-plus-visible-entries construction,
-                // without the extra rebuild).
-                inscope_ns.clone()
+                // Without namespace filtering, children see the bindings
+                // already rendered by visible ancestors overlaid with the
+                // current in-scope map. The overlay matters when a prefixed
+                // undeclaration (`xmlns:p=""`) removed `p` from the in-scope
+                // map: nothing is emitted for the undeclaration, so the
+                // rendered binding stays in force and a descendant that
+                // restores `p` to the same URI must not re-emit it. Starting
+                // from `inscope_ns` alone would forget that rendered state
+                // and change the canonical bytes.
+                let mut cn = inherited_ns.clone();
+                for (prefix, uri) in inscope_ns.iter() {
+                    if prefix != "xml" {
+                        cn.insert(prefix.clone(), uri.clone());
+                    }
+                }
+                cn
             };
 
             for child in self.doc.children_iter(id) {
@@ -502,8 +516,8 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
     fn collect_inherited_xml_attrs(
         &self,
         id: NodeId,
-        existing_attrs: &[Attr<'doc>],
-    ) -> Vec<Attr<'doc>> {
+        existing_attrs: &[Attr<'a>],
+    ) -> Vec<Attr<'a>> {
         let xml_ns = "http://www.w3.org/XML/1998/namespace";
         let mut seen: Vec<&str> = Vec::new();
         let mut result: Vec<Attr> = Vec::new();
@@ -524,8 +538,8 @@ impl<'a, 'doc> C14nContext<'a, 'doc> {
                                 result.push(Attr {
                                     ns_uri: Cow::Borrowed(xml_ns),
                                     prefix: Some(Cow::Borrowed("xml")),
-                                    local_name: attr.name.local_name.clone(),
-                                    value: attr.value.clone(),
+                                    local_name: Cow::Borrowed(attr.name.local_name.as_ref()),
+                                    value: Cow::Borrowed(attr.value.as_ref()),
                                 });
                             }
                         }
@@ -622,7 +636,7 @@ fn restore_namespaces(
 /// XML-namespace attributes, the attribute's own non-empty prefix when
 /// namespaced, and `None` for unqualified attributes or an empty prefix
 /// (matching the previous qualified-name construction rules exactly).
-fn find_attr_prefix<'a>(attr: &uppsala::Attribute<'a>) -> Option<Cow<'a, str>> {
+fn find_attr_prefix<'a>(attr: &'a uppsala::Attribute<'_>) -> Option<Cow<'a, str>> {
     if attr.name.namespace_uri.is_some() {
         if attr.name.namespace_uri.as_deref() == Some("http://www.w3.org/XML/1998/namespace") {
             return Some(Cow::Borrowed("xml"));
@@ -630,7 +644,13 @@ fn find_attr_prefix<'a>(attr: &uppsala::Attribute<'a>) -> Option<Cow<'a, str>> {
         // `Attr::write_to` renders every `Some(prefix)` as `prefix:`, so a
         // namespaced attribute whose arena prefix is the empty string must
         // map to `None` or it would serialize as the invalid name `:local`.
-        return attr.name.prefix.clone().filter(|p| !p.is_empty());
+        // Borrowed from the attribute, never cloned out of the arena `Cow`.
+        return attr
+            .name
+            .prefix
+            .as_deref()
+            .filter(|p| !p.is_empty())
+            .map(Cow::Borrowed);
     }
     None
 }
@@ -742,6 +762,32 @@ fn parse_uri_components(uri: &str) -> (String, String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prefixed_undeclaration_then_rebinding_does_not_re_emit_declaration() {
+        // `p` is rendered on <a>, undeclared on <b> (nothing is emitted for a
+        // prefixed undeclaration in C14N 1.0), and restored to the same URI on
+        // <c>. The rendered binding is still in force at <c>, so no
+        // declaration may be emitted there; re-emitting it would change the
+        // canonical bytes and therefore every digest over such content.
+        let xml = r#"<a xmlns:p="urn:x"><b xmlns:p=""><c xmlns:p="urn:x"/></b></a>"#;
+        let doc = uppsala::parse(xml).expect("prefixed undeclaration must parse");
+        let out = canonicalize(&doc, false, None).expect("canonicalize");
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            r#"<a xmlns:p="urn:x"><b><c></c></b></a>"#
+        );
+
+        // Rebinding to a different URI after the undeclaration is a real
+        // change and must still be emitted.
+        let xml = r#"<a xmlns:p="urn:x"><b xmlns:p=""><c xmlns:p="urn:y"/></b></a>"#;
+        let doc = uppsala::parse(xml).expect("prefixed undeclaration must parse");
+        let out = canonicalize(&doc, false, None).expect("canonicalize");
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            r#"<a xmlns:p="urn:x"><b><c xmlns:p="urn:y"></c></b></a>"#
+        );
+    }
 
     #[test]
     fn find_attr_prefix_maps_empty_prefix_to_none() {

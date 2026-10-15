@@ -10,7 +10,12 @@
   undo log instead of walking every ancestor for each element, and streams
   element names, namespace declarations, and attributes straight to the sink
   without per-node `String` allocation. Exclusive C14N drops its remaining
-  per-node text, processing-instruction, and element-name clones.
+  per-node text, processing-instruction, and element-name clones. Children
+  still inherit the bindings rendered by visible ancestors overlaid with the
+  current scope, so a prefixed undeclaration followed by a rebinding to the
+  same URI emits no redundant declaration. Attribute names and values are
+  borrowed from the document borrow rather than cloned out of the arena, so
+  owned documents (`into_static`) no longer allocate per attribute.
 - `bergshamra_c14n::render::Attr` is now lifetime-generic with
   `Cow<'a, str>` fields borrowed from the document arena and carries a
   separate `prefix` instead of a pre-formatted `qualified_name`. Equality
@@ -38,7 +43,9 @@
   `<ds:Signature>` exists in document order.
 - `bergshamra_dsig::sign::sign_document_node` signs a specific
   `<ds:Signature>` skeleton by `NodeId`; `sign_document` is now the
-  first-in-document-order wrapper around it. The generic transform fallback
+  first-in-document-order wrapper around it. Certificate population fills
+  only the target signature's own `<KeyInfo>/<X509Data>`, never the first
+  `<X509Data>` anywhere in the document. The generic transform fallback
   re-parses the serialized document once and remaps the signature and
   transform nodes into that arena by element path, so a signature inserted
   into a mutated document keeps its identity through transforms such as

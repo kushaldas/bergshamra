@@ -780,7 +780,7 @@ pub fn sign_document_node(
     if ctx.hsm_signer.is_none() {
         let key = ctx.keys_manager.first_key()?;
         if !key.x509_chain.is_empty() {
-            populate_x509_data_document(doc, &key.x509_chain);
+            populate_x509_data_document(doc, sig_node, &key.x509_chain);
         }
     }
 
@@ -961,13 +961,22 @@ fn replace_element_text(doc: &mut Document<'_>, element: NodeId, content: String
     doc.append_child(element, text);
 }
 
-fn populate_x509_data_document(doc: &mut Document<'_>, x509_chain: &[Vec<u8>]) {
-    let Some(x509_data_id) = doc.descendants(doc.root()).into_iter().find(|&id| {
-        doc.element(id).is_some_and(|elem| {
-            &*elem.name.local_name == ns::node::X509_DATA
-                && elem.name.namespace_uri.as_deref().unwrap_or("") == ns::DSIG
-        })
-    }) else {
+/// Fill the empty `<X509Data>` inside `sig_node`'s own `<KeyInfo>` with the
+/// signing key's certificate chain.
+///
+/// Only the target signature's direct `<KeyInfo>`/`<X509Data>` is considered.
+/// A document-wide search for the first `<X509Data>` would, in a document
+/// with several signatures, either leave the target without its certificate
+/// (an earlier container is already populated) or modify another
+/// signature's container. The population runs after the digests were
+/// computed, so with a whole-document enveloped reference that modification
+/// lands inside the just-signed bytes and invalidates the new signature.
+fn populate_x509_data_document(doc: &mut Document<'_>, sig_node: NodeId, x509_chain: &[Vec<u8>]) {
+    let Some(key_info_id) = find_child_element(doc, sig_node, ns::DSIG, ns::node::KEY_INFO) else {
+        return;
+    };
+    let Some(x509_data_id) = find_child_element(doc, key_info_id, ns::DSIG, ns::node::X509_DATA)
+    else {
         return;
     };
 
@@ -2535,6 +2544,117 @@ mod tests {
         let detached = doc.create_element(QName::local("Loose"));
         assert_eq!(element_path(&doc, detached), None);
         assert!(remap_node_into_snapshot(&doc, detached, &snapshot).is_err());
+    }
+
+    /// RSA-2048 key with its certificate attached, from the xmlsec test keys.
+    fn rsa_cert_signing_context() -> DsigContext {
+        let base = concat!(env!("CARGO_MANIFEST_DIR"), "/../../test-data/keys/rsa/");
+        let key_pem = std::fs::read(format!("{base}rsa-2048-key.pem"))
+            .expect("test-data RSA private key PEM must be readable");
+        let cert_der = std::fs::read(format!("{base}rsa-2048-cert.der"))
+            .expect("test-data RSA certificate must be readable");
+        let mut key = bergshamra_keys::loader::load_rsa_private_pem(&key_pem)
+            .expect("unencrypted PKCS#8 RSA PEM must load");
+        key.usage = bergshamra_keys::KeyUsage::Any;
+        key.x509_chain = vec![cert_der];
+        let mut keys = bergshamra_keys::KeysManager::new();
+        keys.add_key(key);
+        DsigContext::new_permissive(keys)
+    }
+
+    fn x509_data_of(doc: &Document<'_>, sig: NodeId) -> NodeId {
+        let key_info = find_child_element(doc, sig, ns::DSIG, ns::node::KEY_INFO)
+            .expect("KeyInfo under Signature");
+        find_child_element(doc, key_info, ns::DSIG, ns::node::X509_DATA)
+            .expect("X509Data under KeyInfo")
+    }
+
+    #[test]
+    fn sign_document_node_populates_only_the_target_signatures_x509_data() {
+        // Two enveloped signature skeletons with empty X509Data containers.
+        // Signing the second must fill the second container and leave the
+        // first untouched: the first lies inside the whole-document reference
+        // just digested, so touching it after the fact would invalidate the
+        // signature, and the target would be left without its certificate.
+        let ctx = rsa_cert_signing_context();
+        let skeleton = |id: &str| {
+            format!(
+                r#"<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#" Id="{id}"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="{exc}"/><ds:SignatureMethod Algorithm="{rsa}"/><ds:Reference URI=""><ds:Transforms><ds:Transform Algorithm="{env}"/><ds:Transform Algorithm="{exc}"/></ds:Transforms><ds:DigestMethod Algorithm="{sha}"/><ds:DigestValue></ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue></ds:SignatureValue><ds:KeyInfo><ds:X509Data></ds:X509Data></ds:KeyInfo></ds:Signature>"#,
+                exc = algorithm::EXC_C14N,
+                rsa = algorithm::RSA_SHA256,
+                env = algorithm::ENVELOPED_SIGNATURE,
+                sha = algorithm::SHA256,
+            )
+        };
+        let xml = format!(
+            "<Root>{}<Data>hello</Data>{}</Root>",
+            skeleton("first"),
+            skeleton("second")
+        );
+        let mut doc = uppsala::parse(&xml)
+            .expect("test XML must parse")
+            .into_static();
+        let signatures = doc.get_elements_by_tag_name(ns::node::SIGNATURE);
+        assert_eq!(signatures.len(), 2);
+        let (first, second) = (signatures[0], signatures[1]);
+
+        sign_document_node(&ctx, &mut doc, second).expect("signing the second skeleton");
+
+        let is_cert = |doc: &Document<'_>, id: NodeId| {
+            doc.element(id).is_some_and(|e| {
+                e.name.local_name.as_ref() == ns::node::X509_CERTIFICATE
+                    && e.name.namespace_uri.as_deref() == Some(ns::DSIG)
+            })
+        };
+        let target = x509_data_of(&doc, second);
+        assert!(
+            doc.children(target).into_iter().any(|c| is_cert(&doc, c)),
+            "the target signature's X509Data must receive the certificate"
+        );
+        let other = x509_data_of(&doc, first);
+        assert!(
+            doc.children(other)
+                .into_iter()
+                .all(|c| doc.element(c).is_none()),
+            "the other signature's X509Data must stay untouched"
+        );
+
+        let results = crate::verify::verify_all(&ctx, &doc.to_xml())
+            .expect("verify_all must not fail at document level");
+        assert_eq!(results.len(), 2);
+        assert!(
+            results[1].is_valid(),
+            "the signed second signature must verify: {:?}",
+            results[1]
+        );
+        assert!(
+            !results[0].is_valid(),
+            "the unsigned first skeleton is not valid"
+        );
+    }
+
+    #[test]
+    fn sign_document_node_leaves_an_already_populated_target_x509_data_alone() {
+        let ctx = rsa_cert_signing_context();
+        let xml = format!(
+            r#"<Root><ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="{exc}"/><ds:SignatureMethod Algorithm="{rsa}"/><ds:Reference URI=""><ds:Transforms><ds:Transform Algorithm="{env}"/><ds:Transform Algorithm="{exc}"/></ds:Transforms><ds:DigestMethod Algorithm="{sha}"/><ds:DigestValue></ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue></ds:SignatureValue><ds:KeyInfo><ds:X509Data><ds:X509SubjectName>CN=preset</ds:X509SubjectName></ds:X509Data></ds:KeyInfo></ds:Signature><Data>hello</Data></Root>"#,
+            exc = algorithm::EXC_C14N,
+            rsa = algorithm::RSA_SHA256,
+            env = algorithm::ENVELOPED_SIGNATURE,
+            sha = algorithm::SHA256,
+        );
+        let mut doc = uppsala::parse(&xml)
+            .expect("test XML must parse")
+            .into_static();
+        let sig = doc.get_elements_by_tag_name(ns::node::SIGNATURE)[0];
+        sign_document_node(&ctx, &mut doc, sig).expect("signing must succeed");
+        let x509_data = x509_data_of(&doc, sig);
+        let children: Vec<String> = doc
+            .children(x509_data)
+            .into_iter()
+            .filter_map(|c| doc.element(c).map(|e| e.name.local_name.to_string()))
+            .collect();
+        assert_eq!(children, vec!["X509SubjectName".to_string()]);
     }
 
     #[test]

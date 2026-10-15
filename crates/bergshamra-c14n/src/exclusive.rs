@@ -273,11 +273,14 @@ impl<'a, 'doc> ExcC14nContext<'a, 'doc> {
             {
                 let elem = element_of(self.doc, id)?;
                 for attr in &elem.attributes {
+                    // Borrow from the document borrow (`'a`), not by cloning
+                    // the arena `Cow`s: for an owned document (`into_static`)
+                    // a `Cow::clone` deep-copies every string.
                     attrs.push(Attr {
-                        ns_uri: attr.name.namespace_uri.clone().unwrap_or(Cow::Borrowed("")),
+                        ns_uri: Cow::Borrowed(attr.name.namespace_uri.as_deref().unwrap_or("")),
                         prefix: get_attr_prefix(attr),
-                        local_name: attr.name.local_name.clone(),
-                        value: attr.value.clone(),
+                        local_name: Cow::Borrowed(attr.name.local_name.as_ref()),
+                        value: Cow::Borrowed(attr.value.as_ref()),
                     });
                 }
             }
@@ -456,7 +459,7 @@ fn element_of<'a, 'doc>(
 /// Get the prefix for an attribute: `Some("xml")` for XML-namespace
 /// attributes, otherwise the attribute's own non-empty prefix, and `None`
 /// when the attribute is unqualified or namespaced without a prefix.
-fn get_attr_prefix<'a>(attr: &uppsala::Attribute<'a>) -> Option<Cow<'a, str>> {
+fn get_attr_prefix<'a>(attr: &'a uppsala::Attribute<'_>) -> Option<Cow<'a, str>> {
     if attr.name.namespace_uri.is_some() {
         if attr.name.namespace_uri.as_deref() == Some("http://www.w3.org/XML/1998/namespace") {
             return Some(Cow::Borrowed("xml"));
@@ -464,7 +467,13 @@ fn get_attr_prefix<'a>(attr: &uppsala::Attribute<'a>) -> Option<Cow<'a, str>> {
         // `Attr::write_to` renders every `Some(prefix)` as `prefix:`, so a
         // namespaced attribute whose arena prefix is the empty string must
         // map to `None` or it would serialize as the invalid name `:local`.
-        return attr.name.prefix.clone().filter(|p| !p.is_empty());
+        // Borrowed from the attribute, never cloned out of the arena `Cow`.
+        return attr
+            .name
+            .prefix
+            .as_deref()
+            .filter(|p| !p.is_empty())
+            .map(Cow::Borrowed);
     }
     None
 }
