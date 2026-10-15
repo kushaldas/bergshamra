@@ -204,7 +204,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "bergshamra"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "base64",
  "bergshamra-c14n",
@@ -222,7 +222,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-c14n"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "bergshamra-core",
  "bergshamra-xml",
@@ -233,14 +233,14 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-core"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "bergshamra-crypto"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "bergshamra-core",
  "hex",
@@ -252,7 +252,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-dsig"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "base64",
  "bergshamra-c14n",
@@ -272,7 +272,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-enc"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "base64",
  "bergshamra-c14n",
@@ -287,7 +287,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-keys"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "base64",
  "bergshamra-core",
@@ -323,7 +323,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-pkcs12"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "bergshamra-core",
  "cipher 0.5.2",
@@ -334,7 +334,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-transforms"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "base64",
  "bergshamra-c14n",
@@ -347,7 +347,7 @@ dependencies = [
 
 [[package]]
 name = "bergshamra-xml"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "bergshamra-core",
  "rustc-hash",

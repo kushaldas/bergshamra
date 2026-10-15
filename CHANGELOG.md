@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.10.1 [2026-10-15]
+
+### Added
+
+- The W3C `http://www.w3.org/2026/08/xmldsig-more#slh-dsa-sha2-128s`,
+  `#slh-dsa-sha2-128f`, `#slh-dsa-sha2-192s`, `#slh-dsa-sha2-192f`,
+  `#slh-dsa-sha2-256s`, and `#slh-dsa-sha2-256f` signature identifiers
+  (`algorithm::SLH_DSA_SHA2_*_W3C`) are accepted alongside the xmlsec
+  identifiers for signing and verification, including injected signers and
+  verifiers, so SAML metadata feeds signed with the W3C SLH-DSA namespace,
+  such as the eduID Luxembourg SLH-DSA-SHA2-256s upstream feed, verify
+  instead of failing with an unsupported-algorithm error. Templates keep
+  the identifier they declare. The SHAKE parameter sets defined in the same
+  draft are not implemented.
+
+### Changed
+
+- Bumped all workspace crates and internal dependency requirements to 0.10.1.
+
 ## 0.10.0 [2026-10-15]
 
 ### Changed
