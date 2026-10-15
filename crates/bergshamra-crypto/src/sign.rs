@@ -174,6 +174,12 @@ pub fn is_pq_algorithm(uri: &str) -> bool {
             | algorithm::SLH_DSA_SHA2_192S
             | algorithm::SLH_DSA_SHA2_256F
             | algorithm::SLH_DSA_SHA2_256S
+            | algorithm::SLH_DSA_SHA2_128F_W3C
+            | algorithm::SLH_DSA_SHA2_128S_W3C
+            | algorithm::SLH_DSA_SHA2_192F_W3C
+            | algorithm::SLH_DSA_SHA2_192S_W3C
+            | algorithm::SLH_DSA_SHA2_256F_W3C
+            | algorithm::SLH_DSA_SHA2_256S_W3C
     )
 }
 
@@ -254,17 +260,29 @@ fn algorithm_for_uri(uri: &str) -> Result<kryptering::SignatureAlgorithm, Error>
             S::MlDsa(kryptering::MlDsaVariant::MlDsa87)
         }
         #[cfg(feature = "post-quantum")]
-        algorithm::SLH_DSA_SHA2_128F => S::SlhDsa(kryptering::SlhDsaVariant::Sha2_128f),
+        algorithm::SLH_DSA_SHA2_128F | algorithm::SLH_DSA_SHA2_128F_W3C => {
+            S::SlhDsa(kryptering::SlhDsaVariant::Sha2_128f)
+        }
         #[cfg(feature = "post-quantum")]
-        algorithm::SLH_DSA_SHA2_128S => S::SlhDsa(kryptering::SlhDsaVariant::Sha2_128s),
+        algorithm::SLH_DSA_SHA2_128S | algorithm::SLH_DSA_SHA2_128S_W3C => {
+            S::SlhDsa(kryptering::SlhDsaVariant::Sha2_128s)
+        }
         #[cfg(feature = "post-quantum")]
-        algorithm::SLH_DSA_SHA2_192F => S::SlhDsa(kryptering::SlhDsaVariant::Sha2_192f),
+        algorithm::SLH_DSA_SHA2_192F | algorithm::SLH_DSA_SHA2_192F_W3C => {
+            S::SlhDsa(kryptering::SlhDsaVariant::Sha2_192f)
+        }
         #[cfg(feature = "post-quantum")]
-        algorithm::SLH_DSA_SHA2_192S => S::SlhDsa(kryptering::SlhDsaVariant::Sha2_192s),
+        algorithm::SLH_DSA_SHA2_192S | algorithm::SLH_DSA_SHA2_192S_W3C => {
+            S::SlhDsa(kryptering::SlhDsaVariant::Sha2_192s)
+        }
         #[cfg(feature = "post-quantum")]
-        algorithm::SLH_DSA_SHA2_256F => S::SlhDsa(kryptering::SlhDsaVariant::Sha2_256f),
+        algorithm::SLH_DSA_SHA2_256F | algorithm::SLH_DSA_SHA2_256F_W3C => {
+            S::SlhDsa(kryptering::SlhDsaVariant::Sha2_256f)
+        }
         #[cfg(feature = "post-quantum")]
-        algorithm::SLH_DSA_SHA2_256S => S::SlhDsa(kryptering::SlhDsaVariant::Sha2_256s),
+        algorithm::SLH_DSA_SHA2_256S | algorithm::SLH_DSA_SHA2_256S_W3C => {
+            S::SlhDsa(kryptering::SlhDsaVariant::Sha2_256s)
+        }
         _ => {
             return Err(Error::UnsupportedAlgorithm(format!(
                 "signature algorithm: {uri}"
@@ -435,6 +453,73 @@ mod tests {
             from_uri("http://www.w3.org/2026/08/xmldsig-more#ml-dsa-99").is_err(),
             "unknown W3C parameter sets must still be rejected"
         );
+    }
+
+    /// Regression: SAML metadata feeds signed with the W3C
+    /// `2026/08/xmldsig-more#slh-dsa-sha2-*` identifiers were rejected as
+    /// unsupported although every SHA2 parameter set is implemented under
+    /// the xmlsec identifier. The SHAKE parameter sets stay unsupported.
+    #[cfg(feature = "post-quantum")]
+    #[test]
+    fn w3c_slh_dsa_uris_resolve_to_the_xmlsec_algorithms() {
+        use kryptering::{SignatureAlgorithm as S, SlhDsaVariant as V};
+
+        for (w3c, xmlsec, variant) in [
+            (
+                algorithm::SLH_DSA_SHA2_128F_W3C,
+                algorithm::SLH_DSA_SHA2_128F,
+                V::Sha2_128f,
+            ),
+            (
+                algorithm::SLH_DSA_SHA2_128S_W3C,
+                algorithm::SLH_DSA_SHA2_128S,
+                V::Sha2_128s,
+            ),
+            (
+                algorithm::SLH_DSA_SHA2_192F_W3C,
+                algorithm::SLH_DSA_SHA2_192F,
+                V::Sha2_192f,
+            ),
+            (
+                algorithm::SLH_DSA_SHA2_192S_W3C,
+                algorithm::SLH_DSA_SHA2_192S,
+                V::Sha2_192s,
+            ),
+            (
+                algorithm::SLH_DSA_SHA2_256F_W3C,
+                algorithm::SLH_DSA_SHA2_256F,
+                V::Sha2_256f,
+            ),
+            (
+                algorithm::SLH_DSA_SHA2_256S_W3C,
+                algorithm::SLH_DSA_SHA2_256S,
+                V::Sha2_256s,
+            ),
+        ] {
+            assert!(is_pq_algorithm(w3c), "{w3c} must take a context string");
+            let via_w3c = from_uri(w3c).unwrap_or_else(|e| panic!("{w3c}: {e}"));
+            let via_xmlsec = from_uri(xmlsec).unwrap_or_else(|e| panic!("{xmlsec}: {e}"));
+            assert_eq!(via_w3c.uri(), via_xmlsec.uri(), "{w3c} must alias {xmlsec}");
+            assert_eq!(canonical_signature_uri(w3c), Some(xmlsec));
+            assert!(uri_matches_algorithm(w3c, S::SlhDsa(variant)), "{w3c}");
+            assert!(
+                uri_matches_algorithm(xmlsec, S::SlhDsa(variant)),
+                "{xmlsec}"
+            );
+            assert!(
+                from_uri_with_context(w3c, Some(b"ctx".to_vec())).is_ok(),
+                "{w3c} must accept a context string"
+            );
+        }
+        assert!(!uri_matches_algorithm(
+            algorithm::SLH_DSA_SHA2_128F_W3C,
+            S::SlhDsa(V::Sha2_128s)
+        ));
+        for shake in ["128s", "128f", "192s", "192f", "256s", "256f"] {
+            let uri = format!("http://www.w3.org/2026/08/xmldsig-more#slh-dsa-shake-{shake}");
+            assert!(from_uri(&uri).is_err(), "{uri} is not implemented");
+            assert!(!is_pq_algorithm(&uri));
+        }
     }
 
     /// Regression: injected signers and verifiers compared the declared URI

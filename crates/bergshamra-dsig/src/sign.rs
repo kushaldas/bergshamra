@@ -2413,7 +2413,7 @@ mod tests {
         keys.add_key(key);
         let ctx = DsigContext::new_permissive(keys);
 
-        let template = w3c_ml_dsa_44_template();
+        let template = w3c_pq_template(algorithm::ML_DSA_44_W3C);
 
         let signed = sign(&ctx, &template).expect("W3C ML-DSA-44 identifier must sign");
         assert!(
@@ -2434,6 +2434,51 @@ mod tests {
             !result.is_valid(),
             "tampered W3C ML-DSA-44 signature must fail"
         );
+    }
+
+    /// Regression: a `<SignatureMethod>` using the W3C
+    /// `2026/08/xmldsig-more#slh-dsa-sha2-*` identifier (as published by the
+    /// eduID Luxembourg SLH-DSA feed) must sign and verify like the xmlsec
+    /// identifier and keep the declared identifier in the output. The fast
+    /// 128f parameter set keeps the test quick; the URI dispatch for all six
+    /// SHA2 sets is covered in bergshamra-crypto.
+    #[cfg(feature = "post-quantum")]
+    #[test]
+    fn w3c_slh_dsa_signature_method_signs_and_verifies() {
+        let p12 = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../test-data/keys/slh-dsa/slh-dsa-sha2-128f-key.p12"
+        );
+        let Ok(data) = std::fs::read(p12) else {
+            eprintln!("skipping test: {p12} not found");
+            return;
+        };
+        let mut key = bergshamra_keys::loader::load_pkcs12(&data, "secret123")
+            .expect("SLH-DSA-SHA2-128f PKCS#12 must load");
+        key.usage = bergshamra_keys::KeyUsage::Any;
+        let mut keys = bergshamra_keys::KeysManager::new();
+        keys.add_key(key);
+        let ctx = DsigContext::new_permissive(keys);
+
+        let signed = sign(&ctx, &w3c_pq_template(algorithm::SLH_DSA_SHA2_128F_W3C))
+            .expect("W3C SLH-DSA-SHA2-128f identifier must sign");
+        assert!(signed.contains(algorithm::SLH_DSA_SHA2_128F_W3C));
+        assert!(!signed.contains(algorithm::SLH_DSA_SHA2_128F));
+        let result = crate::verify::verify(&ctx, &signed).expect("verify must not error");
+        assert!(
+            result.is_valid(),
+            "W3C SLH-DSA-SHA2-128f signature must verify: {result:?}"
+        );
+
+        let tampered = signed.replace("<Data>hello</Data>", "<Data>HELLO</Data>");
+        let result = crate::verify::verify(&ctx, &tampered).expect("verify must not error");
+        assert!(!result.is_valid(), "tampered SLH-DSA signature must fail");
+
+        // A different SHA2 parameter set under the W3C spelling is a key
+        // mismatch, not an unsupported algorithm.
+        let other = w3c_pq_template(algorithm::SLH_DSA_SHA2_128S_W3C);
+        let err = sign(&ctx, &other).expect_err("128f key must not sign a 128s template");
+        assert!(!matches!(err, Error::UnsupportedAlgorithm(_)), "{err:?}");
     }
 
     /// Load the test-data ML-DSA-44 key as a kryptering software key for
@@ -2457,13 +2502,15 @@ mod tests {
         )
     }
 
+    /// Enveloped signature template over `<Root ID="abc">` declaring the
+    /// given signature method identifier.
     #[cfg(feature = "post-quantum")]
-    fn w3c_ml_dsa_44_template() -> String {
+    fn w3c_pq_template(sig: &str) -> String {
         format!(
             r##"<Root ID="abc"><Data>hello</Data><ds:Signature xmlns:ds="{dsig}"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="{c14n}"/><ds:SignatureMethod Algorithm="{sig}"/><ds:Reference URI="#abc"><ds:Transforms><ds:Transform Algorithm="{env}"/><ds:Transform Algorithm="{c14n}"/></ds:Transforms><ds:DigestMethod Algorithm="{digest}"/><ds:DigestValue></ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue></ds:SignatureValue></ds:Signature></Root>"##,
             dsig = ns::DSIG,
             c14n = algorithm::EXC_C14N,
-            sig = algorithm::ML_DSA_44_W3C,
+            sig = sig,
             env = algorithm::ENVELOPED_SIGNATURE,
             digest = algorithm::SHA256,
         )
@@ -2493,7 +2540,7 @@ mod tests {
             .with_hsm_verifier(Box::new(verifier));
 
         // Text signing path.
-        let signed = sign(&sign_ctx, &w3c_ml_dsa_44_template())
+        let signed = sign(&sign_ctx, &w3c_pq_template(algorithm::ML_DSA_44_W3C))
             .expect("injected ML-DSA-44 signer must accept the W3C identifier");
         assert!(signed.contains(algorithm::ML_DSA_44_W3C));
         assert!(!signed.contains(algorithm::ML_DSA_44));
@@ -2504,7 +2551,7 @@ mod tests {
         );
 
         // Document-native signing path.
-        let mut doc = uppsala::parse(&w3c_ml_dsa_44_template())
+        let mut doc = uppsala::parse(&w3c_pq_template(algorithm::ML_DSA_44_W3C))
             .expect("template must parse")
             .into_static();
         sign_document(&sign_ctx, &mut doc)
@@ -2517,8 +2564,8 @@ mod tests {
         );
 
         // A different parameter set is still a mismatch on both sides.
-        let other =
-            w3c_ml_dsa_44_template().replace(algorithm::ML_DSA_44_W3C, algorithm::ML_DSA_65_W3C);
+        let other = w3c_pq_template(algorithm::ML_DSA_44_W3C)
+            .replace(algorithm::ML_DSA_44_W3C, algorithm::ML_DSA_65_W3C);
         let err = sign(&sign_ctx, &other)
             .expect_err("ML-DSA-44 signer must reject an ML-DSA-65 template");
         assert!(matches!(err, Error::UnsupportedAlgorithm(_)), "{err:?}");

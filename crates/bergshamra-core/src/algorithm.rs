@@ -115,6 +115,19 @@ pub const SLH_DSA_SHA2_256F: &str =
 pub const SLH_DSA_SHA2_256S: &str =
     "http://www.aleksey.com/xmlsec/2025/12/xmldsig-more#slh-dsa-sha2-256s";
 
+// W3C `xmldsig-more` (2026/08) identifiers for the same SLH-DSA SHA2
+// parameter sets (draft-eastlake-rfc9231bis-xmlsec-uris, section 3.3.16).
+// Accepted wherever the xmlsec identifiers above are; a template keeps
+// whichever identifier it declares. The SHAKE parameter sets defined there
+// are not implemented.
+
+pub const SLH_DSA_SHA2_128F_W3C: &str = "http://www.w3.org/2026/08/xmldsig-more#slh-dsa-sha2-128f";
+pub const SLH_DSA_SHA2_128S_W3C: &str = "http://www.w3.org/2026/08/xmldsig-more#slh-dsa-sha2-128s";
+pub const SLH_DSA_SHA2_192F_W3C: &str = "http://www.w3.org/2026/08/xmldsig-more#slh-dsa-sha2-192f";
+pub const SLH_DSA_SHA2_192S_W3C: &str = "http://www.w3.org/2026/08/xmldsig-more#slh-dsa-sha2-192s";
+pub const SLH_DSA_SHA2_256F_W3C: &str = "http://www.w3.org/2026/08/xmldsig-more#slh-dsa-sha2-256f";
+pub const SLH_DSA_SHA2_256S_W3C: &str = "http://www.w3.org/2026/08/xmldsig-more#slh-dsa-sha2-256s";
+
 // ── Block cipher algorithms ──────────────────────────────────────────
 
 pub const AES128_CBC: &str = "http://www.w3.org/2001/04/xmlenc#aes128-cbc";
