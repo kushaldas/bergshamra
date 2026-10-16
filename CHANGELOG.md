@@ -29,8 +29,11 @@
   `elliptic-curve 0.14` trait line, so the lockfile now also carries
   `sha1`/`sha2`/`md-5`/`sha3` 0.11, `ripemd` 0.2, `pbkdf2` 0.13, the 0.14
   P-curves and `rsa 0.10.0-rc.19` next to the 0.10 line still required by
-  `cms` 0.2 and `x509-cert` 0.2; `rand 0.8` and `num-bigint-dig` left the
-  tree. Other dependencies rolled forward in range (`thiserror` 2.0.21,
+  `cms` 0.2 and `x509-cert` 0.2. Kryptering itself no longer depends on
+  `rand 0.8` or `num-bigint-dig`; both stay in this workspace's lockfile
+  through the direct `num-bigint-dig` dependency of `bergshamra-keys`, and
+  RUSTSEC-2026-0097 therefore remains allow-listed in `.cargo/audit.toml`.
+  Other dependencies rolled forward in range (`thiserror` 2.0.21,
   `serde_json` 1.0.154, `libc` 0.2.190, `zeroize` 1.9.1, `zerocopy`
   0.8.63, `wasm-bindgen` 0.2.129 among others).
 - Cargo now uses the MSRV-aware resolver (`resolver = "3"`), matching
