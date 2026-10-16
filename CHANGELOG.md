@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.11.0 [2026-10-16]
+
+### Changed
+
+- Require Kryptering 0.7.0. Its PKCS#11 provider now keeps one initialized
+  module context per canonical library path for the life of the process:
+  the vendor module is no longer unloaded when every provider and session
+  handle is dropped, nor when `C_Initialize` fails, which removes the
+  segmentation fault seen with the Thales Luna client when a process
+  created a second `Pkcs11Provider` after dropping the first (validated
+  against a Luna network HSM; the released 0.6.0 crashed on the same
+  sequence). `Pkcs11Provider::preload` initializes a module at startup and
+  reports the elapsed time, token-label selection reads token information
+  once per slot, module paths must resolve to existing files, and use of an
+  inherited module context after `fork` is rejected. Injected PKCS#11
+  signers and verifiers now check the key's curve against the declared
+  algorithm, and the RustCrypto provider runs RSA private operations with
+  blinding. The `SignatureAlgorithm`, `KeyAlgorithm`, `EcCurve` and
+  `Operation` enums gained variants (Ed448, X448, secp256k1, Brainpool);
+  Bergshamra's algorithm mapping is unchanged and does not expose them as
+  XML-DSig identifiers yet. The AWS-LC key module maps the new curves to
+  their `urn:oid` NamedCurve URIs so its match stays exhaustive, but its
+  loader still accepts only P-256, P-384 and P-521.
+- Require tsp-ltv 0.6.0, which moved to the same Kryptering release so the
+  workspace carries a single `kryptering` crate.
+- Kryptering 0.7.0 brings the RustCrypto `digest 0.11` / `signature 3` /
+  `elliptic-curve 0.14` trait line, so the lockfile now also carries
+  `sha1`/`sha2`/`md-5`/`sha3` 0.11, `ripemd` 0.2, `pbkdf2` 0.13, the 0.14
+  P-curves and `rsa 0.10.0-rc.19` next to the 0.10 line still required by
+  `cms` 0.2 and `x509-cert` 0.2. Kryptering itself no longer depends on
+  `rand 0.8` or `num-bigint-dig`; both stay in this workspace's lockfile
+  through the direct `num-bigint-dig` dependency of `bergshamra-keys`, and
+  RUSTSEC-2026-0097 therefore remains allow-listed in `.cargo/audit.toml`.
+  Other dependencies rolled forward in range (`thiserror` 2.0.21,
+  `serde_json` 1.0.154, `libc` 0.2.190, `zeroize` 1.9.1, `zerocopy`
+  0.8.63, `wasm-bindgen` 0.2.129 among others).
+- Cargo now uses the MSRV-aware resolver (`resolver = "3"`), matching
+  Kryptering and tsp-ltv, so `cargo update` keeps the lockfile within
+  `rust-version = 1.88`.
+- Bumped all workspace crates and internal dependency requirements to 0.11.0.
+
 ## 0.10.1 [2026-10-15]
 
 ### Added
