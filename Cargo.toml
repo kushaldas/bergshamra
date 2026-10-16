@@ -11,7 +11,7 @@ members = [
     "crates/bergshamra-enc",
     "crates/bergshamra",
 ]
-resolver = "2"
+resolver = "3"
 
 # Performance-oriented build profiles (see plan.md P1).
 #
@@ -41,7 +41,7 @@ strip = false
 debug = "full"
 
 [workspace.package]
-version = "0.10.1"
+version = "0.11.0"
 edition = "2021"
 license = "BSD-2-Clause"
 repository = "https://github.com/kushaldas/bergshamra"
@@ -50,15 +50,15 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 # Internal crates
-bergshamra-core = { version = "0.10.1", path = "crates/bergshamra-core", default-features = false }
-bergshamra-xml = { version = "0.10.1", path = "crates/bergshamra-xml", default-features = false }
-bergshamra-c14n = { version = "0.10.1", path = "crates/bergshamra-c14n", default-features = false }
-bergshamra-crypto = { version = "0.10.1", path = "crates/bergshamra-crypto", default-features = false }
-bergshamra-keys = { version = "0.10.1", path = "crates/bergshamra-keys", default-features = false }
-bergshamra-transforms = { version = "0.10.1", path = "crates/bergshamra-transforms", default-features = false }
-bergshamra-dsig = { version = "0.10.1", path = "crates/bergshamra-dsig", default-features = false }
-bergshamra-enc = { version = "0.10.1", path = "crates/bergshamra-enc", default-features = false }
-bergshamra-pkcs12 = { version = "0.10.1", path = "crates/bergshamra-pkcs12", default-features = false }
+bergshamra-core = { version = "0.11.0", path = "crates/bergshamra-core", default-features = false }
+bergshamra-xml = { version = "0.11.0", path = "crates/bergshamra-xml", default-features = false }
+bergshamra-c14n = { version = "0.11.0", path = "crates/bergshamra-c14n", default-features = false }
+bergshamra-crypto = { version = "0.11.0", path = "crates/bergshamra-crypto", default-features = false }
+bergshamra-keys = { version = "0.11.0", path = "crates/bergshamra-keys", default-features = false }
+bergshamra-transforms = { version = "0.11.0", path = "crates/bergshamra-transforms", default-features = false }
+bergshamra-dsig = { version = "0.11.0", path = "crates/bergshamra-dsig", default-features = false }
+bergshamra-enc = { version = "0.11.0", path = "crates/bergshamra-enc", default-features = false }
+bergshamra-pkcs12 = { version = "0.11.0", path = "crates/bergshamra-pkcs12", default-features = false }
 
 # XML parsing
 uppsala = "0.12.0"
@@ -120,7 +120,7 @@ memchr = "2"
 criterion = "0.5"
 
 # Shared crypto backend
-kryptering = { version = "0.6.0", default-features = false }
+kryptering = { version = "0.7.0", default-features = false }
 
 # Shared trust/validation infrastructure
-tsp-ltv = { version = "0.5.0", default-features = false }
+tsp-ltv = { version = "0.6.0", default-features = false }

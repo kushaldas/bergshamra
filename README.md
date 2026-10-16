@@ -4,8 +4,8 @@ XML Security library implementing the W3C XML Digital Signatures
 (XML-DSig), XML Encryption (XML-Enc), and XML Canonicalization (C14N)
 specifications. Document cryptography is selectable between RustCrypto and
 AWS-LC through Kryptering; XML parsing uses
-[Uppsala](https://crates.io/crates/uppsala) 0.12.0. Bergshamra 0.10.1 is
-released on October 15, 2026, and requires Rust 1.88.
+[Uppsala](https://crates.io/crates/uppsala) 0.12.0. Bergshamra 0.11.0 is
+released on October 16, 2026, and requires Rust 1.88.
 
 ## Features
 

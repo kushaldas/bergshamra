@@ -459,6 +459,13 @@ fn curve_uri(curve: kryptering::EcCurve) -> &'static str {
         kryptering::EcCurve::P256 => "urn:oid:1.2.840.10045.3.1.7",
         kryptering::EcCurve::P384 => "urn:oid:1.3.132.0.34",
         kryptering::EcCurve::P521 => "urn:oid:1.3.132.0.35",
+        // The AWS-LC loader only constructs P-256/P-384/P-521 keys, so these
+        // arms are unreachable today; they carry the RFC 5480 / RFC 5639 OIDs
+        // so the mapping stays correct if the loader gains these curves.
+        kryptering::EcCurve::Secp256k1 => "urn:oid:1.3.132.0.10",
+        kryptering::EcCurve::BrainpoolP256r1 => "urn:oid:1.3.36.3.3.2.8.1.1.7",
+        kryptering::EcCurve::BrainpoolP384r1 => "urn:oid:1.3.36.3.3.2.8.1.1.11",
+        kryptering::EcCurve::BrainpoolP512r1 => "urn:oid:1.3.36.3.3.2.8.1.1.13",
     }
 }
 
