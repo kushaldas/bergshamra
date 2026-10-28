@@ -51,6 +51,11 @@ pub struct DsigContext {
     /// Skip extraction of inline keys from KeyInfo (KeyValue, X509Certificate, etc.).
     /// This is the secure mode for SAML: only trust pre-configured IdP keys,
     /// not whatever an attacker embeds in the XML signature's KeyInfo.
+    ///
+    /// Every manager key whose type fits the `SignatureMethod` is a candidate;
+    /// the signature is valid when any candidate verifies it. `<KeyInfo>`
+    /// (`<KeyName>`, `<X509Certificate>`, `<X509IssuerSerial>`) only orders the
+    /// candidates. See ADR-0013.
     pub trusted_keys_only: bool,
     /// When true, enforce that each reference target is either the document element,
     /// an ancestor of the Signature, or a sibling of the Signature. This prevents

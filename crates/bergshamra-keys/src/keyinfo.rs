@@ -147,6 +147,133 @@ pub fn resolve_key_info<'a>(
     manager.first_key()
 }
 
+/// Order every key in the manager for a trusted-keys-only verification.
+///
+/// Returns all keys of `manager`, each once. Keys that `<KeyInfo>` points at
+/// come first, in this order: a `<KeyName>` match, then a key whose leaf
+/// certificate is byte-identical to an `<X509Data>/<X509Certificate>`, then an
+/// `<X509IssuerSerial>` serial-number match. All remaining keys follow in
+/// insertion order.
+///
+/// `<KeyInfo>` is controlled by the document, so it is used only as an
+/// ordering hint: it never adds a key, and it never removes one. Inline
+/// certificates and key values are not candidates themselves.
+pub fn rank_trusted_keys<'a>(
+    key_info_node: Option<NodeId>,
+    doc: &Document<'_>,
+    manager: &'a KeysManager,
+) -> Vec<&'a Key> {
+    // Keys are deduplicated by identity: two distinct manager entries with
+    // equal material are both kept.
+    fn push<'a>(key: &'a Key, ranked: &mut Vec<&'a Key>) {
+        if !ranked.iter().any(|k| std::ptr::eq(*k, key)) {
+            ranked.push(key);
+        }
+    }
+
+    let mut ranked: Vec<&'a Key> = Vec::with_capacity(manager.len());
+
+    if let Some(ki) = key_info_node {
+        let mut names = Vec::new();
+        let mut cert_ders = Vec::new();
+        let mut serials = Vec::new();
+        for child in doc.children(ki) {
+            let Some(elem) = doc.element(child) else {
+                continue;
+            };
+            let ns_uri = elem.name.namespace_uri.as_deref().unwrap_or("");
+            if ns_uri != ns::DSIG && !ns_uri.is_empty() {
+                continue;
+            }
+            match &*elem.name.local_name {
+                ns::node::KEY_NAME => {
+                    let name = doc.text_content_deep(child);
+                    let name = name.trim();
+                    if !name.is_empty() {
+                        names.push(name.to_owned());
+                    }
+                }
+                ns::node::X509_DATA => {
+                    collect_x509_hints(child, doc, &mut cert_ders, &mut serials);
+                }
+                _ => {}
+            }
+        }
+
+        for name in &names {
+            for key in manager.keys() {
+                if key.name.as_deref() == Some(name.as_str()) {
+                    push(key, &mut ranked);
+                }
+            }
+        }
+        for der in &cert_ders {
+            for key in manager.keys() {
+                if key.x509_chain.first() == Some(der) {
+                    push(key, &mut ranked);
+                }
+            }
+        }
+        for serial in &serials {
+            if let Some(key) = find_key_by_serial(manager, serial) {
+                push(key, &mut ranked);
+            }
+        }
+    }
+
+    for key in manager.keys() {
+        push(key, &mut ranked);
+    }
+    ranked
+}
+
+/// Collect `<X509Certificate>` DER bytes and `<X509IssuerSerial>` serial
+/// numbers from one `<X509Data>` element. Malformed entries are skipped:
+/// they are only ordering hints.
+fn collect_x509_hints(
+    x509_data: NodeId,
+    doc: &Document<'_>,
+    cert_ders: &mut Vec<Vec<u8>>,
+    serials: &mut Vec<String>,
+) {
+    use base64::Engine;
+    let engine = base64::engine::general_purpose::STANDARD;
+
+    for child in doc.children(x509_data) {
+        let Some(elem) = doc.element(child) else {
+            continue;
+        };
+        match &*elem.name.local_name {
+            ns::node::X509_CERTIFICATE => {
+                let text: String = doc
+                    .text_content_deep(child)
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .collect();
+                if let Ok(der) = engine.decode(text) {
+                    cert_ders.push(der);
+                }
+            }
+            ns::node::X509_ISSUER_SERIAL => {
+                let serial = doc
+                    .children(child)
+                    .into_iter()
+                    .find(|&n| {
+                        doc.element(n)
+                            .is_some_and(|e| &*e.name.local_name == ns::node::X509_SERIAL_NUMBER)
+                    })
+                    .map(|n| doc.text_content_deep(n))
+                    .unwrap_or_default();
+                let serial = serial.trim();
+                if !serial.is_empty() {
+                    serials.push(serial.to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Find a key in the manager by matching X.509 certificate serial number.
 ///
 /// Iterates over all keys, parses their X.509 certificate (if present),
@@ -1029,5 +1156,91 @@ mod tests {
         let doc = uppsala::parse(&xml).unwrap();
         let key = extract_x509_key_value(find_key_info(&doc), &doc).expect("extract X509 key");
         assert_eq!(key.x509_chain, vec![leaf_der]);
+    }
+
+    /// Named HMAC key, optionally carrying a fake leaf certificate so the
+    /// ordering tests can exercise `<X509Certificate>` matching without
+    /// parsing real certificates.
+    fn ranked_key(name: &str, leaf: Option<&[u8]>) -> Key {
+        let mut key = Key::new(
+            KeyData::from_symmetric_bytes(kryptering::KeyAlgorithm::Hmac, name.as_bytes()).unwrap(),
+            KeyUsage::Any,
+        )
+        .with_name(name);
+        if let Some(der) = leaf {
+            key.x509_chain.push(der.to_vec());
+        }
+        key
+    }
+
+    fn ranked_names(xml: &str, manager: &KeysManager) -> Vec<String> {
+        let doc = uppsala::parse(xml).unwrap();
+        rank_trusted_keys(Some(find_key_info(&doc)), &doc, manager)
+            .into_iter()
+            .map(|k| k.name.clone().unwrap())
+            .collect()
+    }
+
+    fn rollover_manager() -> KeysManager {
+        let mut manager = KeysManager::new();
+        manager.add_keys([
+            ranked_key("a", None),
+            ranked_key("b", Some(b"leaf-b")),
+            ranked_key("c", None),
+        ]);
+        manager
+    }
+
+    #[test]
+    fn rank_trusted_keys_without_key_info_keeps_insertion_order() {
+        let manager = rollover_manager();
+        let doc = uppsala::parse("<root/>").unwrap();
+        let names: Vec<_> = rank_trusted_keys(None, &doc, &manager)
+            .into_iter()
+            .map(|k| k.name.clone().unwrap())
+            .collect();
+        assert_eq!(names, ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn rank_trusted_keys_moves_key_name_match_first_and_keeps_the_rest() {
+        let xml = r#"<ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:KeyName>c</ds:KeyName></ds:KeyInfo>"#;
+        assert_eq!(ranked_names(xml, &rollover_manager()), ["c", "a", "b"]);
+    }
+
+    #[test]
+    fn rank_trusted_keys_moves_matching_certificate_first() {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"leaf-b");
+        let xml = format!(
+            r#"<ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:X509Data><ds:X509Certificate>{b64}</ds:X509Certificate></ds:X509Data></ds:KeyInfo>"#
+        );
+        assert_eq!(ranked_names(&xml, &rollover_manager()), ["b", "a", "c"]);
+    }
+
+    #[test]
+    fn rank_trusted_keys_ignores_unknown_hints_and_never_adds_keys() {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"attacker-leaf");
+        let xml = format!(
+            r#"<ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:KeyName>nobody</ds:KeyName><ds:X509Data><ds:X509Certificate>{b64}</ds:X509Certificate><ds:X509Certificate>not base64!</ds:X509Certificate></ds:X509Data></ds:KeyInfo>"#
+        );
+        assert_eq!(ranked_names(&xml, &rollover_manager()), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn rank_trusted_keys_lists_each_key_once() {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"leaf-b");
+        let xml = format!(
+            r#"<ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:KeyName>b</ds:KeyName><ds:KeyName>b</ds:KeyName><ds:X509Data><ds:X509Certificate>{b64}</ds:X509Certificate></ds:X509Data></ds:KeyInfo>"#
+        );
+        assert_eq!(ranked_names(&xml, &rollover_manager()), ["b", "a", "c"]);
+    }
+
+    #[test]
+    fn rank_trusted_keys_of_empty_manager_is_empty() {
+        let xml = r#"<ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:KeyName>a</ds:KeyName></ds:KeyInfo>"#;
+        assert!(ranked_names(xml, &KeysManager::new()).is_empty());
     }
 }

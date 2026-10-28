@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `KeysManager::add_keys` adds several keys in one call, in order.
+- `bergshamra_keys::keyinfo::rank_trusted_keys` orders the manager's keys by
+  the `<KeyInfo>` hints of a signature, and
+  `bergshamra_crypto::sign::key_algorithm_matches_signature_uri` tells whether
+  a key type can verify a `SignatureMethod`.
+
+### Changed
+
+- With `trusted_keys_only` (the `DsigContext::new` default), verification now
+  tries every key in the `KeysManager` that fits the `SignatureMethod` and
+  succeeds when any of them verifies the signature. Previously only one key
+  was used: a `<KeyName>` or `<X509IssuerSerial>` match, else the first key,
+  so metadata signed with a rolled-over certificate failed when the new
+  certificate was not loaded first. `<KeyInfo>` now only decides the order;
+  an inline `<X509Certificate>` byte-identical to a trusted certificate moves
+  that key first. Inline keys are still never used, and each key passes the
+  X.509 policy on its own, so an expired old certificate is skipped. When
+  several keys are tried and none verifies, the reason reads
+  `signature value verification failed with each of the N trusted keys`. See
+  `docs/adr/0013-trusted-key-set-verification.md`.
+
 ## 0.11.0 [2026-10-16]
 
 ### Changed
