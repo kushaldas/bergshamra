@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.11.1 [2026-10-28]
 
 ### Added
 
@@ -33,6 +33,12 @@
   keys from `load_rsa_public_pem` / `load_spki_pem`) were previously reachable
   only when they were the first entry; now any of them may verify. Audit each
   manager and remove entries that should not sign.
+- Bumped all workspace crates and internal dependency requirements to 0.11.1.
+- CI runs the `bergshamra-dsig` `trusted_key_set` integration tests for the
+  default, RustCrypto and AWS-LC provider sets. Their certificate-rollover
+  cases use a dedicated RSA-2048 / SHA-256 chain
+  (`crates/bergshamra-dsig/tests/data/rollover/`) that every provider
+  accepts.
 
 ## 0.11.0 [2026-10-16]
 
