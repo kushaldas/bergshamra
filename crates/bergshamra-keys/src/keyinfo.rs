@@ -163,15 +163,17 @@ pub fn rank_trusted_keys<'a>(
     doc: &Document<'_>,
     manager: &'a KeysManager,
 ) -> Vec<&'a Key> {
-    // Keys are deduplicated by identity: two distinct manager entries with
-    // equal material are both kept.
-    fn push<'a>(key: &'a Key, ranked: &mut Vec<&'a Key>) {
-        if !ranked.iter().any(|k| std::ptr::eq(*k, key)) {
-            ranked.push(key);
+    // Keys are deduplicated by their position in the manager, so two distinct
+    // entries with equal material are both kept. Tracking positions keeps the
+    // ranking linear in the number of keys.
+    let keys: Vec<&'a Key> = manager.keys().collect();
+    let mut taken = vec![false; keys.len()];
+    let mut ranked: Vec<&'a Key> = Vec::with_capacity(keys.len());
+    let mut take = |index: usize, ranked: &mut Vec<&'a Key>| {
+        if !std::mem::replace(&mut taken[index], true) {
+            ranked.push(keys[index]);
         }
-    }
-
-    let mut ranked: Vec<&'a Key> = Vec::with_capacity(manager.len());
+    };
 
     if let Some(ki) = key_info_node {
         let mut names = Vec::new();
@@ -201,28 +203,38 @@ pub fn rank_trusted_keys<'a>(
         }
 
         for name in &names {
-            for key in manager.keys() {
+            for (index, key) in keys.iter().enumerate() {
                 if key.name.as_deref() == Some(name.as_str()) {
-                    push(key, &mut ranked);
+                    take(index, &mut ranked);
                 }
             }
         }
         for der in &cert_ders {
-            for key in manager.keys() {
+            for (index, key) in keys.iter().enumerate() {
                 if key.x509_chain.first() == Some(der) {
-                    push(key, &mut ranked);
+                    take(index, &mut ranked);
                 }
             }
         }
-        for serial in &serials {
-            if let Some(key) = find_key_by_serial(manager, serial) {
-                push(key, &mut ranked);
+        if !serials.is_empty() {
+            // Parse each leaf certificate once, however many serials the
+            // document lists. Like `find_key_by_serial`, a serial selects the
+            // first key whose leaf has it.
+            let key_serials: Vec<Option<String>> =
+                keys.iter().map(|key| leaf_serial_decimal(key)).collect();
+            for serial in &serials {
+                if let Some(index) = key_serials
+                    .iter()
+                    .position(|s| s.as_deref() == Some(serial.as_str()))
+                {
+                    take(index, &mut ranked);
+                }
             }
         }
     }
 
-    for key in manager.keys() {
-        push(key, &mut ranked);
+    for index in 0..keys.len() {
+        take(index, &mut ranked);
     }
     ranked
 }
@@ -279,25 +291,22 @@ fn collect_x509_hints(
 /// Iterates over all keys, parses their X.509 certificate (if present),
 /// and compares the serial number as a decimal string.
 fn find_key_by_serial<'a>(manager: &'a KeysManager, serial_text: &str) -> Option<&'a Key> {
+    // Serial numbers in XML are decimal strings which may be very large, so
+    // compare decimal renderings rather than integers.
+    manager
+        .keys()
+        .find(|key| leaf_serial_decimal(key).as_deref() == Some(serial_text))
+}
+
+/// Decimal serial number of the key's leaf certificate (first in its chain),
+/// or `None` when the key has no certificate or it does not parse.
+fn leaf_serial_decimal(key: &Key) -> Option<String> {
     use der::Decode;
 
-    // Parse the expected serial as big-endian bytes for comparison
-    // Serial numbers in XML are decimal strings which may be very large
-    for key in manager.keys() {
-        if key.x509_chain.is_empty() {
-            continue;
-        }
-        // Check the leaf cert (first in chain)
-        let cert_der = &key.x509_chain[0];
-        if let Ok(cert) = x509_cert::Certificate::from_der(cert_der) {
-            let cert_serial = cert.tbs_certificate.serial_number;
-            let cert_serial_str = format_serial_decimal(cert_serial.as_bytes());
-            if cert_serial_str == serial_text {
-                return Some(key);
-            }
-        }
-    }
-    None
+    let cert = x509_cert::Certificate::from_der(key.x509_chain.first()?).ok()?;
+    Some(format_serial_decimal(
+        cert.tbs_certificate.serial_number.as_bytes(),
+    ))
 }
 
 /// Convert a big-endian signed integer (ASN.1 INTEGER) to a decimal string.
@@ -1236,6 +1245,26 @@ mod tests {
             r#"<ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:KeyName>b</ds:KeyName><ds:KeyName>b</ds:KeyName><ds:X509Data><ds:X509Certificate>{b64}</ds:X509Certificate></ds:X509Data></ds:KeyInfo>"#
         );
         assert_eq!(ranked_names(&xml, &rollover_manager()), ["b", "a", "c"]);
+    }
+
+    #[test]
+    fn rank_trusted_keys_moves_issuer_serial_match_first() {
+        let cert = |file: &str, name: &str| {
+            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../test-data/keys/rsa/");
+            let pem = std::fs::read(format!("{path}{file}")).unwrap();
+            crate::loader::load_x509_cert_pem(&pem)
+                .unwrap()
+                .with_name(name)
+        };
+        let mut manager = KeysManager::new();
+        manager.add_keys([
+            ranked_key("raw", None),
+            cert("rsa-2048-cert.pem", "rsa-2048"),
+            cert("rsa-4096-cert.pem", "rsa-4096"),
+        ]);
+        // Serial of rsa-4096-cert.pem; an unknown serial is ignored.
+        let xml = r#"<ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:X509Data><ds:X509IssuerSerial><ds:X509IssuerName>CN=x</ds:X509IssuerName><ds:X509SerialNumber>1</ds:X509SerialNumber></ds:X509IssuerSerial><ds:X509IssuerSerial><ds:X509IssuerName>CN=x</ds:X509IssuerName><ds:X509SerialNumber>12655831530416757462</ds:X509SerialNumber></ds:X509IssuerSerial></ds:X509Data></ds:KeyInfo>"#;
+        assert_eq!(ranked_names(xml, &manager), ["rsa-4096", "raw", "rsa-2048"]);
     }
 
     #[test]
