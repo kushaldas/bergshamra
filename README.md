@@ -288,8 +288,11 @@ let result = verify::verify(&ctx, &metadata_xml)?;
 bergshamra verify --trusted-keys-only --cert old.pem --cert new.pem metadata.xml
 ```
 
-A `KeysManager` is therefore one trust set: put keys for signers that must not
-vouch for each other (two IdPs, two countries) in separate managers. See
+A `KeysManager` is therefore one trust set: every entry is an accepted signer,
+including unnamed HMAC secrets and raw public keys that previously only
+verified when they were first. Audit managers when upgrading, and put keys for
+signers that must not vouch for each other (two IdPs, two countries) in
+separate managers. See
 `docs/adr/0013-trusted-key-set-verification.md`.
 
 When trust anchors are configured, Bergshamra rejects raw inline `<KeyValue>`

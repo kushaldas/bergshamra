@@ -25,6 +25,15 @@
   `signature value verification failed with each of the N trusted keys`. See
   `docs/adr/0013-trusted-key-set-verification.md`.
 
+  **Upgrade note:** every entry in a `KeysManager` used with
+  `trusted_keys_only` is now an accepted signer. For named and
+  certificate-backed keys this changes nothing, since `<KeyName>` and
+  `<X509IssuerSerial>` could already select them. Keys with no name and no
+  certificate (for example HMAC secrets from `load_hmac_key` or raw public
+  keys from `load_rsa_public_pem` / `load_spki_pem`) were previously reachable
+  only when they were the first entry; now any of them may verify. Audit each
+  manager and remove entries that should not sign.
+
 ## 0.11.0 [2026-10-16]
 
 ### Changed

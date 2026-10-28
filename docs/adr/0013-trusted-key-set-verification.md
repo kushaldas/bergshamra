@@ -77,20 +77,38 @@ unchanged: they still select one key.
 
 ## Why This Is Safe
 
-### Trust is not widened
+### Which signers are accepted
 
-The set of keys that can make a signature valid is still exactly the set the
-caller put in the `KeysManager`. Before this change a document could already
-select any of those keys by naming it in `<KeyName>`, or by an
-`<X509IssuerSerial>` serial. A `KeysManager` used with `trusted_keys_only` has
-therefore always meant "documents signed by any of these keys are accepted".
-Trying all of them changes which trusted key gets checked, not which keys are
-trusted.
+Only keys the caller put in the `KeysManager` can make a signature valid; no
+key comes from the document. Within the manager, the accepted set grows for
+one kind of entry, and callers upgrading must account for it.
 
-The consequence callers must know, now stated in the documentation, is that a
-`KeysManager` is one trust set. Keys for different signers that must not vouch
-for each other (two IdPs, two countries) belong in separate managers and
-separate `DsigContext`s. That was already true because of `<KeyName>`.
+The single-key resolver let a document reach a manager key in three ways:
+
+1. a named key, by naming it in `<KeyName>`;
+2. a key carrying a certificate, by its serial number in
+   `<X509IssuerSerial>` (the issuer was not compared);
+3. the first entry, as the fallback.
+
+For named keys and certificate-backed keys, nothing changes: a document could
+already select any of them. An entry with **no name and no certificate** that
+is **not first** was unreachable before: no hint could select it. Under this
+decision it is a candidate like every other entry. Typical examples are HMAC
+secrets from `loader::load_hmac_key`, raw public keys from
+`load_rsa_public_pem`, `load_spki_pem` / `load_spki_der`, and unnamed keys
+added with `Key::new`. A manager that held several of them used to accept
+signatures from the first one only and now accepts all of them. The
+regression test `unnamed_raw_public_key_after_the_first_is_a_candidate` pins
+this behavior.
+
+The resulting rule, now stated in the documentation, is that **every entry in
+a `KeysManager` is a trusted signer** for documents verified with it. Callers
+upgrading should audit each manager they use with `trusted_keys_only`,
+including entries that were never first and so never verified anything, and
+remove the ones that should not sign. Keys for different signers that must not
+vouch for each other (two IdPs, two countries) belong in separate managers and
+separate `DsigContext`s. For named and certificate-backed keys that was
+already necessary because of `<KeyName>` and `<X509IssuerSerial>`.
 
 ### Document-supplied keys stay out
 
@@ -146,10 +164,15 @@ is kept as an ordering hint so the usual case verifies on the first try.
 
 ### Option C: Make multi-key verification an opt-in flag
 
-Rejected. The old behavior, "verify with whichever key happens to be first",
-was not a security property anyone could rely on: `<KeyName>` already let a
-document choose among the trusted keys. A flag would leave the surprising
-failure in place by default and add another policy knob to `DsigContext`.
+Rejected. For named and certificate-backed keys the old behavior, "verify
+with whichever key happens to be first", was not a security property anyone
+could rely on: `<KeyName>` and `<X509IssuerSerial>` already let a document
+choose among them. It did keep later unnamed raw keys out, but only as a side
+effect of insertion order, not as a documented policy; a manager entry that
+must never verify a signature does not belong in a verification manager. A
+flag would leave the surprising rollover failure in place by default and add
+another policy knob to `DsigContext`. The widening for unnamed raw keys is
+called out under Consequences and in the changelog instead.
 
 ### Option D: Accept a list of keys in `add_key`
 
@@ -169,6 +192,10 @@ name.
 
 ### Negative
 
+- Unnamed keys without a certificate that are not first in the manager
+  (HMAC secrets, raw public keys) become accepted signers; before, only the
+  first such entry could verify. Callers must audit every manager entry as
+  part of the trust set when upgrading (see "Which signers are accepted").
 - A document that verifies with none of the keys costs one signature check per
   compatible key instead of one in total.
 - The failure reason for several candidates differs from the single-key
@@ -218,7 +245,8 @@ both certificates' validity, or after only the old one expired, so they do not
 depend on the wall clock.
 
 CI runs this test target for the default, RustCrypto and AWS-LC provider
-sets. Nine of the original fifteen tests fail on the previous single-key
+sets. A test pins that an unnamed raw public key after the first entry now
+verifies. Nine of the original fifteen tests fail on the previous single-key
 implementation. Unit tests cover `rank_trusted_keys` ordering and
 deduplication, `KeysManager::add_keys`, and
 `key_algorithm_matches_signature_uri`.

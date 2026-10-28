@@ -233,6 +233,29 @@ fn inline_certificate_of_untrusted_signer_is_never_used() {
 }
 
 #[test]
+fn unnamed_raw_public_key_after_the_first_is_a_candidate() {
+    // A key with no name and no certificate could not be selected by any
+    // <KeyInfo> hint, so the single-key resolver only reached it when it was
+    // first in the manager. Every manager entry is now a candidate: this is
+    // the one case where the accepted signer set grew (ADR-0013).
+    let public_key = |file: &str| {
+        loader::load_spki_pem(&read(&format!("{XMLSEC_KEYS}rsa/{file}"))).expect("SPKI PEM")
+    };
+    let xml = sign_document(Signer::Rsa2048, "");
+    let ctx = DsigContext::new(manager([
+        public_key("rsa-4096-pubkey.pem"),
+        public_key("rsa-2048-pubkey.pem"),
+    ]));
+
+    match verify::verify(&ctx, &xml).unwrap() {
+        VerifyResult::Valid { key_info, .. } => {
+            assert!(key_info.key_name.is_none() && key_info.x509_chain.is_empty());
+        }
+        VerifyResult::Invalid { reason } => panic!("expected valid: {reason}"),
+    }
+}
+
+#[test]
 fn reports_how_many_trusted_keys_were_tried() {
     let xml = sign_document(Signer::Rsa2048, "");
     let ctx = DsigContext::new(manager([Signer::Rsa4096.cert(), Signer::RsaExpired.cert()]));

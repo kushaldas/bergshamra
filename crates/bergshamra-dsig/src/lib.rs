@@ -126,7 +126,9 @@
 //!   signature is valid when any of them verifies it, so a signer's old and
 //!   new certificates can be loaded together during rollover (see
 //!   [`KeysManager::add_keys`](bergshamra_keys::KeysManager::add_keys) and
-//!   ADR-0013). Treat one `KeysManager` as one trust set.
+//!   ADR-0013). Every entry of the `KeysManager` is an accepted signer,
+//!   including unnamed keys without a certificate that previously only
+//!   verified when they were first; treat one manager as one trust set.
 //! - **`strict_verification = true`** — rejects references to nodes that are not
 //!   ancestors, siblings, or the document element (XSW protection).
 //! - **`hmac_min_out_len = 160`** — enforces a minimum HMAC output length of
