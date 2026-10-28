@@ -65,6 +65,18 @@ jobs:
       - name: cargo test (AWS-LC)
         run: cargo test --locked --workspace --no-default-features --features aws-lc,legacy-algorithms,pkcs11 --lib
 
+      # Integration tests that need no external tooling. trusted_key_set
+      # exercises multi-key verification (ADR-0013) end to end, including
+      # certificate chains, so it runs once per provider.
+      - name: cargo test trusted_key_set (default)
+        run: cargo test --locked -p bergshamra-dsig --test trusted_key_set
+
+      - name: cargo test trusted_key_set (RustCrypto complete)
+        run: cargo test --locked -p bergshamra-dsig --no-default-features --features rustcrypto,legacy-algorithms,post-quantum,pkcs11 --test trusted_key_set
+
+      - name: cargo test trusted_key_set (AWS-LC)
+        run: cargo test --locked -p bergshamra-dsig --no-default-features --features aws-lc,legacy-algorithms,pkcs11 --test trusted_key_set
+
       - name: AWS-LC excludes RustCrypto primitives
         run: |
           cargo tree --workspace --no-default-features --features aws-lc,legacy-algorithms,pkcs11 -e normal --prefix none > /tmp/bergshamra-aws-tree.txt

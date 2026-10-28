@@ -193,7 +193,7 @@ name.
 ## Validation
 
 `crates/bergshamra-dsig/tests/trusted_key_set.rs` signs metadata-shaped
-documents with the xmlsec test keys and covers:
+documents and covers:
 
 - the signer loaded second, with no `<KeyInfo>`, with its certificate inline,
   and with a `<KeyName>` naming the other trusted key;
@@ -201,14 +201,26 @@ documents with the xmlsec test keys and covers:
 - EC and HMAC keys skipped for an RSA signature, and an ECDSA signature found
   after RSA keys;
 - no compatible key, and an empty manager;
-- rollover under trust anchors: expired old certificate first and new
-  certificate second, a document signed with the expired certificate, and an
-  expired sole key keeping its chain error;
+- rollover under a trust anchor: either certificate in either order during
+  the overlap, the expired old certificate listed first with the document
+  signed by the new one, a document signed with the expired certificate, and
+  an expired sole key keeping its chain error;
 - an anchor that issued none of the trusted keys;
 - a tampered document failing before any key is tried.
 
-Nine of these fail on the previous single-key implementation. Unit tests cover
-`rank_trusted_keys` ordering and deduplication, `KeysManager::add_keys`, and
+Tests without certificate-chain validation use the xmlsec keys in
+`test-data/keys`. Those chain through a SHA-1 intermediate with a 512-bit RSA
+key, which AWS-LC and the non-legacy policy reject, so the anchored tests use
+a dedicated RSA-2048 / SHA-256 chain in
+`crates/bergshamra-dsig/tests/data/rollover/` (regenerate with its
+`generate.sh`). They pin `DsigContext::verification_time` to a point inside
+both certificates' validity, or after only the old one expired, so they do not
+depend on the wall clock.
+
+CI runs this test target for the default, RustCrypto and AWS-LC provider
+sets. Nine of the original fifteen tests fail on the previous single-key
+implementation. Unit tests cover `rank_trusted_keys` ordering and
+deduplication, `KeysManager::add_keys`, and
 `key_algorithm_matches_signature_uri`.
 
 ## Location

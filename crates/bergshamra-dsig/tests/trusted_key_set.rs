@@ -12,43 +12,63 @@ use bergshamra_core::{algorithm, Error};
 use bergshamra_dsig::{context::DsigContext, verify, VerifyResult};
 use bergshamra_keys::{loader, Key, KeysManager};
 
-fn test_data(path: &str) -> Vec<u8> {
-    let full = concat!(env!("CARGO_MANIFEST_DIR"), "/../../test-data/keys/").to_owned() + path;
-    std::fs::read(&full).unwrap_or_else(|e| panic!("read {full}: {e}"))
+/// xmlsec test keys. Their certificates chain through `ca2cert.pem`, a
+/// SHA-1 intermediate with a 512-bit RSA key, so they are only used by tests
+/// that do not validate certificate chains.
+const XMLSEC_KEYS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../test-data/keys/");
+
+/// RSA-2048 / SHA-256 rollover chain accepted by every supported provider;
+/// see `tests/data/rollover/generate.sh`.
+const ROLLOVER: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/rollover/");
+
+/// A time inside both rollover certificates' validity periods.
+const DURING_OVERLAP: &str = "2030-01-01T00:00:00";
+/// A time after the old rollover certificate expired, while the root and the
+/// new certificate are still valid.
+const AFTER_OLD_EXPIRED: &str = "2046-01-01T00:00:00";
+
+fn read(path: &str) -> Vec<u8> {
+    std::fs::read(path).unwrap_or_else(|e| panic!("read {path}: {e}"))
 }
 
-/// DER of a PEM certificate file in `test-data/keys`.
+/// DER of a PEM certificate file.
 fn cert_der(path: &str) -> Vec<u8> {
-    let key = loader::load_x509_cert_pem(&test_data(path)).expect("certificate");
+    let key = loader::load_x509_cert_pem(&read(path)).expect("certificate");
     key.x509_chain[0].clone()
 }
 
-/// Signers available in `test-data/keys`. All certificates are issued by
-/// `ca2cert.pem`, which is issued by the `cacert.pem` root.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Signer {
     Rsa2048,
     Rsa4096,
     RsaExpired,
     EcP256,
+    /// Rollover fixture: the certificate being replaced.
+    RolloverOld,
+    /// Rollover fixture: the replacement certificate.
+    RolloverNew,
 }
 
 impl Signer {
-    fn cert_path(self) -> &'static str {
+    fn cert_path(self) -> String {
         match self {
-            Self::Rsa2048 => "rsa/rsa-2048-cert.pem",
-            Self::Rsa4096 => "rsa/rsa-4096-cert.pem",
-            Self::RsaExpired => "rsa/rsa-expired-cert.pem",
-            Self::EcP256 => "ec/ec-prime256v1-cert.pem",
+            Self::Rsa2048 => format!("{XMLSEC_KEYS}rsa/rsa-2048-cert.pem"),
+            Self::Rsa4096 => format!("{XMLSEC_KEYS}rsa/rsa-4096-cert.pem"),
+            Self::RsaExpired => format!("{XMLSEC_KEYS}rsa/rsa-expired-cert.pem"),
+            Self::EcP256 => format!("{XMLSEC_KEYS}ec/ec-prime256v1-cert.pem"),
+            Self::RolloverOld => format!("{ROLLOVER}old-cert.pem"),
+            Self::RolloverNew => format!("{ROLLOVER}new-cert.pem"),
         }
     }
 
-    fn key_path(self) -> &'static str {
+    fn key_path(self) -> String {
         match self {
-            Self::Rsa2048 => "rsa/rsa-2048-key.pem",
-            Self::Rsa4096 => "rsa/rsa-4096-key.pem",
-            Self::RsaExpired => "rsa/rsa-expired-key.pem",
-            Self::EcP256 => "ec/ec-prime256v1-key.pem",
+            Self::Rsa2048 => format!("{XMLSEC_KEYS}rsa/rsa-2048-key.pem"),
+            Self::Rsa4096 => format!("{XMLSEC_KEYS}rsa/rsa-4096-key.pem"),
+            Self::RsaExpired => format!("{XMLSEC_KEYS}rsa/rsa-expired-key.pem"),
+            Self::EcP256 => format!("{XMLSEC_KEYS}ec/ec-prime256v1-key.pem"),
+            Self::RolloverOld => format!("{ROLLOVER}old-key.pem"),
+            Self::RolloverNew => format!("{ROLLOVER}new-key.pem"),
         }
     }
 
@@ -61,7 +81,7 @@ impl Signer {
 
     /// The public certificate, as a verifier would load it.
     fn cert(self) -> Key {
-        loader::load_x509_cert_pem(&test_data(self.cert_path())).expect("certificate")
+        loader::load_x509_cert_pem(&read(&self.cert_path())).expect("certificate")
     }
 
     fn named_cert(self, name: &str) -> Key {
@@ -69,7 +89,7 @@ impl Signer {
     }
 
     fn cert_der(self) -> Vec<u8> {
-        cert_der(self.cert_path())
+        cert_der(&self.cert_path())
     }
 
     fn cert_b64(self) -> String {
@@ -106,7 +126,7 @@ fn sign_document(signer: Signer, key_info: &str) -> String {
     );
 
     let mut keys = KeysManager::new();
-    keys.add_key(loader::load_pem_auto(&test_data(signer.key_path()), None).expect("private key"));
+    keys.add_key(loader::load_pem_auto(&read(&signer.key_path()), None).expect("private key"));
     let ctx = DsigContext::new_permissive(keys);
     bergshamra_dsig::sign::sign(&ctx, &template).expect("template should sign")
 }
@@ -128,13 +148,12 @@ fn manager(keys: impl IntoIterator<Item = Key>) -> KeysManager {
     manager
 }
 
-/// A manager that also enforces the certificate chain (and so expiry) of
-/// every trusted key.
-fn anchored_manager(keys: impl IntoIterator<Item = Key>) -> KeysManager {
+/// A secure context whose trusted keys must also chain to the rollover root,
+/// validated at `time`, so certificate expiry is enforced per key.
+fn anchored_ctx(keys: impl IntoIterator<Item = Key>, time: &str) -> DsigContext {
     let mut manager = manager(keys);
-    manager.add_trusted_cert(cert_der("cacert.pem"));
-    manager.add_untrusted_cert(cert_der("ca2cert.pem"));
-    manager
+    manager.add_trusted_cert(cert_der(&format!("{ROLLOVER}root.pem")));
+    DsigContext::new(manager).with_verification_time(time)
 }
 
 #[track_caller]
@@ -276,25 +295,40 @@ fn empty_manager_is_key_not_found() {
 }
 
 #[test]
+fn rollover_overlap_accepts_either_certificate_in_either_order() {
+    use Signer::{RolloverNew as New, RolloverOld as Old};
+    for signer in [Old, New] {
+        let xml = sign_document(signer, "");
+        for order in [[Old, New], [New, Old]] {
+            let ctx = anchored_ctx(order.map(Signer::cert), DURING_OVERLAP);
+            match verify::verify(&ctx, &xml) {
+                Ok(result) => assert_valid_with(result, signer),
+                Err(e) => panic!("signer {signer:?}, order {order:?}: {e}"),
+            }
+        }
+    }
+}
+
+#[test]
 fn rollover_skips_expired_old_certificate() {
     // The old certificate has expired and is listed first; the document is
     // signed with the new one.
-    let xml = sign_document(Signer::Rsa2048, "");
-    let ctx = DsigContext::new(anchored_manager([
-        Signer::RsaExpired.cert(),
-        Signer::Rsa2048.cert(),
-    ]));
+    let xml = sign_document(Signer::RolloverNew, "");
+    let ctx = anchored_ctx(
+        [Signer::RolloverOld.cert(), Signer::RolloverNew.cert()],
+        AFTER_OLD_EXPIRED,
+    );
 
-    assert_valid_with(verify::verify(&ctx, &xml).unwrap(), Signer::Rsa2048);
+    assert_valid_with(verify::verify(&ctx, &xml).unwrap(), Signer::RolloverNew);
 }
 
 #[test]
 fn rollover_rejects_document_signed_with_expired_certificate() {
-    let xml = sign_document(Signer::RsaExpired, "");
-    let ctx = DsigContext::new(anchored_manager([
-        Signer::RsaExpired.cert(),
-        Signer::Rsa2048.cert(),
-    ]));
+    let xml = sign_document(Signer::RolloverOld, "");
+    let ctx = anchored_ctx(
+        [Signer::RolloverOld.cert(), Signer::RolloverNew.cert()],
+        AFTER_OLD_EXPIRED,
+    );
 
     let reason = assert_invalid(verify::verify(&ctx, &xml));
     assert_eq!(
@@ -306,25 +340,28 @@ fn rollover_rejects_document_signed_with_expired_certificate() {
 
 #[test]
 fn single_expired_trusted_key_keeps_the_chain_error() {
-    let xml = sign_document(Signer::RsaExpired, "");
-    let ctx = DsigContext::new(anchored_manager([Signer::RsaExpired.cert()]));
+    let xml = sign_document(Signer::RolloverOld, "");
+    let ctx = anchored_ctx([Signer::RolloverOld.cert()], AFTER_OLD_EXPIRED);
 
-    assert!(
-        verify::verify(&ctx, &xml).is_err(),
-        "an expired sole key must still fail with its certificate error"
-    );
+    match verify::verify(&ctx, &xml) {
+        Err(Error::Certificate(msg)) => assert!(msg.contains("expired"), "{msg}"),
+        other => panic!("expected the expired certificate's chain error, got {other:?}"),
+    }
 }
 
 #[test]
 fn trusted_keys_must_chain_to_configured_anchor() {
     // With an anchor that issued none of the trusted keys, no candidate passes
     // the X.509 policy, even though the signer's key is loaded.
-    let xml = sign_document(Signer::Rsa2048, "");
-    let mut keys = manager([Signer::Rsa4096.cert(), Signer::Rsa2048.cert()]);
-    keys.add_trusted_cert(Signer::EcP256.cert_der());
-    let ctx = DsigContext::new(keys);
+    let xml = sign_document(Signer::RolloverNew, "");
+    let mut keys = manager([Signer::RolloverOld.cert(), Signer::RolloverNew.cert()]);
+    keys.add_trusted_cert(Signer::Rsa2048.cert_der());
+    let ctx = DsigContext::new(keys).with_verification_time(DURING_OVERLAP);
 
-    assert!(verify::verify(&ctx, &xml).is_err());
+    match verify::verify(&ctx, &xml) {
+        Err(Error::Certificate(_)) => {}
+        other => panic!("expected a chain error, got {other:?}"),
+    }
 }
 
 #[test]
