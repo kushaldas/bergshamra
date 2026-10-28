@@ -228,6 +228,9 @@ impl KeyMaterial {
 
     /// Encode the public key as SPKI DER bytes. Returns `None` for symmetric keys.
     pub fn to_spki_der(&self) -> Option<Vec<u8>> {
+        // RSA keys implement the spki 0.7 trait; the EC curves (0.14 line)
+        // implement the spki 0.8 trait re-exported by p256.
+        use p256::pkcs8::EncodePublicKey as _;
         use spki::EncodePublicKey;
         match self {
             Self::Rsa { public, .. } => public.to_public_key_der().ok().map(|d| d.to_vec()),
@@ -240,7 +243,7 @@ impl KeyMaterial {
                 pk.to_public_key_der().ok().map(|d| d.to_vec())
             }
             Self::EcP521 { public, .. } => {
-                let point = public.to_encoded_point(false);
+                let point = public.to_sec1_point(false);
                 let pk = p521::PublicKey::from_sec1_bytes(point.as_bytes()).ok()?;
                 pk.to_public_key_der().ok().map(|d| d.to_vec())
             }
@@ -292,7 +295,7 @@ impl KeyMaterial {
                 Some(w.into_string())
             }
             Self::EcP256 { public, .. } => {
-                let point = public.to_encoded_point(false);
+                let point = public.to_sec1_point(false);
                 let pub_b64 = engine.encode(point.as_bytes());
                 Some(build_ec_key_value_xml(
                     &pub_b64,
@@ -300,12 +303,12 @@ impl KeyMaterial {
                 ))
             }
             Self::EcP384 { public, .. } => {
-                let point = public.to_encoded_point(false);
+                let point = public.to_sec1_point(false);
                 let pub_b64 = engine.encode(point.as_bytes());
                 Some(build_ec_key_value_xml(&pub_b64, "urn:oid:1.3.132.0.34"))
             }
             Self::EcP521 { public, .. } => {
-                let point = public.to_encoded_point(false);
+                let point = public.to_sec1_point(false);
                 let pub_b64 = engine.encode(point.as_bytes());
                 Some(build_ec_key_value_xml(&pub_b64, "urn:oid:1.3.132.0.35"))
             }
@@ -685,6 +688,9 @@ impl Key {
         if let Some(key) = self.data.cached_software_key() {
             return Ok(Some(key));
         }
+        // RSA and DSA keys implement the pkcs8 0.10 traits; the EC curves
+        // (0.14 line) implement the pkcs8 0.11 traits re-exported by p256.
+        use p256::pkcs8::{EncodePrivateKey as _, EncodePublicKey as _};
         use pkcs8::{EncodePrivateKey, EncodePublicKey};
 
         let imported = match self.data.material() {
@@ -765,7 +771,7 @@ impl Key {
             }
             KeyMaterial::EcP521 { public, .. } => {
                 let public =
-                    p521::PublicKey::from_sec1_bytes(public.to_encoded_point(false).as_bytes())
+                    p521::PublicKey::from_sec1_bytes(public.to_sec1_point(false).as_bytes())
                         .map_err(|e| {
                             bergshamra_core::Error::Key(format!("P-521 public conversion: {e}"))
                         })?;
@@ -924,13 +930,13 @@ impl Key {
     pub fn ec_public_key_bytes(&self) -> Option<Vec<u8>> {
         match self.data.material() {
             KeyMaterial::EcP256 { public, .. } => {
-                Some(public.to_encoded_point(false).as_bytes().to_vec())
+                Some(public.to_sec1_point(false).as_bytes().to_vec())
             }
             KeyMaterial::EcP384 { public, .. } => {
-                Some(public.to_encoded_point(false).as_bytes().to_vec())
+                Some(public.to_sec1_point(false).as_bytes().to_vec())
             }
             KeyMaterial::EcP521 { public, .. } => {
-                Some(public.to_encoded_point(false).as_bytes().to_vec())
+                Some(public.to_sec1_point(false).as_bytes().to_vec())
             }
             _ => None,
         }

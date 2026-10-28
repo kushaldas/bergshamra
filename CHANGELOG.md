@@ -1,6 +1,27 @@
 # Changelog
 
-## Unreleased
+## 0.11.1 [2026-10-28]
+
+### Security
+
+- `bergshamra-keys` now uses the RustCrypto 0.14 elliptic-curve line
+  (`ecdsa` 0.17, `p256` / `p384` / `p521` 0.14), the same one Kryptering
+  already used, instead of `ecdsa` 0.16 / `p256` / `p384` / `p521` 0.13. The
+  0.13 line pulled in `crypto-bigint` 0.5.5, which is affected by
+  RUSTSEC-2026-0387 (timing variability in operations intended to be
+  constant-time) with no fixed 0.5 release; the parsed EC keys run
+  secret-dependent arithmetic there, such as deriving the public key from
+  the private scalar. `crypto-bigint`, `elliptic-curve`, the NIST curves and
+  `sec1` now each appear once in the lockfile. The EC key types are
+  internal, so the public API is unchanged. Encrypted EC PKCS#8 keys are now
+  decrypted with `pkcs8` 0.10 and the plaintext is decoded by the 0.14
+  curve crates.
+- Updated `crypto-bigint` 0.7.5 -> 0.7.10 (RUSTSEC-2026-0387; 0.7.5 was also
+  yanked), `ctutils` 0.4.3 -> 0.4.6 (RUSTSEC-2026-0385, non-constant-time
+  mask generation and `u128` comparisons), `rustls-webpki` 0.103.15 ->
+  0.103.16 (RUSTSEC-2026-0382, distrusted intermediates could be accepted;
+  reached through Kryptering's `rustls`), and the yanked `inout` 0.2.3 ->
+  0.2.5. `cargo audit --deny warnings` passes again.
 
 ### Added
 
@@ -33,6 +54,12 @@
   keys from `load_rsa_public_pem` / `load_spki_pem`) were previously reachable
   only when they were the first entry; now any of them may verify. Audit each
   manager and remove entries that should not sign.
+- Bumped all workspace crates and internal dependency requirements to 0.11.1.
+- CI runs the `bergshamra-dsig` `trusted_key_set` integration tests for the
+  default, RustCrypto and AWS-LC provider sets. Their certificate-rollover
+  cases use a dedicated RSA-2048 / SHA-256 chain
+  (`crates/bergshamra-dsig/tests/data/rollover/`) that every provider
+  accepts.
 
 ## 0.11.0 [2026-10-16]
 

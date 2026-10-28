@@ -41,7 +41,7 @@ strip = false
 debug = "full"
 
 [workspace.package]
-version = "0.11.0"
+version = "0.11.1"
 edition = "2021"
 license = "BSD-2-Clause"
 repository = "https://github.com/kushaldas/bergshamra"
@@ -50,15 +50,15 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 # Internal crates
-bergshamra-core = { version = "0.11.0", path = "crates/bergshamra-core", default-features = false }
-bergshamra-xml = { version = "0.11.0", path = "crates/bergshamra-xml", default-features = false }
-bergshamra-c14n = { version = "0.11.0", path = "crates/bergshamra-c14n", default-features = false }
-bergshamra-crypto = { version = "0.11.0", path = "crates/bergshamra-crypto", default-features = false }
-bergshamra-keys = { version = "0.11.0", path = "crates/bergshamra-keys", default-features = false }
-bergshamra-transforms = { version = "0.11.0", path = "crates/bergshamra-transforms", default-features = false }
-bergshamra-dsig = { version = "0.11.0", path = "crates/bergshamra-dsig", default-features = false }
-bergshamra-enc = { version = "0.11.0", path = "crates/bergshamra-enc", default-features = false }
-bergshamra-pkcs12 = { version = "0.11.0", path = "crates/bergshamra-pkcs12", default-features = false }
+bergshamra-core = { version = "0.11.1", path = "crates/bergshamra-core", default-features = false }
+bergshamra-xml = { version = "0.11.1", path = "crates/bergshamra-xml", default-features = false }
+bergshamra-c14n = { version = "0.11.1", path = "crates/bergshamra-c14n", default-features = false }
+bergshamra-crypto = { version = "0.11.1", path = "crates/bergshamra-crypto", default-features = false }
+bergshamra-keys = { version = "0.11.1", path = "crates/bergshamra-keys", default-features = false }
+bergshamra-transforms = { version = "0.11.1", path = "crates/bergshamra-transforms", default-features = false }
+bergshamra-dsig = { version = "0.11.1", path = "crates/bergshamra-dsig", default-features = false }
+bergshamra-enc = { version = "0.11.1", path = "crates/bergshamra-enc", default-features = false }
+bergshamra-pkcs12 = { version = "0.11.1", path = "crates/bergshamra-pkcs12", default-features = false }
 
 # XML parsing
 uppsala = "0.12.0"
@@ -72,16 +72,16 @@ ripemd = { version = "0.1", features = ["oid"] }
 hmac = "0.12"
 digest = "0.10"
 rsa = "0.9"
-ecdsa = "0.16"
+ecdsa = "0.17"
 dsa = "0.6"
 ml-dsa = { version = "0.1.1", features = ["pkcs8", "rand_core"] }
 slh-dsa = "0.2.0-rc.5"
 getrandom = { version = "0.4", features = ["sys_rng"] }
 pkcs8-pq = { package = "pkcs8", version = "0.11.0" }
 const-oid-pq = { package = "const-oid", version = "0.10.2", features = ["db"] }
-p256 = { version = "0.13", features = ["ecdh"] }
-p384 = { version = "0.13", features = ["ecdh"] }
-p521 = { version = "0.13", features = ["ecdh", "pkcs8"] }
+p256 = { version = "0.14", features = ["ecdh"] }
+p384 = { version = "0.14", features = ["ecdh"] }
+p521 = { version = "0.14", features = ["ecdh", "pkcs8"] }
 aes = "0.9"
 cbc = "0.2"
 aes-gcm = "0.11"
