@@ -122,6 +122,13 @@
 //!   (`<KeyValue>`, `<X509Certificate>`, etc.) and only uses keys from the
 //!   [`KeysManager`](bergshamra_keys::KeysManager). Without this, an attacker
 //!   who controls the XML can embed their own key and forge a valid signature.
+//!   Every manager key compatible with the `SignatureMethod` is tried, and the
+//!   signature is valid when any of them verifies it, so a signer's old and
+//!   new certificates can be loaded together during rollover (see
+//!   [`KeysManager::add_keys`](bergshamra_keys::KeysManager::add_keys) and
+//!   ADR-0013). Every entry of the `KeysManager` is an accepted signer,
+//!   including unnamed keys without a certificate that previously only
+//!   verified when they were first; treat one manager as one trust set.
 //! - **`strict_verification = true`** — rejects references to nodes that are not
 //!   ancestors, siblings, or the document element (XSW protection).
 //! - **`hmac_min_out_len = 160`** — enforces a minimum HMAC output length of

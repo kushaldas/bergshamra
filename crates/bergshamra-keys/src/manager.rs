@@ -33,6 +33,20 @@ impl KeysManager {
         self.keys.push(key);
     }
 
+    /// Add several keys to the manager, keeping their order.
+    ///
+    /// Useful for certificate rollover: load the current and the next signing
+    /// certificate of the same signer, and a `DsigContext` with
+    /// `trusted_keys_only` accepts a signature made with either of them (see
+    /// ADR-0013). Only group keys you would accept for the same documents:
+    /// any trusted key in the manager may verify a signature.
+    pub fn add_keys<I>(&mut self, keys: I)
+    where
+        I: IntoIterator<Item = Key>,
+    {
+        self.keys.extend(keys);
+    }
+
     /// Insert a key at the front of the manager (takes priority for first_key).
     pub fn insert_key_first(&mut self, key: Key) {
         self.keys.insert(0, key);
@@ -206,5 +220,43 @@ impl KeysManager {
 impl Default for KeysManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::key::KeyData;
+
+    fn hmac_key(name: &str) -> Key {
+        Key::new(
+            KeyData::from_symmetric_bytes(kryptering::KeyAlgorithm::Hmac, name.as_bytes()).unwrap(),
+            KeyUsage::Any,
+        )
+        .with_name(name)
+    }
+
+    #[test]
+    fn add_keys_appends_in_order_after_existing_keys() {
+        let mut manager = KeysManager::new();
+        manager.add_key(hmac_key("existing"));
+        manager.add_keys(vec![hmac_key("first"), hmac_key("second")]);
+
+        let names: Vec<_> = manager.keys().map(|k| k.name.as_deref()).collect();
+        assert_eq!(names, [Some("existing"), Some("first"), Some("second")]);
+        assert_eq!(
+            manager.first_key().unwrap().name.as_deref(),
+            Some("existing")
+        );
+    }
+
+    #[test]
+    fn add_keys_accepts_any_iterator_including_empty() {
+        let mut manager = KeysManager::new();
+        manager.add_keys(std::iter::empty());
+        assert!(manager.is_empty());
+
+        manager.add_keys(["a", "b", "c"].into_iter().map(hmac_key));
+        assert_eq!(manager.len(), 3);
     }
 }

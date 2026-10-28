@@ -309,6 +309,38 @@ pub fn uri_matches_algorithm(uri: &str, algorithm: kryptering::SignatureAlgorith
     }
 }
 
+/// Whether a key of type `key_algorithm` can verify signatures made with the
+/// `SignatureMethod` URI `uri`.
+///
+/// This is a key-family check used to skip obviously unsuitable candidates
+/// (an EC key for an RSA signature, an HMAC secret for ECDSA) before trying
+/// them. EC curves are not compared: the provider verifies the curve when
+/// the signature is checked. Post-quantum keys must match the exact
+/// ML-DSA / SLH-DSA parameter set. Unknown URIs match no key.
+pub fn key_algorithm_matches_signature_uri(
+    uri: &str,
+    key_algorithm: kryptering::KeyAlgorithm,
+) -> bool {
+    use kryptering::{KeyAlgorithm as K, SignatureAlgorithm as S};
+
+    let Ok(algorithm) = algorithm_for_uri(uri) else {
+        return false;
+    };
+    match (algorithm, key_algorithm) {
+        (S::RsaPkcs1v15(_) | S::RsaPss(_), K::Rsa) => true,
+        (S::Ecdsa(..), K::Ec(_)) => true,
+        (S::Ed25519, K::Ed25519) => true,
+        (S::Hmac(_), K::Hmac) => true,
+        #[cfg(feature = "legacy-algorithms")]
+        (S::Dsa(_), K::Dsa) => true,
+        #[cfg(feature = "post-quantum")]
+        (S::MlDsa(v), K::PostQuantum(kryptering::PqAlgorithm::MlDsa(key_v))) => v == key_v,
+        #[cfg(feature = "post-quantum")]
+        (S::SlhDsa(v), K::PostQuantum(kryptering::PqAlgorithm::SlhDsa(key_v))) => v == key_v,
+        _ => false,
+    }
+}
+
 pub fn from_uri_with_context(
     uri: &str,
     context: Option<Vec<u8>>,
@@ -411,6 +443,66 @@ fn canonical_uri(alg: kryptering::SignatureAlgorithm) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_algorithm_matches_signature_uri_checks_key_family() {
+        use kryptering::{EcCurve, KeyAlgorithm as K};
+
+        assert!(key_algorithm_matches_signature_uri(
+            algorithm::RSA_SHA256,
+            K::Rsa
+        ));
+        assert!(key_algorithm_matches_signature_uri(
+            algorithm::RSA_PSS_SHA256,
+            K::Rsa
+        ));
+        // Curves are left to the provider; any EC key is a candidate for ECDSA.
+        assert!(key_algorithm_matches_signature_uri(
+            algorithm::ECDSA_SHA256,
+            K::Ec(EcCurve::P384)
+        ));
+        assert!(key_algorithm_matches_signature_uri(
+            algorithm::HMAC_SHA256,
+            K::Hmac
+        ));
+
+        assert!(!key_algorithm_matches_signature_uri(
+            algorithm::RSA_SHA256,
+            K::Ec(EcCurve::P256)
+        ));
+        assert!(!key_algorithm_matches_signature_uri(
+            algorithm::ECDSA_SHA256,
+            K::Rsa
+        ));
+        assert!(!key_algorithm_matches_signature_uri(
+            algorithm::RSA_SHA256,
+            K::Hmac
+        ));
+        assert!(!key_algorithm_matches_signature_uri(
+            algorithm::HMAC_SHA256,
+            K::Rsa
+        ));
+        assert!(!key_algorithm_matches_signature_uri(
+            "urn:example:unknown",
+            K::Rsa
+        ));
+    }
+
+    #[cfg(feature = "post-quantum")]
+    #[test]
+    fn key_algorithm_matches_signature_uri_requires_exact_pq_parameter_set() {
+        use kryptering::{KeyAlgorithm as K, MlDsaVariant, PqAlgorithm};
+
+        let ml_dsa_65 = K::PostQuantum(PqAlgorithm::MlDsa(MlDsaVariant::MlDsa65));
+        assert!(key_algorithm_matches_signature_uri(
+            algorithm::ML_DSA_65,
+            ml_dsa_65
+        ));
+        assert!(!key_algorithm_matches_signature_uri(
+            algorithm::ML_DSA_44,
+            ml_dsa_65
+        ));
+    }
 
     #[test]
     fn hmac_roundtrip_and_declared_truncation() {

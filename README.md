@@ -265,6 +265,36 @@ XML can embed their own key and sign with it — the signature will verify, but
 against the wrong key. This is essential for SAML Service Providers and any
 deployment where the signing key is known ahead of time.
 
+Every key in the `KeysManager` that fits the `SignatureMethod` is tried, and
+the signature is valid when any one of them verifies it. This makes
+certificate rollover seamless: load the signer's current and next certificate
+together, and documents signed with either verify. `<KeyInfo>` only decides
+which trusted key is tried first; keys embedded in the document are never
+used. Each key still has to pass its own chain and expiry checks when trust
+anchors are configured, and `VerifyResult::Valid.key_info` reports which key
+verified.
+
+```rust
+let mut keys = KeysManager::new();
+keys.add_keys([
+    loader::load_x509_cert_pem(&old_cert_pem)?,
+    loader::load_x509_cert_pem(&new_cert_pem)?,
+]);
+let ctx = DsigContext::new(keys); // trusted_keys_only = true
+let result = verify::verify(&ctx, &metadata_xml)?;
+```
+
+```bash
+bergshamra verify --trusted-keys-only --cert old.pem --cert new.pem metadata.xml
+```
+
+A `KeysManager` is therefore one trust set: every entry is an accepted signer,
+including unnamed HMAC secrets and raw public keys that previously only
+verified when they were first. Audit managers when upgrading, and put keys for
+signers that must not vouch for each other (two IdPs, two countries) in
+separate managers. See
+`docs/adr/0013-trusted-key-set-verification.md`.
+
 When trust anchors are configured, Bergshamra rejects raw inline `<KeyValue>`
 and `<DEREncodedKeyValue>` keys because they have no certificate chain to
 validate. Inline `<X509Data>` remains supported, but the certificate chain must

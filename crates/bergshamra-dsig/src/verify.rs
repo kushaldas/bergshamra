@@ -509,48 +509,36 @@ fn verify_signature_node(
     }
 
     // Software key path — resolve key from KeyInfo / KeysManager.
+    let sig_alg = bergshamra_crypto::sign::from_uri_with_context(sig_method_uri, pq_context)?;
+    let check = SignatureCheck {
+        algorithm: &*sig_alg,
+        method_uri: sig_method_uri,
+        signed_info: &c14n_signed_info,
+        signature: &sig_value,
+        hmac_output_length_bits,
+    };
+    let key_info_node = find_child_element(doc, sig_node, ns::DSIG, ns::node::KEY_INFO);
 
     // 4. Resolve signing key
     // When trusted_keys_only is set, skip inline key extraction and only use
     // keys from the KeysManager. This is the secure mode for SAML: we only
     // trust pre-configured IdP keys, not whatever cert an attacker embeds.
-    let key_info_node = find_child_element(doc, sig_node, ns::DSIG, ns::node::KEY_INFO);
-    let mut key_from_x509 = false;
-    let mut key_from_raw_inline_keyinfo = false;
-    let mut key_from_manager = false;
+    // Every compatible manager key is a candidate (ADR-0013), so a signer can
+    // roll its certificate while both the old and the new one are loaded.
+    if ctx.trusted_keys_only {
+        let effective_ki =
+            key_info_node.map(|ki| resolve_key_info_reference(doc, ki, id_map).unwrap_or(ki));
+        return verify_with_trusted_keys(ctx, doc, effective_ki, &check, sig_node, verified_refs);
+    }
+
+    let mut source = KeySource::default();
     // extracted_key holds ownership when key is extracted from inline KeyInfo.
     // The initial `None` is overwritten in every branch before being read, but
-    // the variable must be declared here so the borrow in the `else if` branch
+    // the variable must be declared here so the borrow in the `if let` branch
     // lives long enough.
     #[allow(unused_assignments)]
     let mut extracted_key: Option<bergshamra_keys::Key> = None;
-    let key = if ctx.trusted_keys_only {
-        // Secure mode: only use keys from the manager, never inline keys
-        if let Some(ki) = key_info_node {
-            let effective_ki = resolve_key_info_reference(doc, ki, id_map).unwrap_or(ki);
-            let k =
-                bergshamra_keys::keyinfo::resolve_key_info(effective_ki, doc, &ctx.keys_manager)
-                    .or_else(|_| ctx.keys_manager.first_key())?;
-            if ctx.debug {
-                eprintln!(
-                    "== Key: resolved from manager (trusted_keys_only) ({})",
-                    k.data.algorithm_name()
-                );
-            }
-            key_from_manager = true;
-            k
-        } else {
-            let k = ctx.keys_manager.first_key()?;
-            if ctx.debug {
-                eprintln!(
-                    "== Key: first key from manager (trusted_keys_only) ({})",
-                    k.data.algorithm_name()
-                );
-            }
-            key_from_manager = true;
-            k
-        }
-    } else if let Some(ki) = key_info_node {
+    let key = if let Some(ki) = key_info_node {
         // Standard mode: try inline KeyValue (RSA/EC public key embedded in XML),
         // then try EncryptedKey unwrap, then fall back to KeysManager lookup.
         let effective_ki = resolve_key_info_reference(doc, ki, id_map).unwrap_or(ki);
@@ -569,7 +557,7 @@ fn verify_signature_node(
             // Under an anchored policy we prefer `<X509Data>` first, so a raw
             // key does not block a later certificate chain that can satisfy the
             // configured anchors.
-            key_from_raw_inline_keyinfo = key.x509_chain.is_empty();
+            source.from_raw_inline_keyinfo = key.x509_chain.is_empty();
             Some(key)
         } else {
             try_unwrap_encrypted_key(doc, effective_ki, &ctx.keys_manager).ok()
@@ -587,7 +575,7 @@ fn verify_signature_node(
             }
             // Check if this key came from an X509Certificate
             if !ek.x509_chain.is_empty() {
-                key_from_x509 = true;
+                source.from_x509 = true;
             }
             ek
         } else {
@@ -599,7 +587,7 @@ fn verify_signature_node(
                     k.data.algorithm_name()
                 );
             }
-            key_from_manager = true;
+            source.from_manager = true;
             k
         }
     } else {
@@ -610,10 +598,139 @@ fn verify_signature_node(
                 k.data.algorithm_name()
             );
         }
-        key_from_manager = true;
+        source.from_manager = true;
         k
     };
 
+    if check_signature_value(ctx, key, source, &check)? {
+        Ok(valid_result(ctx, sig_node, verified_refs, key))
+    } else {
+        Ok(VerifyResult::Invalid {
+            reason: "signature value verification failed".into(),
+        })
+    }
+}
+
+/// The parts of a signature that stay fixed while candidate keys are tried.
+struct SignatureCheck<'a> {
+    algorithm: &'a dyn bergshamra_crypto::sign::SignatureAlgorithm,
+    method_uri: &'a str,
+    signed_info: &'a [u8],
+    signature: &'a [u8],
+    hmac_output_length_bits: Option<usize>,
+}
+
+/// Where a verification key came from; drives the X.509 policy in
+/// [`check_signature_value`].
+#[derive(Clone, Copy, Default)]
+struct KeySource {
+    /// Inline `<X509Data>` certificate from the document.
+    from_x509: bool,
+    /// Inline `<KeyValue>` / `<DEREncodedKeyValue>` without a certificate.
+    from_raw_inline_keyinfo: bool,
+    /// Preloaded key from the `KeysManager`.
+    from_manager: bool,
+}
+
+impl KeySource {
+    const MANAGER: Self = Self {
+        from_x509: false,
+        from_raw_inline_keyinfo: false,
+        from_manager: true,
+    };
+}
+
+/// Verify `SignatureValue` against each trusted key in the manager.
+///
+/// Candidates are all manager keys whose type fits the `SignatureMethod`,
+/// ordered by the `<KeyInfo>` hints (see
+/// [`bergshamra_keys::keyinfo::rank_trusted_keys`]). The signature is valid
+/// when any candidate passes the X.509 policy and verifies it. Inline keys from
+/// the document are never candidates.
+fn verify_with_trusted_keys(
+    ctx: &DsigContext,
+    doc: &Document<'_>,
+    key_info_node: Option<NodeId>,
+    check: &SignatureCheck<'_>,
+    sig_node: NodeId,
+    verified_refs: Vec<VerifiedReference>,
+) -> Result<VerifyResult, Error> {
+    let ranked = bergshamra_keys::keyinfo::rank_trusted_keys(key_info_node, doc, &ctx.keys_manager);
+    if ranked.is_empty() {
+        return Err(Error::KeyNotFound("no keys in manager".into()));
+    }
+    let candidates: Vec<&bergshamra_keys::Key> = ranked
+        .into_iter()
+        .filter(|key| {
+            bergshamra_crypto::sign::key_algorithm_matches_signature_uri(
+                check.method_uri,
+                key.data.algorithm(),
+            )
+        })
+        .collect();
+    if candidates.is_empty() {
+        return Err(Error::Key(format!(
+            "no trusted key in the manager is compatible with SignatureMethod {}",
+            check.method_uri
+        )));
+    }
+
+    let total = candidates.len();
+    let mut mismatches = 0usize;
+    let mut first_error: Option<Error> = None;
+    for (index, key) in candidates.iter().enumerate() {
+        if ctx.debug {
+            eprintln!(
+                "== Key: trusted key {}/{total} from manager (trusted_keys_only) ({})",
+                index + 1,
+                key.data.algorithm_name()
+            );
+        }
+        match check_signature_value(ctx, key, KeySource::MANAGER, check) {
+            Ok(true) => return Ok(valid_result(ctx, sig_node, verified_refs, key)),
+            Ok(false) => mismatches += 1,
+            Err(e) => {
+                if ctx.debug {
+                    eprintln!("== Key: trusted key {}/{total} rejected: {e}", index + 1);
+                }
+                first_error.get_or_insert(e);
+            }
+        }
+    }
+
+    // No key verified. When every candidate was rejected before the signature
+    // check (chain, expiry or key-type errors), report the first rejection, as
+    // the single-key path does. Otherwise at least one key was tried and did
+    // not match.
+    if mismatches == 0 {
+        if let Some(e) = first_error {
+            return Err(e);
+        }
+    }
+    let reason = if total == 1 {
+        "signature value verification failed".to_owned()
+    } else if mismatches == total {
+        format!("signature value verification failed with each of the {total} trusted keys")
+    } else {
+        format!(
+            "signature value verification failed with each of the {total} trusted keys \
+             ({} rejected before the signature check)",
+            total - mismatches
+        )
+    };
+    Ok(VerifyResult::Invalid { reason })
+}
+
+/// Apply the X.509 policy to `key`, then check `SignatureValue` with it.
+///
+/// Returns `Ok(false)` when the key is acceptable but the signature does not
+/// verify, and `Err` when the key itself is rejected.
+fn check_signature_value(
+    ctx: &DsigContext,
+    key: &bergshamra_keys::Key,
+    source: KeySource,
+    check: &SignatureCheck<'_>,
+) -> Result<bool, Error> {
     // 4b. X.509 certificate chain validation
     if !ctx.insecure {
         // When the caller has configured trust anchors, any key that carries an
@@ -624,7 +741,7 @@ fn verify_signature_node(
         // configured anchors are silently ignored (CVE-class trust bypass).
         let has_trusted_anchors = ctx.keys_manager.has_trusted_certs();
         if has_trusted_anchors
-            && key_from_raw_inline_keyinfo
+            && source.from_raw_inline_keyinfo
             && !ctx.allow_raw_inline_keyinfo_with_trust_anchors
         {
             return Err(Error::Key(
@@ -632,8 +749,8 @@ fn verify_signature_node(
             ));
         }
 
-        let needs_x509_validation = (ctx.enabled_key_data_x509 && key_from_x509)
-            || (ctx.verify_keys && key_from_manager && !key.x509_chain.is_empty())
+        let needs_x509_validation = (ctx.enabled_key_data_x509 && source.from_x509)
+            || (ctx.verify_keys && source.from_manager && !key.x509_chain.is_empty())
             || (has_trusted_anchors && !key.x509_chain.is_empty());
 
         if needs_x509_validation && !key.x509_chain.is_empty() {
@@ -650,9 +767,6 @@ fn verify_signature_node(
             if ctx.debug {
                 eprintln!("== X.509 certificate chain: valid");
             }
-        } else if ctx.enabled_key_data_x509 && !key_from_x509 && !key_from_manager {
-            // enabled-key-data x509 was requested but no X509 data found
-            // This is not an error by itself — the test framework handles this
         }
     }
 
@@ -660,37 +774,43 @@ fn verify_signature_node(
         .to_signing_key()?
         .ok_or_else(|| Error::Key("no signing key available".into()))?;
 
-    let sig_alg = bergshamra_crypto::sign::from_uri_with_context(sig_method_uri, pq_context)?;
     // When the XML carries an <HMACOutputLength> (parsed earlier and already
     // checked against the CVE-2009-0217 floor in ctx.hmac_min_out_len), route
     // through verify_truncated so the signature can be shorter than the
     // full HMAC. For every other algorithm the default impl reduces to the
     // usual verify() path.
-    let valid = if let Some(bits) = hmac_output_length_bits {
-        sig_alg.verify_truncated(&signing_key, &c14n_signed_info, &sig_value, bits / 8)?
+    if let Some(bits) = check.hmac_output_length_bits {
+        check
+            .algorithm
+            .verify_truncated(&signing_key, check.signed_info, check.signature, bits / 8)
     } else {
-        sig_alg.verify(&signing_key, &c14n_signed_info, &sig_value)?
-    };
+        check
+            .algorithm
+            .verify(&signing_key, check.signed_info, check.signature)
+    }
+}
 
-    if valid {
-        if let Some(reason) = reference_digest_policy_failure(ctx, &verified_refs) {
-            return Ok(VerifyResult::Invalid {
-                reason: reason.to_owned(),
-            });
-        }
-        Ok(VerifyResult::Valid {
-            signature_node: sig_node,
-            references: verified_refs,
-            key_info: VerifiedKeyInfo {
-                algorithm: key.data.algorithm_name().to_owned(),
-                key_name: key.name.clone(),
-                x509_chain: key.x509_chain.clone(),
-            },
-        })
-    } else {
-        Ok(VerifyResult::Invalid {
-            reason: "signature value verification failed".into(),
-        })
+/// Build the result for a `SignatureValue` that verified with `key`, applying
+/// the reference-digest coverage policy.
+fn valid_result(
+    ctx: &DsigContext,
+    sig_node: NodeId,
+    verified_refs: Vec<VerifiedReference>,
+    key: &bergshamra_keys::Key,
+) -> VerifyResult {
+    if let Some(reason) = reference_digest_policy_failure(ctx, &verified_refs) {
+        return VerifyResult::Invalid {
+            reason: reason.to_owned(),
+        };
+    }
+    VerifyResult::Valid {
+        signature_node: sig_node,
+        references: verified_refs,
+        key_info: VerifiedKeyInfo {
+            algorithm: key.data.algorithm_name().to_owned(),
+            key_name: key.name.clone(),
+            x509_chain: key.x509_chain.clone(),
+        },
     }
 }
 
