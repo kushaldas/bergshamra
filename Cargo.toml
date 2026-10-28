@@ -72,16 +72,16 @@ ripemd = { version = "0.1", features = ["oid"] }
 hmac = "0.12"
 digest = "0.10"
 rsa = "0.9"
-ecdsa = "0.16"
+ecdsa = "0.17"
 dsa = "0.6"
 ml-dsa = { version = "0.1.1", features = ["pkcs8", "rand_core"] }
 slh-dsa = "0.2.0-rc.5"
 getrandom = { version = "0.4", features = ["sys_rng"] }
 pkcs8-pq = { package = "pkcs8", version = "0.11.0" }
 const-oid-pq = { package = "const-oid", version = "0.10.2", features = ["db"] }
-p256 = { version = "0.13", features = ["ecdh"] }
-p384 = { version = "0.13", features = ["ecdh"] }
-p521 = { version = "0.13", features = ["ecdh", "pkcs8"] }
+p256 = { version = "0.14", features = ["ecdh"] }
+p384 = { version = "0.14", features = ["ecdh"] }
+p521 = { version = "0.14", features = ["ecdh", "pkcs8"] }
 aes = "0.9"
 cbc = "0.2"
 aes-gcm = "0.11"

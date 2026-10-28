@@ -4,6 +4,11 @@
 
 use crate::key::{InternalKeyData as KeyData, Key, KeyUsage};
 use bergshamra_core::Error;
+// The EC curves are on the RustCrypto 0.14 line and implement the pkcs8 0.11
+// / spki 0.8 decoding traits, while RSA and DSA still implement the pkcs8 0.10
+// / spki 0.7 ones imported where they are used. Keep the 0.11 traits in scope
+// anonymously so each call resolves to the version its type implements.
+use p256::pkcs8::{DecodePrivateKey as _, DecodePublicKey as _};
 
 /// Load an RSA private key from PEM data.
 pub fn load_rsa_private_pem(pem_data: &[u8]) -> Result<Key, Error> {
@@ -69,7 +74,6 @@ pub fn load_rsa_public_pem(pem_data: &[u8]) -> Result<Key, Error> {
 
 /// Load an EC P-256 private key from PEM data.
 pub fn load_ec_p256_private_pem(pem_data: &[u8]) -> Result<Key, Error> {
-    use pkcs8::DecodePrivateKey;
     let pem_str = std::str::from_utf8(pem_data)
         .map_err(|e| Error::Key(format!("invalid PEM encoding: {e}")))?;
 
@@ -87,7 +91,6 @@ pub fn load_ec_p256_private_pem(pem_data: &[u8]) -> Result<Key, Error> {
 
 /// Load an EC P-384 private key from PEM data.
 pub fn load_ec_p384_private_pem(pem_data: &[u8]) -> Result<Key, Error> {
-    use pkcs8::DecodePrivateKey;
     let pem_str = std::str::from_utf8(pem_data)
         .map_err(|e| Error::Key(format!("invalid PEM encoding: {e}")))?;
 
@@ -105,7 +108,6 @@ pub fn load_ec_p384_private_pem(pem_data: &[u8]) -> Result<Key, Error> {
 
 /// Load an EC P-521 private key from PEM data.
 pub fn load_ec_p521_private_pem(pem_data: &[u8]) -> Result<Key, Error> {
-    use pkcs8::DecodePrivateKey;
     let pem_str = std::str::from_utf8(pem_data)
         .map_err(|e| Error::Key(format!("invalid PEM encoding: {e}")))?;
 
@@ -259,7 +261,8 @@ pub fn load_pkcs12(data: &[u8], password: &str) -> Result<Key, Error> {
 
 /// Load a private key from encrypted PEM (PKCS#8 ENCRYPTED PRIVATE KEY).
 ///
-/// Tries RSA, then EC P-256, P-384 in order.
+/// Tries RSA first, then decrypts once and parses the plaintext PKCS#8
+/// (EC P-256/P-384/P-521, DSA and other key types).
 fn load_encrypted_pem(pem_data: &[u8], password: &str) -> Result<Key, Error> {
     use pkcs8::DecodePrivateKey;
     let pem_str = std::str::from_utf8(pem_data)
@@ -277,44 +280,9 @@ fn load_encrypted_pem(pem_data: &[u8], password: &str) -> Result<Key, Error> {
         ));
     }
 
-    // Try EC P-256
-    if let Ok(sk) = p256::ecdsa::SigningKey::from_pkcs8_encrypted_pem(pem_str, password) {
-        let vk = *sk.verifying_key();
-        return Ok(Key::new(
-            KeyData::EcP256 {
-                private: Some(sk),
-                public: vk,
-            },
-            KeyUsage::Any,
-        ));
-    }
-
-    // Try EC P-384
-    if let Ok(sk) = p384::ecdsa::SigningKey::from_pkcs8_encrypted_pem(pem_str, password) {
-        let vk = *sk.verifying_key();
-        return Ok(Key::new(
-            KeyData::EcP384 {
-                private: Some(sk),
-                public: vk,
-            },
-            KeyUsage::Any,
-        ));
-    }
-
-    // Try EC P-521
-    if let Ok(secret) = p521::SecretKey::from_pkcs8_encrypted_pem(pem_str, password) {
-        let sk = p521::ecdsa::SigningKey::from(ecdsa::SigningKey::from(secret));
-        let vk = p521::ecdsa::VerifyingKey::from(&sk);
-        return Ok(Key::new(
-            KeyData::EcP521 {
-                private: Some(sk),
-                public: vk,
-            },
-            KeyUsage::Any,
-        ));
-    }
-
-    // Try generic decrypt via pem-rfc7468 + DER parse (catches DSA and others)
+    // Generic path: decrypt with pkcs8 0.10, then parse the plaintext PKCS#8
+    // DER (EC P-256/P-384/P-521, DSA and others). The EC curves are on the
+    // pkcs8 0.11 line, so they cannot use `from_pkcs8_encrypted_pem` from 0.10.
     {
         if let Ok((_label, der_bytes)) = pem_rfc7468::decode_vec(pem_data) {
             use pkcs8::der::Decode;
@@ -1269,6 +1237,42 @@ mod tests {
         }
         let result = load_key_file_with_password(pem_path, None);
         assert!(result.is_err());
+    }
+
+    /// Encrypted EC PKCS#8 is decrypted with pkcs8 0.10 and the plaintext is
+    /// decoded by the 0.14 curve crates; the result must match the same key
+    /// loaded from its unencrypted PEM.
+    #[test]
+    fn test_load_encrypted_pem_ec_matches_plaintext_key() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../test-data/keys/ec/");
+        for (curve, algorithm) in [
+            ("prime256v1", kryptering::EcCurve::P256),
+            ("prime384v1", kryptering::EcCurve::P384),
+            ("prime521v1", kryptering::EcCurve::P521),
+        ] {
+            let encrypted = std::path::PathBuf::from(format!("{dir}ec-{curve}-key.p8-pem"));
+            let plain = std::path::PathBuf::from(format!("{dir}ec-{curve}-key.pem"));
+
+            let key = load_key_file_with_password(&encrypted, Some("secret123"))
+                .unwrap_or_else(|e| panic!("{curve}: load encrypted PKCS#8: {e}"));
+            let reference = load_key_file(&plain)
+                .unwrap_or_else(|e| panic!("{curve}: load plaintext key: {e}"));
+
+            assert_eq!(
+                key.data.algorithm(),
+                kryptering::KeyAlgorithm::Ec(algorithm)
+            );
+            assert!(key.has_private_key(), "{curve}: private key missing");
+            assert_eq!(
+                key.ec_public_key_bytes(),
+                reference.ec_public_key_bytes(),
+                "{curve}: public point differs from the plaintext key"
+            );
+            assert!(
+                load_key_file_with_password(&encrypted, Some("wrong")).is_err(),
+                "{curve}: wrong password must fail"
+            );
+        }
     }
 
     #[test]
