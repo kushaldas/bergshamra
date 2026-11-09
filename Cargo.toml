@@ -41,7 +41,7 @@ strip = false
 debug = "full"
 
 [workspace.package]
-version = "0.11.1"
+version = "0.11.2"
 edition = "2021"
 license = "BSD-2-Clause"
 repository = "https://github.com/kushaldas/bergshamra"
@@ -50,18 +50,18 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 # Internal crates
-bergshamra-core = { version = "0.11.1", path = "crates/bergshamra-core", default-features = false }
-bergshamra-xml = { version = "0.11.1", path = "crates/bergshamra-xml", default-features = false }
-bergshamra-c14n = { version = "0.11.1", path = "crates/bergshamra-c14n", default-features = false }
-bergshamra-crypto = { version = "0.11.1", path = "crates/bergshamra-crypto", default-features = false }
-bergshamra-keys = { version = "0.11.1", path = "crates/bergshamra-keys", default-features = false }
-bergshamra-transforms = { version = "0.11.1", path = "crates/bergshamra-transforms", default-features = false }
-bergshamra-dsig = { version = "0.11.1", path = "crates/bergshamra-dsig", default-features = false }
-bergshamra-enc = { version = "0.11.1", path = "crates/bergshamra-enc", default-features = false }
-bergshamra-pkcs12 = { version = "0.11.1", path = "crates/bergshamra-pkcs12", default-features = false }
+bergshamra-core = { version = "0.11.2", path = "crates/bergshamra-core", default-features = false }
+bergshamra-xml = { version = "0.11.2", path = "crates/bergshamra-xml", default-features = false }
+bergshamra-c14n = { version = "0.11.2", path = "crates/bergshamra-c14n", default-features = false }
+bergshamra-crypto = { version = "0.11.2", path = "crates/bergshamra-crypto", default-features = false }
+bergshamra-keys = { version = "0.11.2", path = "crates/bergshamra-keys", default-features = false }
+bergshamra-transforms = { version = "0.11.2", path = "crates/bergshamra-transforms", default-features = false }
+bergshamra-dsig = { version = "0.11.2", path = "crates/bergshamra-dsig", default-features = false }
+bergshamra-enc = { version = "0.11.2", path = "crates/bergshamra-enc", default-features = false }
+bergshamra-pkcs12 = { version = "0.11.2", path = "crates/bergshamra-pkcs12", default-features = false }
 
 # XML parsing
-uppsala = "0.12.0"
+uppsala = "0.12.1"
 
 # Cryptography (RustCrypto ecosystem)
 sha1 = { version = "0.10", features = ["oid"] }
@@ -74,7 +74,7 @@ digest = "0.10"
 rsa = "0.9"
 ecdsa = "0.17"
 dsa = "0.6"
-ml-dsa = { version = "0.1.1", features = ["pkcs8", "rand_core"] }
+ml-dsa = { version = "0.1.2", features = ["pkcs8", "rand_core"] }
 slh-dsa = "0.2.0-rc.5"
 getrandom = { version = "0.4", features = ["sys_rng"] }
 pkcs8-pq = { package = "pkcs8", version = "0.11.0" }
@@ -99,16 +99,16 @@ pkcs1 = "0.7"
 pkcs8 = { version = "0.10", features = ["encryption", "3des"] }
 spki = "0.7"
 der = "0.7"
-pem-rfc7468 = "0.7"
+pem-rfc7468 = { version = "1", features = ["alloc"] }
 x509-cert = "0.2"
-yasna = { version = "0.5", features = ["std"] }
+yasna = { version = "0.6", features = ["std"] }
 pkcs5 = { version = "0.7", features = ["sha1-insecure"] }
 pbkdf2 = "0.12"
-num-bigint-dig = { version = "0.8", features = ["prime"] }
+num-bigint-dig = { version = "0.9", features = ["prime"] }
 num-traits = "0.2"
 
 # Utilities
-base64 = "0.22"
+base64 = "0.23.1"
 # Fast non-cryptographic hashers for internal maps (uv uses rustc-hash for
 # non-adversarial keys; SipHash is slow for usize node-index keys).
 rustc-hash = "2"
@@ -117,10 +117,10 @@ clap = { version = "4", features = ["derive"] }
 memchr = "2"
 
 # Benchmarking (dev-only)
-criterion = "0.5"
+criterion = "0.8.2"
 
 # Shared crypto backend
 kryptering = { version = "0.7.0", default-features = false }
 
 # Shared trust/validation infrastructure
-tsp-ltv = { version = "0.6.0", default-features = false }
+tsp-ltv = { version = "0.6.1", default-features = false }
