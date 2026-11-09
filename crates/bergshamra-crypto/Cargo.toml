@@ -22,6 +22,7 @@ bergshamra-core.workspace = true
 kryptering.workspace = true
 
 [dev-dependencies]
+getrandom.workspace = true
 hex = "0.4"
 rand.workspace = true
 rsa.workspace = true

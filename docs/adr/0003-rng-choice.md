@@ -8,6 +8,14 @@
 
 ---
 
+## Update (2026-11-09)
+
+Document signing now delegates to Kryptering. With Kryptering 0.7.1 and RSA
+0.10, RSA uses rand_core 0.10, as does the ML-DSA provider path. Bergshamra's
+RSA test and benchmark key generation uses `getrandom::SysRng` as well.
+The historical split described below is no longer required for RSA;
+rand 0.8 remains for the separate DSA/Ed25519/X25519 import/test stack.
+
 ## Context
 
 `bergshamra-crypto` contains two randomized signing paths:

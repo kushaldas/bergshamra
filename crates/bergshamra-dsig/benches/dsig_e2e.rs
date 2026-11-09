@@ -48,8 +48,8 @@ fn saml_shaped(assertions: usize) -> String {
 fn rsa_keys_manager() -> KeysManager {
     use rsa::pkcs8::EncodePrivateKey;
 
-    let mut rng = rand::rngs::OsRng;
-    let private = rsa::RsaPrivateKey::new(&mut rng, 2048)
+    let mut rng = getrandom::SysRng;
+    let private = rsa::PrivateKey::new(&mut rng, 2048)
         .expect("RSA-2048 key generation must succeed for the benchmark");
     let der = private
         .to_pkcs8_der()

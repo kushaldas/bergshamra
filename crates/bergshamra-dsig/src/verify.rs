@@ -5315,8 +5315,7 @@ mod tests {
     ///
     /// The key is intentionally unrelated to `X509DATA_TEST_XML`; anchored
     /// verification must ignore it in favor of the following `<X509Data>`.
-    #[cfg(feature = "legacy-algorithms")]
-    const UNRELATED_RSA_KEYVALUE_XML: &str = r#"<KeyValue>
+    const UNRELATED_RSA_KEYVALUE_XML: &str = r#"<KeyValue xmlns="http://www.w3.org/2000/09/xmldsig#">
         <RSAKeyValue>
           <Modulus>+dcpo4biTE96poyE0JcUkfF8Mvs5SUotRd95KJIQ5uQ7nsxLIMn4cs3MwF70WI0gCCkIwTK8Nj//zJFeIxJanlziNAgrMIjBuYXWbeJPmjTpTO1IEDaXEpfgtZtgmOFvt1e8ytauqpVZF2kQlBLuBZMGgbPlBxOlI3VHVBIXnDk=</Modulus>
           <Exponent>AQAB</Exponent>
@@ -5328,13 +5327,48 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/../../test-data/aleksey-xmldsig-01/x509data-test.xml"
     ));
-    /// The correct anchor (Aleksey test root) the inline chain terminates at.
-    /// Only used by the `legacy-algorithms`-gated positive test below.
+    /// The legacy fixture's root; its intermediate has a rejected 512-bit key.
     #[cfg(feature = "legacy-algorithms")]
     const CACERT_PEM: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../test-data/keys/cacert.pem"
     ));
+
+    /// Sign with the RSA-2048/SHA-256 rollover chain so positive trust tests
+    /// exercise certificate validation with keys supported by both providers.
+    fn anchored_inline_document(raw_key_value: &str) -> (DsigContext, String) {
+        use base64::Engine;
+        let cert = pem_cert_to_der(include_str!("../tests/data/rollover/old-cert.pem"));
+        let cert = base64::engine::general_purpose::STANDARD.encode(cert);
+        let template = format!(
+            r#"<Root xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><Payload>trusted payload</Payload>
+<ds:Signature><ds:SignedInfo>
+<ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
+<ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>
+<ds:Reference URI=""><ds:Transforms>
+<ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/>
+<ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
+</ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
+<ds:DigestValue></ds:DigestValue></ds:Reference></ds:SignedInfo>
+<ds:SignatureValue></ds:SignatureValue><ds:KeyInfo>{raw_key_value}
+<ds:X509Data><ds:X509Certificate>{cert}</ds:X509Certificate></ds:X509Data>
+</ds:KeyInfo></ds:Signature></Root>"#
+        );
+        let mut keys = bergshamra_keys::KeysManager::new();
+        keys.add_key(
+            bergshamra_keys::loader::load_pem_auto(
+                include_bytes!("../tests/data/rollover/old-key.pem"),
+                None,
+            )
+            .expect("rollover signing key"),
+        );
+        let xml = crate::sign::sign(&DsigContext::new_permissive(keys), &template)
+            .expect("sign rollover document");
+        let ctx = permissive_ctx_with_anchor(Some(include_str!("../tests/data/rollover/root.pem")))
+            .with_verification_time("2030-01-01T00:00:00");
+        (ctx, xml)
+    }
+
     /// An unrelated CA (Merlin) the inline chain does NOT terminate at.
     const WRONG_CA_PEM: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -5425,32 +5459,14 @@ mod tests {
     /// Several interop documents carry both forms. When trust anchors are
     /// configured and raw inline keys are disabled, the verifier should prefer
     /// `<X509Data>` rather than rejecting the earlier raw key immediately.
-    #[cfg(feature = "legacy-algorithms")]
     #[test]
     fn test_anchor_policy_prefers_x509data_over_earlier_raw_keyvalue() {
-        let mixed_keyinfo_xml = X509DATA_TEST_XML.replace(
-            "<KeyInfo>\n      <X509Data>",
-            &format!("<KeyInfo>\n      {UNRELATED_RSA_KEYVALUE_XML}\n      <X509Data>"),
+        let (ctx, mixed_keyinfo_xml) = anchored_inline_document(UNRELATED_RSA_KEYVALUE_XML);
+        let result = verify(&ctx, &mixed_keyinfo_xml).expect("verify should not error");
+        assert!(
+            result.is_valid(),
+            "anchored verification should use the later X509Data instead of the raw KeyValue"
         );
-        let ctx = permissive_ctx_with_anchor(Some(CACERT_PEM));
-        #[cfg(feature = "aws-lc")]
-        {
-            let error = verify(&ctx, &mixed_keyinfo_xml)
-                .expect_err("AWS-LC must reject the fixture's 512-bit intermediate RSA key");
-            let message = error.to_string();
-            assert!(
-                message.contains("512-bit RSA key") && message.contains("unsupported"),
-                "expected deterministic AWS-LC key-size rejection, got: {message}"
-            );
-        }
-        #[cfg(not(feature = "aws-lc"))]
-        {
-            let result = verify(&ctx, &mixed_keyinfo_xml).expect("verify should not error");
-            assert!(
-                result.is_valid(),
-                "anchored verification should use the later X509Data instead of the raw KeyValue"
-            );
-        }
     }
 
     /// Baseline: with NO trust anchors, the inline-certificate signature
@@ -5485,31 +5501,28 @@ mod tests {
         );
     }
 
-    /// Enforcement, positive side: with the CORRECT anchor configured, the
-    /// inline chain validates and the signature verifies. The certificates are
-    /// SHA-1 era, so chain validation only accepts them under the
-    /// `legacy-algorithms` policy; gate the assertion on that feature.
-    #[cfg(feature = "legacy-algorithms")]
+    /// Positive trust validation uses a chain supported by every provider.
     #[test]
     fn test_inline_x509_accepted_when_chain_reaches_anchor() {
+        let (ctx, xml) = anchored_inline_document("");
+        let result = verify(&ctx, &xml).expect("verify should not error");
+        assert!(
+            result.is_valid(),
+            "inline cert should verify when it chains to the configured anchor"
+        );
+    }
+
+    /// RSA 0.10 and AWS-LC both reject the legacy 512-bit intermediate.
+    #[cfg(feature = "legacy-algorithms")]
+    #[test]
+    fn test_inline_x509_rejects_512_bit_intermediate() {
         let ctx = permissive_ctx_with_anchor(Some(CACERT_PEM));
+        let error =
+            verify(&ctx, X509DATA_TEST_XML).expect_err("512-bit intermediate must be rejected");
+        let message = error.to_string();
         #[cfg(feature = "aws-lc")]
-        {
-            let error = verify(&ctx, X509DATA_TEST_XML)
-                .expect_err("AWS-LC must reject the fixture's 512-bit intermediate RSA key");
-            let message = error.to_string();
-            assert!(
-                message.contains("512-bit RSA key") && message.contains("unsupported"),
-                "expected deterministic AWS-LC key-size rejection, got: {message}"
-            );
-        }
-        #[cfg(not(feature = "aws-lc"))]
-        {
-            let result = verify(&ctx, X509DATA_TEST_XML).expect("verify should not error");
-            assert!(
-                result.is_valid(),
-                "inline cert should verify when it chains to the configured anchor"
-            );
-        }
+        assert!(message.contains("512-bit RSA key") && message.contains("unsupported"));
+        #[cfg(feature = "rustcrypto")]
+        assert!(message.contains("RSA SPKI import failed"), "{message}");
     }
 }
