@@ -10,8 +10,10 @@
 //! Save:   cargo bench -p bergshamra-c14n -- --save-baseline main
 //! Compare cargo bench -p bergshamra-c14n -- --baseline main
 
+use std::hint::black_box;
+
 use bergshamra_c14n::{escape, exclusive, inclusive};
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 
 const NO_PREFIXES: &[&str] = &[];
 

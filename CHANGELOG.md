@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.11.2 [2026-11-09]
+
+### Changed
+
+- Updated Uppsala to 0.12.1, ML-DSA to 0.1.2, and tsp-ltv to 0.6.1.
+- Updated Base64 to 0.23, Yasna to 0.6, num-bigint-dig to 0.9,
+  pem-rfc7468 to 1.0, and Criterion to 0.8. Benchmarks now use
+  `std::hint::black_box`.
+- Refreshed compatible transitive dependencies while retaining Rust 1.88.
+  Remaining crypto and certificate migration constraints are documented in
+  [the dependency ecosystem status](docs/ecosystem.md).
+- Corrected the encryption test recipe's expected total to account for the
+  existing, documented DH-1024 fixture skip.
+
 ## 0.11.1 [2026-10-28]
 
 ### Security

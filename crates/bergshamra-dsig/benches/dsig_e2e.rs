@@ -16,11 +16,13 @@
 //! Save:   cargo bench -p bergshamra-dsig --bench dsig_e2e -- --save-baseline main
 //! Compare cargo bench -p bergshamra-dsig --bench dsig_e2e -- --baseline main
 
+use std::hint::black_box;
+
 use bergshamra_dsig::context::DsigContext;
 use bergshamra_dsig::sign::{sign_enveloped_document, EnvelopedSignatureOptions};
 use bergshamra_dsig::verify;
 use bergshamra_keys::{Key, KeyData, KeyUsage, KeysManager};
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 
 /// SAML-shaped, namespace-heavy document with nested signed-assertion
 /// structure: the realistic production case for this library.

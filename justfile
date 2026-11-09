@@ -7,7 +7,7 @@ _default:
 shim := justfile_directory() / "tests/xmlsec1-shim.py"
 topfolder := justfile_directory() / "test-data"
 dsig_expected := "--- TOTAL OK: 447; OK (percent): 99; TOTAL FAILED: 0; TOTAL SKIPPED: 3"
-enc_expected := "--- TOTAL OK: 701; OK (percent): 100; TOTAL FAILED: 0; TOTAL SKIPPED: 0"
+enc_expected := "--- TOTAL OK: 700; OK (percent): 99; TOTAL FAILED: 0; TOTAL SKIPPED: 1"
 
 # Build
 build:

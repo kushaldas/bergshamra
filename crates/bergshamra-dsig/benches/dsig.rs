@@ -18,12 +18,14 @@
 //! Save:   cargo bench -p bergshamra-dsig --bench dsig -- --save-baseline before
 //! Compare cargo bench -p bergshamra-dsig --bench dsig -- --baseline before
 
+use std::hint::black_box;
+
 use bergshamra_core::algorithm;
 use bergshamra_dsig::context::DsigContext;
 use bergshamra_dsig::sign::{sign, sign_enveloped_document, EnvelopedSignatureOptions};
 use bergshamra_dsig::verify::{verify, verify_document};
 use bergshamra_keys::KeysManager;
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use uppsala::Document;
 
 /// A fixed RSA-2048 private key in PKCS#8 PEM form.
