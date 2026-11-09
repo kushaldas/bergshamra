@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.12.0 [2026-11-09]
+
+### Security
+
+- Updated RSA to 0.10.0 and Kryptering to 0.7.1, removing the vulnerable
+  RSA 0.9 implementation (RUSTSEC-2023-0071). Updated PKCS#1 to 0.8 and
+  migrated RSA key imports, exports, and test/benchmark RNGs to the new APIs.
+- Removed both cargo-audit exceptions. The resolved rand 0.8.8 and 0.9.5
+  versions already include the fix for RUSTSEC-2026-0097.
+  `cargo audit --deny warnings` now passes with no ignored advisories.
+
+### Changed
+
+- **Breaking:** RSA keys below 1024 bits are now rejected by the
+  RustCrypto provider, including with `legacy-algorithms`. The XMLSEC runner
+  records 83 affected verification phases using historical 512-bit RSA
+  certificates as explicit skips. Signature creation and negative tests
+  remain active; positive trust-chain tests use RSA-2048/SHA-256 fixtures
+  with both providers.
+- Preserved minimal unsigned RSA modulus/exponent encoding in XML
+  `KeyValue` output and legacy encrypted PKCS#8 key loading.
+- Bumped all workspace crates and internal dependency requirements to 0.12.0.
+
 ## 0.11.2 [2026-11-09]
 
 ### Changed

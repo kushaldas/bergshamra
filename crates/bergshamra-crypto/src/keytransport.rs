@@ -232,9 +232,9 @@ mod tests {
     #[test]
     fn rsa_oaep_sha256_round_trip_uses_selected_provider() {
         use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
-        let mut rng = rand::rngs::OsRng;
-        let private = rsa::RsaPrivateKey::new(&mut rng, 2048).unwrap();
-        let public = rsa::RsaPublicKey::from(&private);
+        let mut rng = getrandom::SysRng;
+        let private = rsa::PrivateKey::new(&mut rng, 2048).unwrap();
+        let public = rsa::PublicKey::from(&private);
         let private_der = private.to_pkcs8_der().unwrap();
         let public_der = public.to_public_key_der().unwrap();
         let private = kryptering::SoftwareKey::from_pkcs8_der(
@@ -267,9 +267,9 @@ mod tests {
     #[test]
     fn rsa_pkcs1_round_trip_uses_selected_provider() {
         use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
-        let mut rng = rand::rngs::OsRng;
-        let private = rsa::RsaPrivateKey::new(&mut rng, 2048).unwrap();
-        let public = rsa::RsaPublicKey::from(&private);
+        let mut rng = getrandom::SysRng;
+        let private = rsa::PrivateKey::new(&mut rng, 2048).unwrap();
+        let public = rsa::PublicKey::from(&private);
         let private_der = private.to_pkcs8_der().unwrap();
         let public_der = public.to_public_key_der().unwrap();
         let private = kryptering::SoftwareKey::from_pkcs8_der(

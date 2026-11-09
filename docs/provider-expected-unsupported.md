@@ -1,16 +1,17 @@
 # Provider-specific expected unsupported cases
 
 The XMLSEC compatibility gate runs only against Bergshamra's default
-RustCrypto configuration and requires the full established pass totals.
+RustCrypto configuration and requires exact documented pass and skip totals.
 Alternate-provider limits listed here are covered by focused capability and
 policy tests; they are not accepted as XMLSEC test failures.
 
 | Provider | Fixture / operation | Reason |
 |---|---|---|
 | All providers | GOST 2001 signature transform fixtures (three DSig cases) | GOST is not part of Kryptering's algorithm contract. The upstream harness records these three cases as explicit skips. |
+| RustCrypto | RSA keys and certificate-chain intermediates below 1024 bits | RSA 0.10 enforces a minimum 1024-bit modulus on DER/PEM import, including the historical 512-bit XMLSEC intermediate and RSA-MD5 signer. The runner records 83 affected verification phases as explicit skips after checking their expected rejection; creation phases and negative tests still run. Positive trust-chain tests use RSA-2048/SHA-256 rollover fixtures. |
 | AWS-LC | ML-DSA and SLH-DSA signature fixture families | The alternate adapter intentionally uses stable provider APIs and never falls back to RustCrypto. Stable AWS-LC APIs do not expose these signatures. |
 | AWS-LC | X9.42 finite-field DH three-step encryption fixture | The modern alternate-provider baseline covers P-256/P-384/P-521 ECDH and X25519. The AWS-LC adapter does not import the X9.42 key OID; the operation fails before key use. |
-| AWS-LC | Historical RSA keys and chains below 2048 bits, including 512- and 1024-bit signedxml/XMLSEC fixtures | Kryptering's AWS-LC adapter requires RSA keys to be at least 2048 bits. RustCrypto retains legacy-key interoperability, while the AWS-LC XML signature and trust-policy paths remain covered with supported RSA sizes. |
+| AWS-LC | Historical RSA keys and chains below 2048 bits, including 512- and 1024-bit signedxml/XMLSEC fixtures | Kryptering's AWS-LC adapter requires RSA keys to be at least 2048 bits. RustCrypto accepts RSA keys from 1024 bits, while the AWS-LC XML signature and trust-policy paths remain covered with supported RSA sizes. |
 | AWS-LC | DSA signature and DSA `KeyValue` fixture families | Stable AWS-LC APIs do not expose DSA key import, signing, or verification. |
 | AWS-LC | MD5, RIPEMD160, and SHA3-224 digest-dependent fixtures | These digests are absent from the stable AWS-LC digest surface used by the adapter. SHA-2 and the remaining tested stable digest mappings are covered independently. |
 | AWS-LC | Non-stable RSA PKCS#1/PSS and ECDSA curve/hash combinations | Only the exact curve/hash and RSA/digest combinations exposed by stable aws-lc-rs are advertised. This includes rejecting legacy signing combinations, SHA-224/SHA-3 RSA variants, and non-exposed ECDSA pairs before key use. |

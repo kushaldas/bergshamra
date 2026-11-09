@@ -4,7 +4,7 @@ XML Security library implementing the W3C XML Digital Signatures
 (XML-DSig), XML Encryption (XML-Enc), and XML Canonicalization (C14N)
 specifications. Document cryptography is selectable between RustCrypto and
 AWS-LC through Kryptering; XML parsing uses
-[Uppsala](https://crates.io/crates/uppsala) 0.12.1. Bergshamra 0.11.2 is
+[Uppsala](https://crates.io/crates/uppsala) 0.12.1. Bergshamra 0.12.0 is
 released on November 9, 2026, and requires Rust 1.88.
 
 ## Features
@@ -84,14 +84,22 @@ the W3C, Merlin, Aleksey, IAIK, NIST, and Phaos interop suites.
 | Suite | Passed | Failed | Skipped |
 |-------|--------|--------|---------|
 | Enc   | 700    | 0      | 1       |
-| DSig  | 447    | 0      | 3       |
-| **Total** | **1147** | **0** | **4** |
+| DSig  | 364    | 0      | 86      |
+| **Total** | **1064** | **0** | **87** |
 
-The three skipped DSig cases are GOST signature transform fixtures (GOST R
+Three skipped DSig cases are GOST signature transform fixtures (GOST R
 34.10-2001, GOST R 34.10-2012-256, GOST R 34.10-2012-512) which require special
 OS cryptographic libraries not available in the RustCrypto ecosystem, thus
 outside Kryptering's algorithm contract. Alternate providers use focused
 capability and policy tests rather than this XMLSEC compatibility gate.
+
+The other 83 skipped DSig phases use historical 512-bit RSA certificates
+(the `ca2cert` intermediate or the RSA-MD5 fixture's signer). RSA 0.10 rejects
+RSA keys below 1024 bits, including with `legacy-algorithms`. The runner
+executes those verification commands and records only their known key-import
+failures as skips; signature creation and negative tests still run. Positive
+certificate-chain tests use RSA-2048/SHA-256 rollover fixtures with both
+providers. See [dependency status](docs/ecosystem.md).
 
 The skipped Enc case is existing-document decryption of the
 `xmlenc11-interop-2012` DH-1024 fixture. Its subgroup order `q` is even and

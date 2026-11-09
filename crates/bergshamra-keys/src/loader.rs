@@ -4,20 +4,19 @@
 
 use crate::key::{InternalKeyData as KeyData, Key, KeyUsage};
 use bergshamra_core::Error;
-// The EC curves are on the RustCrypto 0.14 line and implement the pkcs8 0.11
-// / spki 0.8 decoding traits, while RSA and DSA still implement the pkcs8 0.10
-// / spki 0.7 ones imported where they are used. Keep the 0.11 traits in scope
+// RSA 0.10 and the EC 0.14 curves implement pkcs8 0.11 / spki 0.8
+// decoding traits. DSA still implements pkcs8 0.10 / spki 0.7, imported
+// where used. Keep the 0.11 traits in scope
 // anonymously so each call resolves to the version its type implements.
 use p256::pkcs8::{DecodePrivateKey as _, DecodePublicKey as _};
 
 /// Load an RSA private key from PEM data.
 pub fn load_rsa_private_pem(pem_data: &[u8]) -> Result<Key, Error> {
-    use pkcs8::DecodePrivateKey;
     let pem_str = std::str::from_utf8(pem_data)
         .map_err(|e| Error::Key(format!("invalid PEM encoding: {e}")))?;
 
     // Try PKCS#8 first
-    if let Ok(pk) = rsa::RsaPrivateKey::from_pkcs8_pem(pem_str) {
+    if let Ok(pk) = rsa::PrivateKey::from_pkcs8_pem(pem_str) {
         let public = pk.to_public_key();
         return Ok(Key::new(
             KeyData::Rsa {
@@ -30,7 +29,7 @@ pub fn load_rsa_private_pem(pem_data: &[u8]) -> Result<Key, Error> {
 
     // Try PKCS#1
     use pkcs1::DecodeRsaPrivateKey;
-    let pk = rsa::RsaPrivateKey::from_pkcs1_pem(pem_str)
+    let pk = rsa::PrivateKey::from_pkcs1_pem(pem_str)
         .map_err(|e| Error::Key(format!("failed to parse RSA private key PEM: {e}")))?;
     let public = pk.to_public_key();
     Ok(Key::new(
@@ -44,12 +43,11 @@ pub fn load_rsa_private_pem(pem_data: &[u8]) -> Result<Key, Error> {
 
 /// Load an RSA public key from PEM data.
 pub fn load_rsa_public_pem(pem_data: &[u8]) -> Result<Key, Error> {
-    use pkcs8::DecodePublicKey;
     let pem_str = std::str::from_utf8(pem_data)
         .map_err(|e| Error::Key(format!("invalid PEM encoding: {e}")))?;
 
     // Try SPKI first
-    if let Ok(pk) = rsa::RsaPublicKey::from_public_key_pem(pem_str) {
+    if let Ok(pk) = rsa::PublicKey::from_public_key_pem(pem_str) {
         return Ok(Key::new(
             KeyData::Rsa {
                 private: None,
@@ -61,7 +59,7 @@ pub fn load_rsa_public_pem(pem_data: &[u8]) -> Result<Key, Error> {
 
     // Try PKCS#1
     use pkcs1::DecodeRsaPublicKey;
-    let pk = rsa::RsaPublicKey::from_pkcs1_pem(pem_str)
+    let pk = rsa::PublicKey::from_pkcs1_pem(pem_str)
         .map_err(|e| Error::Key(format!("failed to parse RSA public key PEM: {e}")))?;
     Ok(Key::new(
         KeyData::Rsa {
@@ -157,10 +155,8 @@ pub fn load_des3_key(data: &[u8]) -> Result<Key, Error> {
 ///
 /// Tries RSA, then EC P-256, P-384, P-521 in order.
 fn load_private_key_pkcs8_der(der: &[u8]) -> Result<Key, Error> {
-    use pkcs8::DecodePrivateKey;
-
     // Try RSA
-    if let Ok(pk) = rsa::RsaPrivateKey::from_pkcs8_der(der) {
+    if let Ok(pk) = rsa::PrivateKey::from_pkcs8_der(der) {
         let public = pk.to_public_key();
         return Ok(Key::new(
             KeyData::Rsa {
@@ -261,28 +257,11 @@ pub fn load_pkcs12(data: &[u8], password: &str) -> Result<Key, Error> {
 
 /// Load a private key from encrypted PEM (PKCS#8 ENCRYPTED PRIVATE KEY).
 ///
-/// Tries RSA first, then decrypts once and parses the plaintext PKCS#8
-/// (EC P-256/P-384/P-521, DSA and other key types).
+/// Decrypts once and parses the plaintext PKCS#8
+/// (RSA, EC P-256/P-384/P-521, DSA and other key types).
 fn load_encrypted_pem(pem_data: &[u8], password: &str) -> Result<Key, Error> {
-    use pkcs8::DecodePrivateKey;
-    let pem_str = std::str::from_utf8(pem_data)
-        .map_err(|e| Error::Key(format!("invalid PEM encoding: {e}")))?;
-
-    // Try RSA
-    if let Ok(pk) = rsa::RsaPrivateKey::from_pkcs8_encrypted_pem(pem_str, password) {
-        let public = pk.to_public_key();
-        return Ok(Key::new(
-            KeyData::Rsa {
-                private: Some(pk),
-                public,
-            },
-            KeyUsage::Any,
-        ));
-    }
-
-    // Generic path: decrypt with pkcs8 0.10, then parse the plaintext PKCS#8
-    // DER (EC P-256/P-384/P-521, DSA and others). The EC curves are on the
-    // pkcs8 0.11 line, so they cannot use `from_pkcs8_encrypted_pem` from 0.10.
+    // Decrypt with pkcs8 0.10 to retain legacy PBES2 support, then parse
+    // plaintext DER with each algorithm's own PKCS#8 traits.
     {
         if let Ok((_label, der_bytes)) = pem_rfc7468::decode_vec(pem_data) {
             use pkcs8::der::Decode;
@@ -425,7 +404,7 @@ pub fn load_key_file_with_password(
 
     // Try RSA PKCS#1 DER
     use pkcs1::DecodeRsaPrivateKey;
-    if let Ok(pk) = rsa::RsaPrivateKey::from_pkcs1_der(&data) {
+    if let Ok(pk) = rsa::PrivateKey::from_pkcs1_der(&data) {
         let public = pk.to_public_key();
         return Ok(Key::new(
             KeyData::Rsa {
@@ -468,8 +447,7 @@ pub fn load_x509_cert_der(data: &[u8]) -> Result<Key, Error> {
         .map_err(|e| Error::Key(format!("failed to encode SPKI: {e}")))?;
 
     // Try RSA
-    use spki::DecodePublicKey;
-    if let Ok(pk) = rsa::RsaPublicKey::from_public_key_der(&spki_der) {
+    if let Ok(pk) = rsa::PublicKey::from_public_key_der(&spki_der) {
         let mut key = Key::new(
             KeyData::Rsa {
                 private: None,
@@ -564,10 +542,8 @@ pub fn load_x509_cert_der(data: &[u8]) -> Result<Key, Error> {
 
 /// Load a key from raw SubjectPublicKeyInfo DER bytes.
 pub fn load_spki_der(spki_der: &[u8]) -> Result<Key, Error> {
-    use spki::DecodePublicKey;
-
     // Try RSA
-    if let Ok(pk) = rsa::RsaPublicKey::from_public_key_der(spki_der) {
+    if let Ok(pk) = rsa::PublicKey::from_public_key_der(spki_der) {
         return Ok(Key::new(
             KeyData::Rsa {
                 private: None,
@@ -1203,6 +1179,31 @@ pub fn try_load_pq_public_key(_spki_der: &[u8]) -> Option<Key> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RSA 0.10 stores integers at limb precision; CryptoBinary must strip
+    /// that padding, especially for the usual three-byte exponent 65537.
+    #[test]
+    fn test_rsa_key_value_minimal_integers() {
+        use base64::Engine;
+        let key = load_rsa_private_pem(include_bytes!(
+            "../../../test-data/keys/rsa/rsa-2048-key.pem"
+        ))
+        .expect("load RSA fixture");
+        let xml = key.to_key_value_xml("ds").expect("RSA KeyValue");
+        assert!(xml.contains("<ds:Exponent>AQAB</ds:Exponent>"));
+        let modulus = xml
+            .split_once("<ds:Modulus>")
+            .unwrap()
+            .1
+            .split_once("</ds:Modulus>")
+            .unwrap()
+            .0;
+        let modulus = base64::engine::general_purpose::STANDARD
+            .decode(modulus)
+            .expect("base64 modulus");
+        assert_eq!(modulus.len(), 256);
+        assert_ne!(modulus[0], 0);
+    }
 
     #[test]
     fn test_load_encrypted_pem_rsa() {

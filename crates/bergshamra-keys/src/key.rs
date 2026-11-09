@@ -25,9 +25,9 @@ pub(crate) enum KeyMaterial {
     /// RSA key pair or public key.
     Rsa {
         /// Private RSA key, present when signing or decryption is supported.
-        private: Option<rsa::RsaPrivateKey>,
+        private: Option<rsa::PrivateKey>,
         /// Public RSA key.
-        public: rsa::RsaPublicKey,
+        public: rsa::PublicKey,
     },
     /// ECDSA P-256 key pair or public key.
     EcP256 {
@@ -228,10 +228,8 @@ impl KeyMaterial {
 
     /// Encode the public key as SPKI DER bytes. Returns `None` for symmetric keys.
     pub fn to_spki_der(&self) -> Option<Vec<u8>> {
-        // RSA keys implement the spki 0.7 trait; the EC curves (0.14 line)
-        // implement the spki 0.8 trait re-exported by p256.
+        // RSA and EC keys implement spki 0.8, re-exported by p256.
         use p256::pkcs8::EncodePublicKey as _;
-        use spki::EncodePublicKey;
         match self {
             Self::Rsa { public, .. } => public.to_public_key_der().ok().map(|d| d.to_vec()),
             Self::EcP256 { public, .. } => {
@@ -278,8 +276,11 @@ impl KeyMaterial {
         match self {
             Self::Rsa { public, .. } => {
                 use rsa::traits::PublicKeyParts;
-                let modulus_b64 = engine.encode(public.n().to_bytes_be());
-                let exponent_b64 = engine.encode(public.e().to_bytes_be());
+                // XML CryptoBinary requires unsigned integers without leading
+                // zero octets. These are public components, so variable time
+                // trimming is safe.
+                let modulus_b64 = engine.encode(public.n().to_be_bytes_trimmed_vartime());
+                let exponent_b64 = engine.encode(public.e().to_be_bytes_trimmed_vartime());
                 let mut w = XmlWriter::new();
                 let tag = pname(ns::node::RSA_KEY_VALUE);
                 let mod_tag = pname(ns::node::RSA_MODULUS);
@@ -688,8 +689,8 @@ impl Key {
         if let Some(key) = self.data.cached_software_key() {
             return Ok(Some(key));
         }
-        // RSA and DSA keys implement the pkcs8 0.10 traits; the EC curves
-        // (0.14 line) implement the pkcs8 0.11 traits re-exported by p256.
+        // DSA keys implement the pkcs8 0.10 traits; RSA 0.10 and the EC
+        // curves implement the pkcs8 0.11 traits re-exported by p256.
         use p256::pkcs8::{EncodePrivateKey as _, EncodePublicKey as _};
         use pkcs8::{EncodePrivateKey, EncodePublicKey};
 

@@ -18,7 +18,7 @@ Last reviewed: 2026-11-09. The workspace continues to require Rust 1.88.
 The new major versions above do not exchange crypto traits with the retained
 RSA/DSA stack. Bergshamra uses num-bigint-dig for its own finite-field DH
 validation and derivation, exchanging byte arrays with the crypto provider.
-RSA/DSA still bring num-bigint-dig 0.8 transitively; 0.9 adds its own rand 0.9
+DSA still brings num-bigint-dig 0.8 transitively; 0.9 adds its own rand 0.9
 dependency. Upstream dependencies still use base64 0.22. These duplicates are
 expected. Criterion's deprecated `black_box` re-export was replaced with
 `std::hint::black_box` in all three benchmarks.
@@ -55,107 +55,110 @@ web-sys            0.3.106 -> 0.3.107
 The wasm-bindgen macro, macro-support, and shared crates moved to 0.2.130 too.
 ML-DSA 0.1.2 now also brings sha3 0.12; Kryptering retains sha3 0.11 internally.
 
+## RSA 0.10 migration
+
+Kryptering 0.7.1 replaces its exact RSA prerelease pin with `rsa = "0.10"`.
+The workspace now requires Kryptering >= 0.7.1, RSA 0.10 and PKCS#1 0.8.
+`cargo update` moved Kryptering 0.7.0 -> 0.7.1 and RSA 0.10.0-rc.19 -> 0.10.0;
+the direct upgrade also removed RSA 0.9.10 and PKCS#1 0.7.5 from Cargo.lock.
+There is now one RSA implementation in the lockfile.
+
+RSA imports and exports use PKCS#8 0.11 / SPKI 0.8 traits alongside the EC
+curves. Encrypted PEM is decrypted once using the existing PKCS#8 0.10
+legacy PBES2 support, then parsed using each algorithm's decoding traits.
+RSA public components now use crypto-bigint's trimmed big-endian encoding to
+preserve XML CryptoBinary's minimal unsigned encoding (including `AQAB` for
+exponent 65537). A regression test covers this representation change.
+RSA 0.10 also enforces a minimum 1024-bit RSA key on import, so the old
+512-bit XMLSEC intermediate is rejected. Positive trust-chain unit tests now
+use the existing RSA-2048/SHA-256 rollover fixtures with both providers; a
+separate test checks rejection of the old chain.
+
+RSA test/benchmark key generation now uses `getrandom::SysRng`, matching
+RSA 0.10's rand_core 0.10 traits.
+
+### Audit status
+
+Both advisory exceptions were removed from `.cargo/audit.toml`:
+
+- [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071.html):
+  patched by RSA >= 0.10.0. No affected RSA version remains.
+- [RUSTSEC-2026-0097](https://rustsec.org/advisories/RUSTSEC-2026-0097.html):
+  fixed in rand >= 0.8.6 on the 0.8 line and >= 0.9.3 on the 0.9 line.
+  The lockfile already contains patched rand 0.8.8 and 0.9.5; migrating all
+  rand consumers to 0.10 is not necessary to resolve this advisory.
+
+`cargo audit --deny warnings` passes without ignored advisories against
+RustSec database commit `899077d9d471b9fd3dbf4b2faea8ef26e83692e8`
+(2026-11-09; 1,429 advisories). This describes the resolved lockfile;
+downstream applications should update and audit their own lockfiles too.
+
 ## Retained crypto versions
 
-Registry releases were checked directly through the crates.io API as well as
-with `cargo outdated --workspace --depth 1`. The latter currently misses most
-incompatible upgrades in this workspace, misreports the `pkcs8-pq` alias, and
-panics with `--aggressive --features 'rustcrypto legacy-algorithms post-quantum pkcs11'`.
-Its final ordinary report contains only pkcs8 0.10.2 versus 0.11.0 (and the
-alias artefact); that does not mean the other versions below are current.
+`cargo outdated --depth 1` still only reports PKCS#8 0.10.2 versus 0.11.0 and
+misreports the `pkcs8-pq` alias. Registry manifests provide the coupling map:
 
-| Dependency | Current locked version | Latest stable | Reason retained |
-| --- | --- | --- | --- |
-| rsa | 0.9.10 | 0.10.0 | Kryptering's exact prerelease constraint blocks stable 0.10 |
-| dsa | 0.6.3 | 0.7.0 | Keep the RSA/DSA import stack on matching PKCS#8 and signature traits |
-| ed25519-dalek | 2.2.0 | 3.0.0 | Same signature/rand_core migration |
-| x25519-dalek | 2.0.1 | 3.0.0 | Same rand_core migration |
-| rand | 0.8.8 | 0.10.3 | RSA 0.9 and X25519 2 need rand_core 0.6 RNGs |
-| signature | 2.2.0 | 3.0.0 | RSA 0.9 and DSA 0.6 require signature 2 |
-| pkcs1 | 0.7.5 | 0.8.0 | RSA 0.9 implements the 0.7 decoding traits |
-| pkcs8 | 0.10.2 | 0.11.0 | RSA/DSA key imports implement the 0.10 traits |
-| der | 0.7.10 | 0.8.3 | Shared certificate types with tsp-ltv |
-| spki | 0.7.3 | 0.8.1 | Shared certificate types and old RSA/DSA decoding traits |
-| x509-cert | 0.2.5 | 0.3.0 | tsp-ltv exchanges x509-cert 0.2 certificates directly |
-| aes (transitive) | 0.9.2 | 0.9.4 | Latest requires Rust 1.89 |
+| Consumer | Verified requirements | Reason retained |
+| --- | --- | --- |
+| rsa 0.10.0 | digest 0.11, rand_core 0.10, signature 3, pkcs1 0.8, pkcs8 0.11, spki 0.8 | Upgraded with its import/export and RNG call sites |
+| kryptering 0.7.1 | rsa 0.10, digest 0.11, signature 3 | Accepts stable RSA |
+| dsa 0.6.3 | digest 0.10, signature 2, pkcs8 0.10, num-bigint-dig 0.8 | Separate byte-serialized import stack; no shared RSA crypto traits |
+| ed25519-dalek 2.2.0 | rand_core 0.6, signature 2, sha2 0.10 | Separate byte-serialized import stack |
+| x25519-dalek 2.0.1 | rand_core 0.6 | Existing test RNGs remain compatible with rand 0.8 |
+| tsp-ltv 0.6.1 | der 0.7, spki 0.7, x509-cert 0.2 | Exchanges certificate types directly with Bergshamra |
+| pkcs8 0.10.2 | der 0.7, spki 0.7 | Legacy PBES2 decrypt support and DSA decoding |
+| aes 0.9.2 (transitive) | Latest 0.9.4 requires Rust 1.89 | Preserve workspace Rust 1.88 MSRV |
 
-The workspace already uses the newer EC, cipher, and PQ stacks. Its `pkcs8-pq`
-alias correctly resolves to pkcs8 0.11.0 and must not be downgraded to 0.10.
-Separate old/new trait stacks are intentional at the byte-serialization boundary.
-Direct PEM decoding can use pem-rfc7468 1.0 independently because it exchanges
-only labels and byte vectors with the DER parsers; errors are mapped to
-Bergshamra errors. Its `alloc` feature is enabled explicitly so standalone
-AWS-LC builds also have `decode_vec`, without depending on RustCrypto feature
-unification. The old DER stack still depends on pem-rfc7468 0.7 internally.
+The RSA trait migration is complete at all RSA call sites. Other algorithms
+exchange byte arrays/DER with Kryptering and do not need to move together with
+RSA. In particular, keeping DSA and Ed25519 on their existing stack avoids
+unrelated source changes without retaining affected RSA or rand versions.
+A future DSA/Ed25519 migration must move their signature, digest and RNG
+consumers together. A tsp-ltv release adopting x509-cert 0.3 / der 0.8 /
+spki 0.8 is still required before migrating shared certificate types.
 
-### Verified upstream constraints
+The optional `pkcs8-pq` alias resolves to PKCS#8 0.11 and also supplies the PQ
+import stack. Direct pem-rfc7468 1.0 exchanges only labels and byte vectors;
+the older DER stack still brings pem-rfc7468 0.7 internally.
+Unused historical primitive declarations in the root manifest do not determine
+resolved primitive versions; Kryptering owns those dependencies.
 
-These are version requirements read from the downloaded registry manifests:
+## Verification of the RSA migration
 
-| Consumer | Requirements |
-| --- | --- |
-| kryptering 0.7.0 | `rsa = "=0.10.0-rc.19"`, `digest = "0.11"`, `signature = "3"` |
-| rsa 0.9.10 | `digest = "0.10.5"`, `rand_core = "0.6.4"`, `signature = ">2.0, <2.3"`, `pkcs1 = "0.7.5"`, `pkcs8 = "0.10.2"`, `spki = "0.7.3"` |
-| dsa 0.6.3 | `digest = "0.10"`, `signature = "2.0, <2.3"`, `pkcs8 = "0.10"` |
-| ed25519-dalek 2.2.0 | `rand_core = "0.6.4"`, `signature = ">=2.0, <2.3"`, `sha2 = "0.10"` |
-| x25519-dalek 2.0.1 | `rand_core = "0.6"` |
-| tsp-ltv 0.6.1 | `der = "0.7"`, `spki = "0.7"`, `pem-rfc7468 = "0.7"`, `x509-cert = "0.2"` |
-| pkcs8 0.10.2 | `der = "0.7"`, `spki = "0.7.1"` |
-
-A coordinated probe changed RSA to 0.10 along with DSA, Ed25519, X25519,
-signature, rand, and PKCS#1. `cargo update` failed before compilation:
-
-```text
-failed to select a version for `rsa`
-kryptering v0.7.0 requires =0.10.0-rc.19
-previously selected package rsa v0.10.0
-```
-
-All probe manifest changes were reverted. A new Kryptering release accepting
-stable RSA 0.10 is required before migrating the remaining import/RNG stack as
-a group. A tsp-ltv release adopting x509-cert 0.3 / der 0.8 / spki 0.8 is
-required before migrating the shared certificate stack. Neither migration
-should be attempted by upgrading individual trait crates in isolation.
-
-The root manifest also contains unused historical primitive declarations
-(`sha1`, `sha2`, `sha3`, `md-5`, `ripemd`, `hmac`, `digest`, `hkdf`, `pkcs5`,
-`pbkdf2`, and others). They are not inherited by workspace members and do not
-determine the resolved primitive versions; Kryptering owns those dependencies.
-They were left unchanged rather than presenting unused declaration edits as
-runtime upgrades.
-
-## Verification
-
-Provider checks use separate feature sets: this workspace deliberately rejects
+Provider checks use separate feature sets: the workspace deliberately rejects
 `--all-features`. Completed checks:
 
-- `cargo build --locked --workspace` passed.
-- `cargo +1.88.0 check --locked --workspace` passed.
-- `cargo test --locked --workspace --lib`: 216 passed.
-- `cargo test --locked -p bergshamra-dsig --test trusted_key_set`: 17 passed.
-- The corresponding AWS-LC commands with
-  `--no-default-features --features aws-lc,legacy-algorithms,pkcs11`:
-  187 unit tests and 17 trusted-key tests passed.
+- `cargo test --locked --workspace --lib`: 218 passed.
+- AWS-LC equivalent (`--no-default-features --features
+  aws-lc,legacy-algorithms,pkcs11`): 188 passed.
+- `cargo test --locked -p bergshamra-dsig --test trusted_key_set`: 17 passed
+  with each provider.
 - `cargo clippy --locked --workspace --all-targets -- -D warnings` passed
-  for both the default and AWS-LC feature sets, including all benchmarks.
+  for both the default and AWS-LC feature sets.
+- `cargo +1.88.0 check --locked --workspace` passed.
 - `cargo fmt --all -- --check` and `git diff --check` passed.
-- `cargo audit --deny warnings` passed using the existing `.cargo/audit.toml`
-  exceptions. No advisory exceptions were added or broadened; their comments
-  now reflect the current release constraints.
+- `cargo audit --deny warnings --json`: zero vulnerabilities, zero warnings,
+  empty ignore list, 303 resolved packages.
 
 - `cargo build --locked --release` passed.
-- The complete xmlsec signature suite: 447 passed, zero failures, three skips.
-- The complete xmlsec encryption suite: 700 passed, zero failures, one skip.
-  Its DH-1024 fixture is explicitly skipped by the existing runner because of
-  its composite subgroup order, as documented in the README. The justfile's
-  stale 701/0/0 expectation was corrected to 700/0/1 and both expected totals
-  were checked against the complete run logs.
+- XMLSEC encryption: 700 passed, zero failures, one existing DH fixture skip.
 
-FIPS and hardware-backed PKCS#11 execution were not exercised in this update.
+The initial XMLSEC DSig run reported 83 failures caused by the newly rejected
+512-bit certificates (82 import failures and one RSA-MD5 fixture whose signer
+is 512 bits). The runner now executes those verification commands and records
+only the known rejections, with the exact legacy CA parameters, as skips.
+Signature creation and negative verification phases remain active. The
+RSA-MD5 existing-signature exception is restricted to that single fixture.
+The completed DSig run reports 364 passed, zero failures, 86 skipped (83 RSA
+and three existing GOST cases). README, justfile and the CI gate use these totals.
+Positive chain-validation unit tests and rollover integration tests continue
+to run against supported RSA-2048 fixtures with each provider.
+
+FIPS and hardware-backed PKCS#11 execution were not exercised.
 
 ## Re-evaluation
 
 Run `cargo update --dry-run --verbose` for in-range and MSRV constraints, then
 `cargo outdated --workspace --depth 1`. Cross-check incompatible releases with
 the crates.io API because of the tool limitations above. Inspect the updated
-Kryptering and tsp-ltv manifests before probing either remaining migration.
+Kryptering and tsp-ltv manifests before probing further trait migrations.
