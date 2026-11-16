@@ -11,7 +11,8 @@
 //! 6. Verify `<SignatureValue>`
 
 use crate::context::{
-    local_reference_relative_path, read_existing_relative_file, url_map_matches, DsigContext,
+    local_reference_relative_path, read_existing_relative_file_with_limit, read_reference_file,
+    url_map_matches, DsigContext,
 };
 use bergshamra_c14n::C14nMode;
 use bergshamra_core::{algorithm, ns, Error};
@@ -20,6 +21,13 @@ use bergshamra_xml::nodeset::NodeSet;
 use bergshamra_xml::xpath;
 use std::collections::HashMap;
 use uppsala::{Document, NodeId, NodeKind, XmlWriter};
+
+mod manifest;
+
+pub use manifest::{
+    verify_document_with_manifests, verify_with_manifests, ManifestLimits,
+    ManifestVerificationResult, VerifiedManifest,
+};
 
 /// Metadata about a single verified `<Reference>`.
 ///
@@ -283,6 +291,17 @@ fn verify_signature_node(
     sig_node: NodeId,
     id_map: &std::collections::HashMap<String, NodeId>,
 ) -> Result<VerifyResult, Error> {
+    verify_signature_node_with_limit(ctx, doc, xml, sig_node, id_map, None)
+}
+
+fn verify_signature_node_with_limit(
+    ctx: &DsigContext,
+    doc: &Document<'_>,
+    xml: Option<&str>,
+    sig_node: NodeId,
+    id_map: &std::collections::HashMap<String, NodeId>,
+    max_reference_bytes: Option<usize>,
+) -> Result<VerifyResult, Error> {
     // Find <SignedInfo>
     let signed_info = find_child_element(doc, sig_node, ns::DSIG, ns::node::SIGNED_INFO)
         .ok_or_else(|| Error::MissingElement("SignedInfo".into()))?;
@@ -387,16 +406,29 @@ fn verify_signature_node(
     let references = find_child_elements(doc, signed_info, ns::DSIG, ns::node::REFERENCE);
     let mut verified_refs = Vec::with_capacity(references.len());
     for reference in &references {
-        let (mismatch, vref) = verify_reference(
-            *reference,
-            doc,
-            id_map,
-            xml,
-            sig_node,
-            &ctx.url_maps,
-            ctx.debug,
-            ctx.base_dir.as_deref(),
-        )?;
+        let (mismatch, vref) = match max_reference_bytes {
+            Some(limit) => verify_reference_with_limit(
+                *reference,
+                doc,
+                id_map,
+                xml,
+                sig_node,
+                &ctx.url_maps,
+                ctx.debug,
+                ctx.base_dir.as_deref(),
+                Some(limit),
+            ),
+            None => verify_reference(
+                *reference,
+                doc,
+                id_map,
+                xml,
+                sig_node,
+                &ctx.url_maps,
+                ctx.debug,
+                ctx.base_dir.as_deref(),
+            ),
+        }?;
         verified_refs.push(vref);
         if let Some(reason) = mismatch {
             return Ok(VerifyResult::Invalid {
@@ -829,6 +861,23 @@ fn verify_reference(
     debug: bool,
     base_dir: Option<&str>,
 ) -> Result<(Option<String>, VerifiedReference), Error> {
+    verify_reference_with_limit(
+        reference, doc, id_map, xml, sig_node, url_maps, debug, base_dir, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)] // Same reference evaluator, with an optional bounded read.
+fn verify_reference_with_limit(
+    reference: NodeId,
+    doc: &Document<'_>,
+    id_map: &HashMap<String, NodeId>,
+    xml: Option<&str>,
+    sig_node: NodeId,
+    url_maps: &[(String, String)],
+    debug: bool,
+    base_dir: Option<&str>,
+    max_reference_bytes: Option<usize>,
+) -> Result<(Option<String>, VerifiedReference), Error> {
     // Read URI attribute
     let uri = doc
         .element(reference)
@@ -908,7 +957,18 @@ fn verify_reference(
                 &owned_xml
             }
         };
-        let resolved = resolve_reference_uri(uri, doc, id_map, xml_text, url_maps, base_dir)?;
+        let resolved = match max_reference_bytes {
+            Some(limit) => resolve_reference_uri_with_limit(
+                uri,
+                doc,
+                id_map,
+                xml_text,
+                url_maps,
+                base_dir,
+                Some(limit),
+            ),
+            None => resolve_reference_uri(uri, doc, id_map, xml_text, url_maps, base_dir),
+        }?;
         let (mut data, resolved_node, debug_pre_digest_bytes) = match resolved {
             ResolvedUri::Xml {
                 xml_text,
@@ -1267,6 +1327,18 @@ fn resolve_reference_uri<'a>(
     url_maps: &[(String, String)],
     base_dir: Option<&str>,
 ) -> Result<ResolvedUri<'a>, Error> {
+    resolve_reference_uri_with_limit(uri, doc, id_map, xml, url_maps, base_dir, None)
+}
+
+fn resolve_reference_uri_with_limit<'a>(
+    uri: &str,
+    doc: &Document<'_>,
+    id_map: &HashMap<String, NodeId>,
+    xml: &'a str,
+    url_maps: &[(String, String)],
+    base_dir: Option<&str>,
+    max_reference_bytes: Option<usize>,
+) -> Result<ResolvedUri<'a>, Error> {
     if uri.is_empty() {
         // Whole document, per W3C spec section 4.3.3.3:
         // "if the URI is not a full XPointer, then all comment nodes are excluded"
@@ -1305,8 +1377,9 @@ fn resolve_reference_uri<'a>(
         // same-resource `#fragment` suffix.
         for (map_url, file_path) in url_maps {
             if url_map_matches(uri, map_url) {
-                let data = std::fs::read(file_path)
-                    .map_err(|e| Error::Other(format!("url-map {file_path}: {e}")))?;
+                let data =
+                    read_reference_file(std::path::Path::new(file_path), max_reference_bytes)
+                        .map_err(|e| Error::Other(format!("url-map URI={uri} {file_path}: {e}")))?;
                 return Ok(ResolvedUri::Binary {
                     bytes: data,
                     debug_pre_digest_bytes: false,
@@ -1314,7 +1387,7 @@ fn resolve_reference_uri<'a>(
             }
         }
 
-        if let Some(data) = read_relative_reference_uri(uri, base_dir)? {
+        if let Some(data) = read_relative_reference_uri(uri, base_dir, max_reference_bytes)? {
             return Ok(ResolvedUri::Binary {
                 bytes: data,
                 debug_pre_digest_bytes: false,
@@ -1337,19 +1410,27 @@ fn resolve_reference_uri<'a>(
 fn read_relative_reference_uri(
     uri: &str,
     base_dir: Option<&str>,
+    max_reference_bytes: Option<usize>,
 ) -> Result<Option<Vec<u8>>, Error> {
     let Some(path) = local_reference_relative_path(uri)? else {
         return Ok(None);
     };
 
     if let Some(base) = base_dir {
-        if let Some(data) = read_existing_relative_file(std::path::Path::new(base), path, uri)? {
+        if let Some(data) = read_existing_relative_file_with_limit(
+            std::path::Path::new(base),
+            path,
+            uri,
+            max_reference_bytes,
+        )? {
             return Ok(Some(data));
         }
     }
 
     let cwd = std::env::current_dir().map_err(|e| Error::Other(format!("current dir: {e}")))?;
-    if let Some(data) = read_existing_relative_file(&cwd, path, uri)? {
+    if let Some(data) =
+        read_existing_relative_file_with_limit(&cwd, path, uri, max_reference_bytes)?
+    {
         return Ok(Some(data));
     }
 

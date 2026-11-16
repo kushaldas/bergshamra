@@ -51,3 +51,9 @@ pub use bergshamra_dsig::verify::{verify, verify_all};
 pub use bergshamra_enc::decrypt::{decrypt, decrypt_to_bytes};
 /// Encrypt bytes into an XML Encryption template.
 pub use bergshamra_enc::encrypt::encrypt;
+
+/// Verify a signature and its authenticated same-document Manifest members.
+pub use bergshamra_dsig::{
+    verify_document_with_manifests, verify_with_manifests, ManifestLimits,
+    ManifestVerificationResult, VerifiedManifest,
+};

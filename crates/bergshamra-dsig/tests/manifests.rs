@@ -153,12 +153,13 @@ fn missing_ooxml_resource_cannot_return_outer_only_valid() {
 #[test]
 fn ooxml_manifest_assessment_obeys_reference_and_input_limits() {
     let context = context(Path::new(FIXTURE));
-    let restrictions: [fn(&mut ManifestLimits); 5] = [
+    let restrictions: [fn(&mut ManifestLimits); 6] = [
         |limits| limits.max_references = 10, // Three outer plus eight members.
         |limits| limits.max_manifests = 0,
         |limits| limits.max_depth = 0,
         |limits| limits.max_document_bytes = SIGNATURE.len() - 1,
         |limits| limits.max_reference_bytes = 1,
+        |limits| limits.max_nodes = 1,
     ];
     for restrict in restrictions {
         let mut limits = ManifestLimits::default();

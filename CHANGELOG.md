@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Opt-in `verify_with_manifests` and `verify_document_with_manifests` assess
+  authenticated same-document Manifest graphs using the existing Reference
+  resolver, transform dispatcher (including OPC RelationshipTransform), and
+  digest implementation. Limits cover recursion, cycles, graph size, input
+  bytes and detached Reference reads. Failed or unavailable members return
+  errors, never an outer-only success. Existing verification entry points
+  retain their behavior. See [Manifest verification](docs/manifest-verification.md)
+  for supported scope and partial-package coverage.
+
 ## 0.12.0 [2026-11-09]
 
 ### Security

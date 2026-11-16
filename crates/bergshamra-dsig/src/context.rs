@@ -371,6 +371,15 @@ pub(crate) fn read_existing_relative_file(
     relative_path: &std::path::Path,
     uri: &str,
 ) -> Result<Option<Vec<u8>>, Error> {
+    read_existing_relative_file_with_limit(base, relative_path, uri, None)
+}
+
+pub(crate) fn read_existing_relative_file_with_limit(
+    base: &std::path::Path,
+    relative_path: &std::path::Path,
+    uri: &str,
+    max_bytes: Option<usize>,
+) -> Result<Option<Vec<u8>>, Error> {
     let full = base.join(relative_path);
     if !full.exists() {
         return Ok(None);
@@ -388,7 +397,43 @@ pub(crate) fn read_existing_relative_file(
         )));
     }
 
-    let data = std::fs::read(&canonical_full)
-        .map_err(|e| Error::Other(format!("{}: {e}", canonical_full.display())))?;
+    let data = read_reference_file(&canonical_full, max_bytes)
+        .map_err(|e| Error::Other(format!("URI={uri} {}: {e}", canonical_full.display())))?;
     Ok(Some(data))
+}
+
+/// Read through the existing resolver with an optional byte limit. `take` also
+/// bounds a file that grows after the metadata check; an oversized resource is
+/// never truncated and treated as the complete reference payload.
+pub(crate) fn read_reference_file(
+    path: &std::path::Path,
+    max_bytes: Option<usize>,
+) -> Result<Vec<u8>, Error> {
+    use std::io::Read;
+    let Some(limit) = max_bytes else {
+        return Ok(std::fs::read(path)?);
+    };
+    // Reject known special files before opening (e.g. a blocking named pipe).
+    let metadata = std::fs::metadata(path)?;
+    if !metadata.is_file() || metadata.len() > limit as u64 {
+        return Err(Error::Other(format!(
+            "Reference resource byte limit exceeded ({limit} bytes)"
+        )));
+    }
+    let file = std::fs::File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > limit as u64 {
+        return Err(Error::Other(format!(
+            "Reference resource byte limit exceeded ({limit} bytes)"
+        )));
+    }
+    let mut bytes = Vec::new();
+    file.take((limit as u64).saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(Error::Other(format!(
+            "Reference resource byte limit exceeded ({limit} bytes)"
+        )));
+    }
+    Ok(bytes)
 }
