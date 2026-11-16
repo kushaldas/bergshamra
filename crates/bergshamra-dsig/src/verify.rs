@@ -957,24 +957,30 @@ fn verify_reference_with_limit(
         // Resolve URI and get initial data for the generic transform pipeline.
         let owned_xml;
         let xml_text = match xml {
-            Some(xml) => xml,
-            None if max_reference_bytes.is_some() && !uri.is_empty() && !uri.starts_with('#') => "",
+            Some(xml) => Some(xml),
+            // Detached resolution produces binary data, never document nodes.
+            // Keep absent source explicit; the resolver rejects same-document
+            // resolution without source rather than accepting a placeholder.
+            None if max_reference_bytes.is_some() && !uri.is_empty() && !uri.starts_with('#') => {
+                None
+            }
             None => {
                 owned_xml = doc.to_xml();
-                &owned_xml
+                Some(owned_xml.as_str())
             }
         };
-        let resolved = match max_reference_bytes {
-            Some(limit) => resolve_reference_uri_with_limit(
+        let resolved = if let (None, Some(xml_text)) = (max_reference_bytes, xml_text) {
+            resolve_reference_uri(uri, doc, id_map, xml_text, url_maps, base_dir)
+        } else {
+            resolve_reference_uri_with_limit(
                 uri,
                 doc,
                 id_map,
                 xml_text,
                 url_maps,
                 base_dir,
-                Some(limit),
-            ),
-            None => resolve_reference_uri(uri, doc, id_map, xml_text, url_maps, base_dir),
+                max_reference_bytes,
+            )
         }?;
         let (mut data, resolved_node, debug_pre_digest_bytes) = match resolved {
             ResolvedUri::Xml {
@@ -1334,24 +1340,31 @@ fn resolve_reference_uri<'a>(
     url_maps: &[(String, String)],
     base_dir: Option<&str>,
 ) -> Result<ResolvedUri<'a>, Error> {
-    resolve_reference_uri_with_limit(uri, doc, id_map, xml, url_maps, base_dir, None)
+    resolve_reference_uri_with_limit(uri, doc, id_map, Some(xml), url_maps, base_dir, None)
 }
 
 fn resolve_reference_uri_with_limit<'a>(
     uri: &str,
     doc: &Document<'_>,
     id_map: &HashMap<String, NodeId>,
-    xml: &'a str,
+    xml: Option<&'a str>,
     url_maps: &[(String, String)],
     base_dir: Option<&str>,
     max_reference_bytes: Option<usize>,
 ) -> Result<ResolvedUri<'a>, Error> {
+    let source = || {
+        xml.ok_or_else(|| {
+            Error::XmlStructure(format!(
+                "same-document Reference requires XML source: URI={uri}"
+            ))
+        })
+    };
     if uri.is_empty() {
         // Whole document, per W3C spec section 4.3.3.3:
         // "if the URI is not a full XPointer, then all comment nodes are excluded"
         let ns = NodeSet::all_without_comments(doc);
         Ok(ResolvedUri::Xml {
-            xml_text: xml,
+            xml_text: source()?,
             node_set: Some(ns),
             resolved_node: None,
         })
@@ -1359,7 +1372,7 @@ fn resolve_reference_uri_with_limit<'a>(
         // Handle xpointer(/) — selects entire document
         if fragment == "xpointer(/)" {
             return Ok(ResolvedUri::Xml {
-                xml_text: xml,
+                xml_text: source()?,
                 node_set: None,
                 resolved_node: None,
             });
@@ -1375,7 +1388,7 @@ fn resolve_reference_uri_with_limit<'a>(
             NodeSet::tree_without_comments(node, doc)
         };
         Ok(ResolvedUri::Xml {
-            xml_text: xml,
+            xml_text: source()?,
             node_set: Some(ns),
             resolved_node: Some(node),
         })
@@ -1386,7 +1399,15 @@ fn resolve_reference_uri_with_limit<'a>(
             if url_map_matches(uri, map_url) {
                 let data =
                     read_reference_file(std::path::Path::new(file_path), max_reference_bytes)
-                        .map_err(|e| Error::Other(format!("url-map URI={uri} {file_path}: {e}")))?;
+                        .map_err(|error| match (max_reference_bytes, error) {
+                            (Some(_), Error::Io(error)) => Error::Io(std::io::Error::new(
+                                error.kind(),
+                                format!("url-map URI={uri} {file_path}: {error}"),
+                            )),
+                            (_, error) => {
+                                Error::Other(format!("url-map URI={uri} {file_path}: {error}"))
+                            }
+                        })?;
                 return Ok(ResolvedUri::Binary {
                     bytes: data,
                     debug_pre_digest_bytes: false,
@@ -5617,5 +5638,30 @@ mod tests {
         assert!(message.contains("512-bit RSA key") && message.contains("unsupported"));
         #[cfg(feature = "rustcrypto")]
         assert!(message.contains("RSA SPKI import failed"), "{message}");
+    }
+}
+
+#[cfg(test)]
+mod manifest_source_invariant {
+    use super::*;
+
+    #[test]
+    fn absent_source_cannot_resolve_to_same_document_xml() {
+        let doc = uppsala::parse("<Root Id=\"payload\"/>").unwrap();
+        let ids = build_verify_id_map(
+            &DsigContext::new_permissive(bergshamra_keys::KeysManager::new()),
+            &doc,
+        )
+        .unwrap();
+        for uri in ["", "#payload", "#xpointer(/)"] {
+            let result =
+                resolve_reference_uri_with_limit(uri, &doc, &ids, None, &[], None, Some(1024));
+            match result {
+                Err(Error::XmlStructure(message)) => {
+                    assert!(message.contains("requires XML source"))
+                }
+                _ => panic!("absent source cannot resolve same-document URI={uri}"),
+            }
+        }
     }
 }

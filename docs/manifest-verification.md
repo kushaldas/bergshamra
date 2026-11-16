@@ -9,27 +9,12 @@ Use `bergshamra::verify_with_manifests` when the application requires the first
 Signature's reachable same-document Manifest members to be checked as well.
 For package validation, also require the expected Manifest and Signature identity;
 `Ok` with no reachable Manifest is a valid generic XMLDSig result, not package
-coverage. The parsed-DOM API lets the application bind its expected nodes:
+coverage. The parsed-DOM API lets the application bind its expected nodes. Its
+example is compiled by `cargo test --doc -p bergshamra`.
 
-```rust,no_run
-use bergshamra::{DsigContext, ManifestLimits, verify_document_with_manifests, VerifyResult};
-use bergshamra::xml::{Document, NodeId};
-
-fn assess_expected(
-    ctx: &DsigContext, doc: &Document<'_>, expected_signature: NodeId,
-    expected_manifest: NodeId,
-) -> Result<(), bergshamra::Error> {
-    let assessment = verify_document_with_manifests(ctx, doc, None, &ManifestLimits::default())?;
-    match assessment.signature {
-        VerifyResult::Valid { signature_node, .. } if signature_node == expected_signature => {},
-        _ => return Err(bergshamra::Error::SignatureInvalid("unexpected Signature".into())),
-    }
-    if !assessment.manifests.iter().any(|m| m.manifest_node == expected_manifest) {
-        return Err(bergshamra::Error::MissingElement("expected package Manifest".into()));
-    }
-    Ok(())
-}
-```
+See the [compiled facade example](https://docs.rs/bergshamra/latest/bergshamra/#binding-manifest-results-to-expected-nodes),
+which binds both the expected Signature and Manifest NodeIds. The example lives
+in the facade crate itself so it also ships in that crate's published package.
 
 This API intentionally verifies only the **first** Signature, just like `verify`.
 A later signature is neither a fallback for an invalid first signature nor an
@@ -68,7 +53,9 @@ outside the parent's physical subtree. An explicit
 `Type="http://www.w3.org/2000/09/xmldsig#Manifest"` must identify a same-document
 Manifest element; detached typed Manifests fail explicitly. Detached payloads
 are hashed as the bytes/transforms specified by their Reference, not recursively
-interpreted as new XML documents. Unreferenced Manifests are not assessed or
+interpreted as new XML documents. A Manifest containing another `ds:Manifest`
+anywhere in its subtree is rejected as malformed, including one hidden deeper
+inside a Reference/Transform. Unreferenced Manifests are not assessed or
 reported. These APIs do not claim to traverse arbitrary XML inside payloads.
 
 The existing resolver and complete Reference transform dispatcher are reused.
@@ -80,8 +67,11 @@ ContentType matching and coverage policy belong to the calling application.
 
 RelationshipTransform authenticates its selected relationships: changing a
 selected Target fails its digest, while adding or changing an unselected
-relationship can pass. The genuine fixture tests assert both outcomes. This
-partial-coverage contract does not authenticate new unselected package parts.
+relationship can pass. The genuine fixture tests change the selected root
+`_rels/.rels` rId1 and document-level rId1–rId5, modify the existing unselected
+root rId2/rId3 Targets, and add an unselected document-level rId99. These checks
+assert only the transform-selected relationship scope. This partial-coverage
+contract does not authenticate new unselected package parts.
 
 ## Limits and errors
 
@@ -119,8 +109,11 @@ mode still returns the actual targets for application-specific checks.
 Digest errors include the Manifest and member URI. Resource errors include that
 same context and the underlying resolver/read error. Member processing preserves
 the original error category (`UnsupportedAlgorithm`, `InvalidUri`, `Transform`,
-etc.); outer and member digest mismatches both use `DigestMismatch`. Invalid
-SignatureValue uses `SignatureInvalid`. Malformed, cyclic and over-limit graphs
+etc.). In explicit Manifest mode, mapped-file I/O errors retain `Io` and its
+underlying kind (`NotFound`, or `InvalidInput` for a non-regular resource); a
+directory is not misreported as a byte-budget failure. Legacy mapped-read error
+categories remain unchanged. Outer and member digest mismatches both use
+`DigestMismatch`. Invalid SignatureValue uses `SignatureInvalid`. Malformed, cyclic and over-limit graphs
 use `XmlStructure`. Bounded planning deliberately precedes outer authentication,
 so a graph error can be reported before an invalid SignatureValue; both are
 rejections and neither authenticates any node. Success never means that only an

@@ -148,7 +148,10 @@ fn missing_ooxml_resource_cannot_return_outer_only_valid() {
     assert!(verify(&context, SIGNATURE).unwrap().is_valid());
     let error = verify_with_manifests(&context, SIGNATURE, &ManifestLimits::default())
         .expect_err("an unreadable declared member must fail Manifest verification");
-    assert!(matches!(&error, Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound), "{error}");
+    assert!(
+        matches!(&error, Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound),
+        "{error}"
+    );
     assert!(error.to_string().contains("Manifest"), "{error}");
     assert!(error.to_string().contains(RESOURCES[2].0), "{error}");
 }
@@ -295,7 +298,6 @@ fn caller_selected_larger_budgets_preserve_genuine_ooxml_assessment() {
         .all(|reference| reference.digest_verified));
 }
 
-
 #[test]
 fn selected_root_relationship_target_is_authenticated() {
     let temporary = TemporaryResources::new();
@@ -304,7 +306,11 @@ fn selected_root_relationship_target_is_authenticated() {
     assert!(original.contains(r#"Id="rId1""#));
     let target = r#"Target="word/document.xml""#;
     assert_eq!(original.matches(target).count(), 1);
-    fs::write(&path, original.replacen(target, r#"Target="word/styles.xml""#, 1)).unwrap();
+    fs::write(
+        &path,
+        original.replacen(target, r#"Target="word/styles.xml""#, 1),
+    )
+    .unwrap();
     let ctx = context(&temporary.0);
     assert!(verify(&ctx, SIGNATURE).unwrap().is_valid());
     let error = verify_with_manifests(&ctx, SIGNATURE, &ManifestLimits::default()).unwrap_err();
@@ -324,16 +330,33 @@ fn existing_unselected_root_relationship_targets_preserve_partial_coverage() {
         assert!(original.contains(&format!("Id=\"{id}\"")));
         // The root .rels Reference selects only rId1 (the document-level
         // Reference independently selects rId1..rId5). Both targets exist.
-        let root_reference = SIGNATURE.split(RESOURCES[0].0).nth(1).unwrap()
-            .split("</Reference>").next().unwrap();
+        let root_reference = SIGNATURE
+            .split(RESOURCES[0].0)
+            .nth(1)
+            .unwrap()
+            .split("</Reference>")
+            .next()
+            .unwrap();
         assert!(root_reference.contains("SourceId=\"rId1\""));
         assert!(!root_reference.contains(&format!("SourceId=\"{id}\"")));
         let target = format!("Target=\"{before}\"");
         assert_eq!(original.matches(&target).count(), 1);
-        fs::write(&path, original.replacen(&target, &format!("Target=\"{after}\""), 1)).unwrap();
-        let result = verify_with_manifests(&context(&temporary.0), SIGNATURE, &ManifestLimits::default()).unwrap();
+        fs::write(
+            &path,
+            original.replacen(&target, &format!("Target=\"{after}\""), 1),
+        )
+        .unwrap();
+        let result = verify_with_manifests(
+            &context(&temporary.0),
+            SIGNATURE,
+            &ManifestLimits::default(),
+        )
+        .unwrap();
         assert!(result.signature.is_valid());
         assert_eq!(result.manifests[0].references.len(), 8);
-        assert!(result.manifests[0].references.iter().all(|r| r.digest_verified));
+        assert!(result.manifests[0]
+            .references
+            .iter()
+            .all(|r| r.digest_verified));
     }
 }

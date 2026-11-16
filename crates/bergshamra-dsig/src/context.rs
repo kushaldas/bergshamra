@@ -414,14 +414,26 @@ pub(crate) fn read_reference_file(
     };
     // Reject known special files before opening (e.g. a blocking named pipe).
     let metadata = std::fs::metadata(path)?;
-    if !metadata.is_file() || metadata.len() > limit as u64 {
+    if !metadata.is_file() {
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Reference resource is not a regular file",
+        )));
+    }
+    if metadata.len() > limit as u64 {
         return Err(Error::Other(format!(
             "Reference resource byte limit exceeded ({limit} bytes)"
         )));
     }
     let file = std::fs::File::open(path)?;
     let metadata = file.metadata()?;
-    if !metadata.is_file() || metadata.len() > limit as u64 {
+    if !metadata.is_file() {
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Reference resource is not a regular file",
+        )));
+    }
+    if metadata.len() > limit as u64 {
         return Err(Error::Other(format!(
             "Reference resource byte limit exceeded ({limit} bytes)"
         )));

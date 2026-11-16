@@ -16,6 +16,10 @@
   discovery, member strict/XSW policy, typed errors and explicit relative-resource
   resolution. Source-less DOM size checking now streams without an eager full
   XML copy. Existing default verification behavior remains unchanged.
+- Rejected malformed nested Manifest declarations, clarified bounded mapped-file
+  I/O errors without changing legacy categories, and made absent XML source
+  explicit in detached resolution. Added excluded-transform, existing OPC
+  relationship mutation and compiled facade-example regressions.
 
 ## 0.12.0 [2026-11-09]
 

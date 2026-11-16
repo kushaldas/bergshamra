@@ -300,8 +300,8 @@ impl Graph<'_, '_> {
             }
             self.inspected_nodes += 1;
             manifests.push(manifest);
-            // A literal nested Manifest is not a separate root; visit() will
-            // reject the malformed parent rather than infer a second binding.
+            // Nested Manifests are not separate roots. visit() checks the full
+            // indexed subtree before interpreting any member declarations.
             let manifest_end = self.index.ranges[&manifest].1;
             position = self
                 .index
@@ -351,6 +351,21 @@ impl Graph<'_, '_> {
         }
         if self.active.len() + self.complete.len() >= self.limits.max_manifests {
             return Err(limit_error("Manifests"));
+        }
+        let (start, end) = self.index.ranges[&manifest];
+        let next = self
+            .index
+            .manifests
+            .partition_point(|(entry, _)| *entry <= start);
+        if self
+            .index
+            .manifests
+            .get(next)
+            .is_some_and(|(entry, _)| *entry < end)
+        {
+            return Err(Error::XmlStructure(
+                "Manifest must not contain nested Manifest elements".into(),
+            ));
         }
         self.active.insert(manifest);
         let references = find_child_elements(self.doc, manifest, ns::DSIG, ns::node::REFERENCE);
