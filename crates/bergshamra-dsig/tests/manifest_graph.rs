@@ -723,3 +723,56 @@ fn unsupported_member_transform_retains_its_category_and_uri() {
     );
     assert!(error.to_string().contains("#payload"), "{error}");
 }
+
+
+#[test]
+fn manifests_hidden_deeper_in_a_manifest_are_rejected() {
+    let hidden = manifest("hidden", &reference("urn:unreachable", None, "", PLACEHOLDER));
+    let c14n = format!(r#"<ds:Transform Algorithm="{}">{hidden}</ds:Transform>"#, algorithm::C14N);
+    for child in [
+        format!("<ds:Transforms>{c14n}</ds:Transforms>"),
+        format!("<ds:Extension>{hidden}</ds:Extension>"),
+    ] {
+        let member = reference("#payload", None, "", "DIGEST_PAYLOAD")
+            .replace("<ds:DigestMethod", &(child + "<ds:DigestMethod"));
+        let xml = template(&reference("#a", Some(MANIFEST_TYPE), "", ""), &manifest("a", &member));
+        let signed = sign_template(&fill_digest(xml, "DIGEST_PAYLOAD", "payload"));
+        assert!(verify(&context(), &signed).unwrap().is_valid());
+        assert_structure(
+            verify_with_manifests(&context(), &signed, &ManifestLimits::default()).unwrap_err(),
+            "nested Manifest",
+        );
+    }
+}
+
+#[test]
+fn typed_manifest_fully_excluded_by_enveloped_transform_is_unsupported() {
+    let env = format!(r#"<ds:Transform Algorithm="{}"/>"#, algorithm::ENVELOPED_SIGNATURE);
+    let m = manifest("a", &reference("#payload", None, "", PLACEHOLDER));
+    let signed = sign_template(&template(&reference("#a", Some(MANIFEST_TYPE), &env, ""), &m));
+    assert!(verify(&context(), &signed).unwrap().is_valid());
+    let error = verify_with_manifests(&context(), &signed, &ManifestLimits::default()).unwrap_err();
+    assert!(matches!(error, bergshamra_core::Error::UnsupportedAlgorithm(_)), "{error}");
+    assert!(error.to_string().contains("Manifest target excluded by transform URI=#a"), "{error}");
+}
+
+#[test]
+fn ambiguous_enveloped_transform_pipelines_are_rejected_during_planning() {
+    let env = format!(r#"<ds:Transform Algorithm="{}"/>"#, algorithm::ENVELOPED_SIGNATURE);
+    let c14n = format!(r#"<ds:Transform Algorithm="{}"/>"#, algorithm::C14N);
+    let with_child = format!(r#"<ds:Transform Algorithm="{}"><ds:Unexpected/></ds:Transform>"#, algorithm::ENVELOPED_SIGNATURE);
+    let valid = sign_template(&nested_template(false));
+    for transforms in [c14n + &env, env.repeat(2), with_child] {
+        // Deliberately unsupported pipelines are rejected by planning before
+        // attempting signature verification; they do not claim a valid signature.
+        let changed = valid.replacen(
+            r##"URI="#a" Type="http://www.w3.org/2000/09/xmldsig#Manifest">"##,
+            &format!(r##"URI="#a" Type="http://www.w3.org/2000/09/xmldsig#Manifest"><ds:Transforms>{transforms}</ds:Transforms>"##),
+            1,
+        );
+        assert_ne!(changed, valid);
+        let error = verify_with_manifests(&context(), &changed, &ManifestLimits::default()).unwrap_err();
+        assert!(matches!(error, bergshamra_core::Error::UnsupportedAlgorithm(_)), "{error}");
+        assert!(error.to_string().contains("Manifest coverage through filtering transform URI=#a"), "{error}");
+    }
+}

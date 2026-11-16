@@ -4,7 +4,7 @@ use base64::Engine;
 use bergshamra_core::{algorithm, ns, Error};
 use bergshamra_dsig::{
     sign,
-    verify::{verify, verify_with_manifests, ManifestLimits},
+    verify::{verify, verify_document_with_manifests, verify_with_manifests, ManifestLimits},
     DsigContext,
 };
 use bergshamra_keys::{loader, KeysManager};
@@ -173,6 +173,49 @@ fn caller_can_raise_resource_budget_and_special_files_remain_refused() {
     let mut ctx = context();
     ctx.add_url_map("urn:directory", t.0.to_str().unwrap());
     let error = verify_with_manifests(&ctx, &signed, &ManifestLimits::default()).unwrap_err();
-    assert!(matches!(error, Error::Other(_)), "{error}");
-    assert!(error.to_string().contains("byte limit"), "{error}");
+    assert!(matches!(&error, Error::Io(io) if io.kind() == std::io::ErrorKind::InvalidInput), "{error}");
+    assert!(error.to_string().contains("not a regular file"), "{error}");
+    assert!(!error.to_string().contains("byte limit"), "{error}");
+}
+
+
+#[test]
+fn mapped_read_errors_are_typed_only_in_explicit_manifest_mode() {
+    let t = Temp::new();
+    let path = t.0.join("mapped.bin");
+    fs::write(&path, b"body").unwrap();
+    let mut ctx = context();
+    ctx.add_url_map("urn:mapped", path.to_str().unwrap());
+    let outer = sign::sign(&ctx, &template(&reference("urn:mapped", ""), "")).unwrap();
+    fs::remove_file(&path).unwrap();
+    for directory in [false, true] {
+        if directory { fs::create_dir(&path).unwrap(); }
+        let legacy = verify(&ctx, &outer).unwrap_err();
+        assert!(matches!(legacy, Error::Other(_)), "legacy category: {legacy}");
+        let error = verify_with_manifests(&ctx, &outer, &ManifestLimits::default()).unwrap_err();
+        let kind = if directory { std::io::ErrorKind::InvalidInput } else { std::io::ErrorKind::NotFound };
+        assert!(matches!(&error, Error::Io(io) if io.kind() == kind), "{error}");
+        assert!(error.to_string().contains("url-map URI=urn:mapped"), "{error}");
+    }
+}
+
+#[test]
+fn source_less_detached_reference_uses_only_mapped_bytes_and_transforms() {
+    let t = Temp::new();
+    let bytes = b"actual detached binary, not XML source";
+    let path = t.0.join("payload.b64");
+    fs::write(&path, base64::engine::general_purpose::STANDARD.encode(bytes)).unwrap();
+    let member = reference("urn:payload", &digest(bytes)).replace(
+        "<ds:DigestMethod", &format!(r#"<ds:Transforms><ds:Transform Algorithm="{}"/></ds:Transforms><ds:DigestMethod"#, algorithm::BASE64),
+    );
+    let signed = sign::sign(&context(), &template(&reference("#a", ""), &member)).unwrap();
+    let doc = uppsala::parse(&signed).unwrap();
+    let mut ctx = context();
+    ctx.add_url_map("urn:payload", path.to_str().unwrap());
+    let result = verify_document_with_manifests(&ctx, &doc, None, &ManifestLimits::default()).unwrap();
+    assert!(result.manifests[0].references[0].digest_verified);
+    assert!(result.manifests[0].references[0].resolved_node.is_none());
+    fs::remove_file(path).unwrap();
+    let error = verify_document_with_manifests(&ctx, &doc, None, &ManifestLimits::default()).unwrap_err();
+    assert!(error.to_string().contains("urn:payload"), "{error}");
 }
