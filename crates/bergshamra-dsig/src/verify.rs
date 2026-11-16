@@ -291,7 +291,7 @@ fn verify_signature_node(
     sig_node: NodeId,
     id_map: &std::collections::HashMap<String, NodeId>,
 ) -> Result<VerifyResult, Error> {
-    verify_signature_node_with_limit(ctx, doc, xml, sig_node, id_map, None)
+    verify_signature_node_with_limit(ctx, doc, xml, sig_node, id_map, None, false)
 }
 
 fn verify_signature_node_with_limit(
@@ -301,6 +301,7 @@ fn verify_signature_node_with_limit(
     sig_node: NodeId,
     id_map: &std::collections::HashMap<String, NodeId>,
     max_reference_bytes: Option<usize>,
+    typed_reference_errors: bool,
 ) -> Result<VerifyResult, Error> {
     // Find <SignedInfo>
     let signed_info = find_child_element(doc, sig_node, ns::DSIG, ns::node::SIGNED_INFO)
@@ -431,6 +432,11 @@ fn verify_signature_node_with_limit(
         }?;
         verified_refs.push(vref);
         if let Some(reason) = mismatch {
+            if typed_reference_errors {
+                return Err(Error::DigestMismatch(format!(
+                    "SignedInfo reference: {reason}"
+                )));
+            }
             return Ok(VerifyResult::Invalid {
                 reason: format!("Reference digest failed: {reason}"),
             });
@@ -952,6 +958,7 @@ fn verify_reference_with_limit(
         let owned_xml;
         let xml_text = match xml {
             Some(xml) => xml,
+            None if max_reference_bytes.is_some() && !uri.is_empty() && !uri.starts_with('#') => "",
             None => {
                 owned_xml = doc.to_xml();
                 &owned_xml
@@ -1427,6 +1434,11 @@ fn read_relative_reference_uri(
         }
     }
 
+    // Bounded opt-in Manifest assessment requires an explicit base or URL map.
+    // Unbounded legacy verification retains its historical cwd fallback.
+    if max_reference_bytes.is_some() {
+        return Ok(None);
+    }
     let cwd = std::env::current_dir().map_err(|e| Error::Other(format!("current dir: {e}")))?;
     if let Some(data) =
         read_existing_relative_file_with_limit(&cwd, path, uri, max_reference_bytes)?

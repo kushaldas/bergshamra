@@ -2,7 +2,8 @@
 
 use super::{
     build_verify_id_map, find_child_element, find_child_elements, find_element,
-    verify_reference_with_limit, verify_signature_node_with_limit, VerifiedReference, VerifyResult,
+    validate_reference_position, verify_reference_with_limit, verify_signature_node_with_limit,
+    VerifiedReference, VerifyResult,
 };
 use crate::DsigContext;
 use bergshamra_c14n::C14nMode;
@@ -28,7 +29,8 @@ pub struct ManifestLimits {
     pub max_document_bytes: usize,
     /// Maximum bytes read from any single detached reference resource.
     pub max_reference_bytes: usize,
-    /// Maximum nodes inspected while finding Manifest descendants.
+    /// Maximum Manifest candidates inspected during graph discovery. The
+    /// document is indexed once under `max_document_bytes`, not this budget.
     pub max_nodes: usize,
 }
 
@@ -80,9 +82,11 @@ pub struct ManifestVerificationResult {
 /// dispatcher (including OPC RelationshipTransform) and digest code are reused.
 ///
 /// A Manifest is followed only through a reference authenticating its complete
-/// containing subtree: implicit C14N or explicit C14N transforms. Filtering
-/// transforms on such a reference are refused because the source DOM alone
-/// cannot prove that the Manifest survived the transform. Detached references
+/// containing subtree: implicit C14N or explicit C14N transforms. A preceding
+/// enveloped-signature transform excludes only the current Signature subtree;
+/// excluded Manifests need a separate authenticated reference. Other filtering
+/// transforms on Manifest-containing targets are refused because source DOM
+/// membership alone cannot prove that a Manifest survived the transform. Detached references
 /// explicitly typed as Manifests are currently unsupported and fail closed;
 /// detached payloads are checked but are not recursively interpreted as XML.
 /// Cycles, excessive graph depth/counts and skipped `cid:` digests are errors.
@@ -113,17 +117,7 @@ pub fn verify_document_with_manifests(
     if limits.max_depth == 0 || limits.max_depth > 64 {
         return Err(limit_error("depth must be between 1 and 64"));
     }
-    let serialized;
-    let xml = match source_xml {
-        Some(xml) => xml,
-        None => {
-            serialized = doc.to_xml();
-            &serialized
-        }
-    };
-    if xml.len() > limits.max_document_bytes {
-        return Err(limit_error("document bytes"));
-    }
+    check_document_bytes(doc, source_xml, limits.max_document_bytes)?;
     let id_map = build_verify_id_map(ctx, doc)?;
     let signature_node = find_element(doc, ns::DSIG, ns::node::SIGNATURE)
         .ok_or_else(|| Error::MissingElement("Signature".into()))?;
@@ -137,6 +131,8 @@ pub fn verify_document_with_manifests(
     }
     let mut graph = Graph {
         doc,
+        index: ManifestIndex::new(doc, &id_map, signature_node),
+        signature_node,
         id_map: &id_map,
         limits,
         active: HashSet::new(),
@@ -155,10 +151,11 @@ pub fn verify_document_with_manifests(
     let signature = verify_signature_node_with_limit(
         ctx,
         doc,
-        Some(xml),
+        source_xml,
         signature_node,
         &id_map,
         Some(limits.max_reference_bytes),
+        true,
     )?;
     if let VerifyResult::Invalid { reason } = &signature {
         return Err(Error::SignatureInvalid(reason.clone()));
@@ -182,27 +179,29 @@ pub fn verify_document_with_manifests(
                 reference,
                 doc,
                 &id_map,
-                Some(xml),
+                source_xml,
                 signature_node,
                 &ctx.url_maps,
                 ctx.debug,
                 ctx.base_dir.as_deref(),
                 Some(limits.max_reference_bytes),
             )
-            .map_err(|e| {
-                Error::Other(format!(
-                    "Manifest {manifest_node:?} reference URI={uri}: {e}"
-                ))
-            })?;
+            .map_err(|error| reference_error(doc, manifest_node, uri, error))?;
             if let Some(reason) = mismatch {
                 return Err(Error::DigestMismatch(format!(
-                    "Manifest {manifest_node:?}: {reason}"
+                    "Manifest reference URI={uri}: {reason}"
                 )));
             }
             if !result.digest_verified {
                 return Err(Error::DigestMismatch(format!(
                     "Manifest reference URI={uri}: digest was not verified"
                 )));
+            }
+            if ctx.strict_verification {
+                if let Some(target) = result.resolved_node {
+                    validate_reference_position(doc, signature_node, target)
+                        .map_err(|error| reference_error(doc, manifest_node, uri, error))?;
+                }
             }
             checked.push(result);
         }
@@ -223,6 +222,8 @@ fn limit_error(which: &str) -> Error {
 
 struct Graph<'a, 'doc> {
     doc: &'a Document<'doc>,
+    index: ManifestIndex,
+    signature_node: NodeId,
     id_map: &'a HashMap<String, NodeId>,
     limits: &'a ManifestLimits,
     active: HashSet<NodeId>,
@@ -270,38 +271,56 @@ impl Graph<'_, '_> {
                 "Manifest Type does not target a Manifest: URI={uri}"
             )));
         }
-        let mut pending = vec![target];
+        let coverage = subtree_coverage(self.doc, reference);
+        let exclusion = coverage
+            .filter(|excluded| *excluded)
+            .map(|_| self.signature_node);
+        let (start, end) = self.index.ranges[&target];
+        let excluded_range = exclusion.map(|node| self.index.ranges[&node]);
+        let mut position = self
+            .index
+            .manifests
+            .partition_point(|(entry, _)| *entry < start);
         let mut manifests = Vec::new();
-        while let Some(node) = pending.pop() {
+        while let Some(&(entry, manifest)) = self.index.manifests.get(position) {
+            if entry >= end {
+                break;
+            }
+            if let Some((excluded_start, excluded_end)) = excluded_range {
+                if (excluded_start..excluded_end).contains(&entry) {
+                    position = self
+                        .index
+                        .manifests
+                        .partition_point(|(entry, _)| *entry < excluded_end);
+                    continue;
+                }
+            }
             if self.inspected_nodes >= self.limits.max_nodes {
                 return Err(limit_error("inspected nodes"));
             }
             self.inspected_nodes += 1;
-            if self
-                .doc
-                .element(node)
-                .is_some_and(|e| e.matches_name_ns(ns::DSIG, ns::node::MANIFEST))
-            {
-                manifests.push(node);
-            } else {
-                pending.extend(self.doc.children(node).into_iter().rev());
-            }
+            manifests.push(manifest);
+            // A literal nested Manifest is not a separate root; visit() will
+            // reject the malformed parent rather than infer a second binding.
+            let manifest_end = self.index.ranges[&manifest].1;
+            position = self
+                .index
+                .manifests
+                .partition_point(|(entry, _)| *entry < manifest_end);
         }
         let mut height = 0;
+        if manifests.is_empty()
+            && element.get_attribute("Type") == Some("http://www.w3.org/2000/09/xmldsig#Manifest")
+        {
+            return Err(Error::UnsupportedAlgorithm(format!(
+                "Manifest target excluded by transform URI={uri}"
+            )));
+        }
         if !manifests.is_empty() {
-            if let Some(transforms) =
-                find_child_element(self.doc, reference, ns::DSIG, ns::node::TRANSFORMS)
-            {
-                for transform in self.doc.children(transforms) {
-                    if let Some(e) = self.doc.element(transform) {
-                        let algorithm = e.get_attribute(ns::attr::ALGORITHM).unwrap_or("");
-                        if !e.matches_name_ns(ns::DSIG, ns::node::TRANSFORM)
-                            || C14nMode::from_uri(algorithm).is_none()
-                        {
-                            return Err(Error::UnsupportedAlgorithm(format!("Manifest coverage through filtering transform URI={uri}: {algorithm}")));
-                        }
-                    }
-                }
+            if coverage.is_none() {
+                return Err(Error::UnsupportedAlgorithm(format!(
+                    "Manifest coverage through filtering transform URI={uri}"
+                )));
             }
             for manifest in manifests {
                 height = height.max(self.visit(manifest, depth)?);
@@ -316,7 +335,11 @@ impl Graph<'_, '_> {
         }
         if self.active.contains(&manifest) {
             return Err(Error::XmlStructure(format!(
-                "Manifest cycle at {manifest:?}"
+                "Manifest cycle at Id={}",
+                self.doc
+                    .element(manifest)
+                    .and_then(|e| e.get_attribute("Id"))
+                    .unwrap_or("<anonymous>")
             )));
         }
         if let Some(&height) = self.complete.get(&manifest) {
@@ -357,5 +380,191 @@ impl Graph<'_, '_> {
         self.complete.insert(manifest, height);
         self.plans.push((manifest, references));
         Ok(height)
+    }
+}
+
+/// Preorder intervals are computed once from the actual DOM, not inferred from
+/// arena IDs or potentially stale source offsets. Ordinary payload nodes do not
+/// consume the graph's Manifest-candidate budget.
+struct ManifestIndex {
+    ranges: HashMap<NodeId, (usize, usize)>,
+    manifests: Vec<(usize, NodeId)>,
+}
+impl ManifestIndex {
+    fn new(doc: &Document<'_>, ids: &HashMap<String, NodeId>, signature: NodeId) -> Self {
+        // Same-document targets are IDs or the document root. Keep intervals
+        // only for possible targets and Manifests, not ordinary payload nodes.
+        let mut targets: HashSet<NodeId> = ids.values().copied().collect();
+        targets.extend([doc.root(), signature]);
+        let mut index = Self {
+            ranges: HashMap::new(),
+            manifests: Vec::new(),
+        };
+        let mut pending = vec![(doc.root(), false)];
+        let mut next = 0;
+        while let Some((node, exit)) = pending.pop() {
+            if exit {
+                if let Some(range) = index.ranges.get_mut(&node) {
+                    range.1 = next;
+                }
+                continue;
+            }
+            let manifest = doc
+                .element(node)
+                .is_some_and(|e| e.matches_name_ns(ns::DSIG, ns::node::MANIFEST));
+            if targets.contains(&node) || manifest {
+                index.ranges.insert(node, (next, next));
+            }
+            if manifest {
+                index.manifests.push((next, node));
+            }
+            next += 1;
+            pending.push((node, true));
+            pending.extend(
+                doc.children(node)
+                    .into_iter()
+                    .rev()
+                    .map(|child| (child, false)),
+            );
+        }
+        index
+    }
+}
+
+/// Return whether the current Signature subtree is excluded. `None` means an
+/// unsupported filtering pipeline, for which source-DOM coverage is unknown.
+fn subtree_coverage(doc: &Document<'_>, reference: NodeId) -> Option<bool> {
+    let Some(transforms) = find_child_element(doc, reference, ns::DSIG, ns::node::TRANSFORMS)
+    else {
+        return Some(false);
+    };
+    let mut enveloped = false;
+    let mut canonicalized = false;
+    for node in doc.children(transforms) {
+        let Some(element) = doc.element(node) else {
+            continue;
+        };
+        if !element.matches_name_ns(ns::DSIG, ns::node::TRANSFORM) {
+            return None;
+        }
+        let algorithm = element.get_attribute(ns::attr::ALGORITHM).unwrap_or("");
+        if C14nMode::from_uri(algorithm).is_some() {
+            canonicalized = true;
+        } else if algorithm == bergshamra_core::algorithm::ENVELOPED_SIGNATURE
+            && !canonicalized
+            && !enveloped
+            && doc
+                .children(node)
+                .into_iter()
+                .all(|child| doc.element(child).is_none())
+        {
+            enveloped = true;
+        } else {
+            return None;
+        }
+    }
+    Some(enveloped)
+}
+
+/// Count source-less DOM serialization without allocating a second full XML
+/// String. Actual reference processing retains its existing lazy fallback.
+fn check_document_bytes(
+    doc: &Document<'_>,
+    source: Option<&str>,
+    limit: usize,
+) -> Result<(), Error> {
+    if let Some(source) = source {
+        return if source.len() <= limit {
+            Ok(())
+        } else {
+            Err(limit_error("document bytes"))
+        };
+    }
+    let mut counter = DocumentByteLimit {
+        remaining: limit,
+        exceeded: false,
+    };
+    doc.write_to(&mut counter).map_err(|error| {
+        if counter.exceeded {
+            limit_error("document bytes")
+        } else {
+            Error::Io(error)
+        }
+    })
+}
+struct DocumentByteLimit {
+    remaining: usize,
+    exceeded: bool,
+}
+impl std::io::Write for DocumentByteLimit {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > self.remaining {
+            self.exceeded = true;
+            return Err(std::io::Error::other("document byte budget exceeded"));
+        }
+        self.remaining -= bytes.len();
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn reference_error(doc: &Document<'_>, manifest: NodeId, uri: &str, error: Error) -> Error {
+    let id = doc
+        .element(manifest)
+        .and_then(|e| e.get_attribute("Id"))
+        .unwrap_or("<anonymous>");
+    let prefix = format!("Manifest Id={id} reference URI={uri}");
+    match error {
+        Error::XmlParse(message) => Error::XmlParse(format!("{prefix}: {message}")),
+        Error::XmlStructure(message) => Error::XmlStructure(format!("{prefix}: {message}")),
+        Error::UnsupportedAlgorithm(message) => {
+            Error::UnsupportedAlgorithm(format!("{prefix}: {message}"))
+        }
+        Error::Crypto(message) => Error::Crypto(format!("{prefix}: {message}")),
+        Error::Key(message) => Error::Key(format!("{prefix}: {message}")),
+        Error::SignatureInvalid(message) => Error::SignatureInvalid(format!("{prefix}: {message}")),
+        Error::DigestMismatch(message) => Error::DigestMismatch(format!("{prefix}: {message}")),
+        Error::Canonicalization(message) => Error::Canonicalization(format!("{prefix}: {message}")),
+        Error::Transform(message) => Error::Transform(format!("{prefix}: {message}")),
+        Error::Encryption(message) => Error::Encryption(format!("{prefix}: {message}")),
+        Error::Decryption(message) => Error::Decryption(format!("{prefix}: {message}")),
+        Error::Base64(message) => Error::Base64(format!("{prefix}: {message}")),
+        Error::KeyNotFound(message) => Error::KeyNotFound(format!("{prefix}: {message}")),
+        Error::MissingElement(message) => Error::MissingElement(format!("{prefix}: {message}")),
+        Error::MissingAttribute(message) => Error::MissingAttribute(format!("{prefix}: {message}")),
+        Error::InvalidUri(message) => Error::InvalidUri(format!("{prefix}: {message}")),
+        Error::Certificate(message) => Error::Certificate(format!("{prefix}: {message}")),
+        Error::Other(message) => Error::Other(format!("{prefix}: {message}")),
+        Error::Io(error) => Error::Io(std::io::Error::new(
+            error.kind(),
+            format!("{prefix}: {error}"),
+        )),
+    }
+}
+
+#[cfg(test)]
+mod review_regressions {
+    use super::*;
+    #[test]
+    fn source_less_document_size_is_checked_with_a_bounded_writer() {
+        let xml = format!("<Root>{}</Root>", "payload".repeat(10_000));
+        let doc = uppsala::parse(&xml).unwrap();
+        let mut counter = DocumentByteLimit {
+            remaining: 8,
+            exceeded: false,
+        };
+        assert!(doc.write_to(&mut counter).is_err());
+        assert!(counter.exceeded);
+        assert!(
+            matches!(check_document_bytes(&doc, None, 8), Err(Error::XmlStructure(message)) if message.contains("document bytes"))
+        );
+        let exact = doc.to_xml().len(); // Test-only expected serialized size.
+        assert!(check_document_bytes(&doc, None, exact).is_ok());
+        assert!(matches!(
+            check_document_bytes(&doc, None, exact - 1),
+            Err(Error::XmlStructure(_))
+        ));
     }
 }

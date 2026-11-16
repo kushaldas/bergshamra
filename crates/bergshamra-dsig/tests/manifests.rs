@@ -12,6 +12,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+type LimitCase = (fn(&mut ManifestLimits), &'static str);
+
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/ooxml/");
 const SIGNATURE: &str = include_str!("data/ooxml/_xmlsignatures/sig1.xml");
 const RESOURCES: [(&str, &str); 8] = [
@@ -154,7 +156,7 @@ fn missing_ooxml_resource_cannot_return_outer_only_valid() {
 #[test]
 fn ooxml_manifest_assessment_obeys_reference_and_input_limits() {
     let context = context(Path::new(FIXTURE));
-    let restrictions: [(fn(&mut ManifestLimits), &str); 5] = [
+    let restrictions: [LimitCase; 5] = [
         (|limits| limits.max_references = 10, "references"), // Three outer plus eight members.
         (|limits| limits.max_manifests = 0, "Manifests"),
         (|limits| limits.max_depth = 0, "depth"),
@@ -162,7 +164,7 @@ fn ooxml_manifest_assessment_obeys_reference_and_input_limits() {
             |limits| limits.max_document_bytes = SIGNATURE.len() - 1,
             "document bytes",
         ),
-        (|limits| limits.max_nodes = 1, "inspected nodes"),
+        (|limits| limits.max_nodes = 0, "inspected nodes"),
     ];
     for (restrict, category) in restrictions {
         let mut limits = ManifestLimits::default();

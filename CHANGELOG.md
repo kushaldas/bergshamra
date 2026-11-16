@@ -12,6 +12,10 @@
   errors, never an outer-only success. Existing verification entry points
   retain their behavior. See [Manifest verification](docs/manifest-verification.md)
   for supported scope and partial-package coverage.
+- Refined opt-in Manifest coverage for enveloped signatures, indexed graph
+  discovery, member strict/XSW policy, typed errors and explicit relative-resource
+  resolution. Source-less DOM size checking now streams without an eager full
+  XML copy. Existing default verification behavior remains unchanged.
 
 ## 0.12.0 [2026-11-09]
 

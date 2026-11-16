@@ -13,6 +13,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+type LimitCase = (fn(&mut ManifestLimits), &'static str);
+
 const SECRET: &[u8] = b"manifest-graph-tests-use-a-real-hmac-key";
 const MANIFEST_TYPE: &str = "http://www.w3.org/2000/09/xmldsig#Manifest";
 const PLACEHOLDER: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
@@ -128,25 +130,32 @@ fn nested_payload_tamper_cannot_be_hidden_by_valid_outer_signature() {
     assert_ne!(signed, changed);
     assert!(verify(&context(), &changed).unwrap().is_valid());
     let error = verify_with_manifests(&context(), &changed, &ManifestLimits::default())
-        .expect_err("nested B payload digest must be checked")
-        .to_string();
-    assert!(error.contains("Manifest"), "{error}");
-    assert!(error.contains("#payload"), "{error}");
+        .expect_err("nested B payload digest must be checked");
+    assert!(
+        matches!(error, bergshamra_core::Error::DigestMismatch(_)),
+        "{error}"
+    );
+    assert!(error.to_string().contains("Manifest"), "{error}");
+    assert!(error.to_string().contains("#payload"), "{error}");
 }
 
 #[test]
 fn nested_manifest_depth_and_total_reference_limits_are_enforced() {
     let signed = sign_template(&nested_template(false));
-    let restrictions: [fn(&mut ManifestLimits); 4] = [
-        |limits| limits.max_depth = 1,
-        |limits| limits.max_depth = 65, // The explicit recursion hard cap is 64.
-        |limits| limits.max_manifests = 1,
-        |limits| limits.max_references = 2, // Outer + A + B require three.
+    let restrictions: [LimitCase; 5] = [
+        (|limits| limits.max_depth = 1, "depth"),
+        (|limits| limits.max_depth = 65, "depth"),
+        (|limits| limits.max_manifests = 1, "Manifests"),
+        (|limits| limits.max_references = 2, "references"),
+        (|limits| limits.max_nodes = 1, "inspected nodes"),
     ];
-    for restrict in restrictions {
+    for (restrict, category) in restrictions {
         let mut limits = ManifestLimits::default();
         restrict(&mut limits);
-        assert!(verify_with_manifests(&context(), &signed, &limits).is_err());
+        assert_structure(
+            verify_with_manifests(&context(), &signed, &limits).unwrap_err(),
+            category,
+        );
     }
 }
 
@@ -197,9 +206,8 @@ fn cached_dag_target_still_obeys_the_depth_of_each_reachable_path() {
     // would be at depth four. Checking B's entry depth alone is insufficient.
     let limits = limits_with(|limits| limits.max_depth = 3);
     let error = verify_with_manifests(&context(), &signed, &limits)
-        .expect_err("a cached subtree cannot hide descendants beyond max_depth")
-        .to_string();
-    assert!(error.to_ascii_lowercase().contains("depth"), "{error}");
+        .expect_err("a cached subtree cannot hide descendants beyond max_depth");
+    assert_structure(error, "depth");
 }
 
 #[test]
@@ -217,9 +225,8 @@ fn manifest_cycles_are_reported_before_invalid_member_digests() {
         // hide that the graph itself is cyclic.
         assert!(verify(&context(), &signed).unwrap().is_valid());
         let error = verify_with_manifests(&context(), &signed, &ManifestLimits::default())
-            .expect_err("a reachable Manifest cycle must be explicit")
-            .to_string();
-        assert!(error.to_ascii_lowercase().contains("cycle"), "{error}");
+            .expect_err("a reachable Manifest cycle must be explicit");
+        assert_structure(error, "cycle");
     }
 }
 
@@ -257,10 +264,13 @@ fn filtering_transforms_do_not_authenticate_excluded_manifest_claims() {
         ));
         assert!(verify(&context(), &signed).unwrap().is_valid());
         let error = verify_with_manifests(&context(), &signed, &ManifestLimits::default())
-            .expect_err("filtered unsigned Manifest cannot be treated as covered")
-            .to_string();
-        assert!(error.contains("Manifest"), "{error}");
-        assert!(error.to_ascii_lowercase().contains("transform"), "{error}");
+            .expect_err("filtered unsigned Manifest cannot be treated as covered");
+        assert!(
+            matches!(error, bergshamra_core::Error::UnsupportedAlgorithm(_)),
+            "{error}"
+        );
+        assert!(error.to_string().contains("Manifest"), "{error}");
+        assert!(error.to_string().contains("transform"), "{error}");
     }
 }
 
@@ -307,10 +317,13 @@ fn explicitly_typed_external_manifest_is_not_silently_skipped() {
     context.add_url_map(uri, file.0.to_str().unwrap());
     assert!(verify(&context, &signed).unwrap().is_valid());
     let error = verify_with_manifests(&context, &signed, &ManifestLimits::default())
-        .expect_err("external Manifest recursion is unsupported, not outer-only Valid")
-        .to_string();
-    assert!(error.contains("Manifest"), "{error}");
-    assert!(error.contains(uri), "{error}");
+        .expect_err("external Manifest recursion is unsupported, not outer-only Valid");
+    assert!(
+        matches!(error, bergshamra_core::Error::UnsupportedAlgorithm(_)),
+        "{error}"
+    );
+    assert!(error.to_string().contains("Manifest"), "{error}");
+    assert!(error.to_string().contains(uri), "{error}");
 }
 
 #[test]
@@ -329,9 +342,12 @@ fn requested_manifest_mode_never_skips_cid_digests() {
         context.require_reference_digests = false;
         assert!(verify(&context, &signed).unwrap().is_valid());
         let error = verify_with_manifests(&context, &signed, &ManifestLimits::default())
-            .expect_err("opt-in Manifest mode requires actual digest checks")
-            .to_string();
-        assert!(error.contains(uri), "{error}");
+            .expect_err("opt-in Manifest mode requires actual digest checks");
+        assert!(
+            matches!(error, bergshamra_core::Error::InvalidUri(_)),
+            "{error}"
+        );
+        assert!(error.to_string().contains(uri), "{error}");
     }
 }
 
@@ -361,6 +377,10 @@ fn explicit_manifest_type_cannot_relabel_an_ordinary_payload() {
     assert!(verify(&context(), &signed).unwrap().is_valid());
     let error = verify_with_manifests(&context(), &signed, &ManifestLimits::default())
         .expect_err("Manifest Type must identify a Manifest element");
+    assert!(
+        matches!(error, bergshamra_core::Error::XmlStructure(_)),
+        "{error}"
+    );
     assert!(error.to_string().contains("#payload"), "{error}");
 }
 
@@ -521,6 +541,18 @@ fn first_signature_and_original_dom_provenance_are_explicit() {
         assert_eq!(report.manifests.len(), expected_count);
         if expected_count != 0 {
             assert_eq!(references[0].uri, "#a");
+            let a = report
+                .manifests
+                .iter()
+                .find(|m| doc.element(m.manifest_node).unwrap().get_attribute("Id") == Some("a"))
+                .unwrap();
+            let b = report
+                .manifests
+                .iter()
+                .find(|m| doc.element(m.manifest_node).unwrap().get_attribute("Id") == Some("b"))
+                .unwrap();
+            assert_eq!(references[0].resolved_node, Some(a.manifest_node));
+            assert_eq!(a.references[0].resolved_node, Some(b.manifest_node));
             for manifest in &report.manifests {
                 assert!(doc
                     .element(manifest.manifest_node)
@@ -642,4 +674,52 @@ fn callers_can_raise_reference_budget_without_changing_default_policy() {
     limits.max_references = 130;
     let report = verify_with_manifests(&context(), &signed, &limits).unwrap();
     assert_eq!(report.manifests[0].references.len(), 129);
+}
+
+#[test]
+fn enveloped_exclusion_does_not_hide_a_separately_referenced_manifest_cycle() {
+    let env = format!(
+        r#"<ds:Transform Algorithm="{}"/>"#,
+        algorithm::ENVELOPED_SIGNATURE
+    );
+    let a = manifest("a", &reference("#a", Some(MANIFEST_TYPE), "", PLACEHOLDER));
+    let xml = template(
+        &(reference("", None, &env, "") + &reference("#object", None, "", "")),
+        &a,
+    );
+    let signed = sign_template(&xml);
+    assert!(verify(&context(), &signed).unwrap().is_valid());
+    assert_structure(
+        verify_with_manifests(&context(), &signed, &ManifestLimits::default()).unwrap_err(),
+        "cycle",
+    );
+}
+
+#[test]
+fn excluded_signature_object_alone_is_not_manifest_authentication() {
+    let env = format!(
+        r#"<ds:Transform Algorithm="{}"/>"#,
+        algorithm::ENVELOPED_SIGNATURE
+    );
+    let m = manifest(
+        "unsigned",
+        &reference("urn:unreachable", None, "", PLACEHOLDER),
+    );
+    let signed = sign_template(&template(&reference("", None, &env, ""), &m));
+    let result = verify_with_manifests(&context(), &signed, &ManifestLimits::default()).unwrap();
+    assert!(matches!(result.signature, VerifyResult::Valid { .. }));
+    assert!(result.manifests.is_empty());
+}
+
+#[test]
+fn unsupported_member_transform_retains_its_category_and_uri() {
+    let transform = r#"<ds:Transform Algorithm="urn:unsupported:transform"/>"#;
+    let m = manifest("a", &reference("#payload", None, transform, PLACEHOLDER));
+    let signed = sign_template(&template(&reference("#a", None, "", ""), &m));
+    let error = verify_with_manifests(&context(), &signed, &ManifestLimits::default()).unwrap_err();
+    assert!(
+        matches!(error, bergshamra_core::Error::UnsupportedAlgorithm(_)),
+        "{error}"
+    );
+    assert!(error.to_string().contains("#payload"), "{error}");
 }

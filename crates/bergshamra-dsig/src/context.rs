@@ -409,7 +409,6 @@ pub(crate) fn read_reference_file(
     path: &std::path::Path,
     max_bytes: Option<usize>,
 ) -> Result<Vec<u8>, Error> {
-    use std::io::Read;
     let Some(limit) = max_bytes else {
         return Ok(std::fs::read(path)?);
     };
@@ -427,8 +426,14 @@ pub(crate) fn read_reference_file(
             "Reference resource byte limit exceeded ({limit} bytes)"
         )));
     }
+    read_reference_stream(file, limit)
+}
+
+fn read_reference_stream(reader: impl std::io::Read, limit: usize) -> Result<Vec<u8>, Error> {
+    use std::io::Read;
     let mut bytes = Vec::new();
-    file.take((limit as u64).saturating_add(1))
+    reader
+        .take((limit as u64).saturating_add(1))
         .read_to_end(&mut bytes)?;
     if bytes.len() > limit {
         return Err(Error::Other(format!(
@@ -436,4 +441,38 @@ pub(crate) fn read_reference_file(
         )));
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod manifest_read_regressions {
+    use super::*;
+    #[test]
+    fn resource_growth_after_metadata_is_not_accepted_as_a_truncated_prefix() {
+        use std::io::{Read, Write};
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("bergshamra-growth-{}-{nonce}", std::process::id()));
+        let mut writer = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        writer.write_all(b"a").unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let checked_size = file.metadata().unwrap().len();
+        assert_eq!(checked_size, 1);
+        writer.write_all(b"bc").unwrap(); // Deterministic growth after the metadata snapshot.
+        let error = read_reference_stream(file, checked_size as usize).unwrap_err();
+        assert!(matches!(error, Error::Other(ref message) if message.contains("byte limit")));
+        let mut actual = Vec::new();
+        std::fs::File::open(&path)
+            .unwrap()
+            .read_to_end(&mut actual)
+            .unwrap();
+        assert_eq!(actual, b"abc");
+        std::fs::remove_file(&path).unwrap();
+    }
 }
