@@ -6,7 +6,7 @@ use bergshamra_c14n::{canonicalize_doc, C14nMode};
 use bergshamra_core::{algorithm, ns};
 use bergshamra_crypto::digest;
 use bergshamra_dsig::verify::{verify, verify_with_manifests, ManifestLimits};
-use bergshamra_dsig::{sign, DsigContext};
+use bergshamra_dsig::{sign, DsigContext, VerifyResult};
 use bergshamra_keys::{loader, KeysManager};
 use bergshamra_xml::NodeSet;
 use std::fs;
@@ -362,4 +362,284 @@ fn explicit_manifest_type_cannot_relabel_an_ordinary_payload() {
     let error = verify_with_manifests(&context(), &signed, &ManifestLimits::default())
         .expect_err("Manifest Type must identify a Manifest element");
     assert!(error.to_string().contains("#payload"), "{error}");
+}
+
+fn assert_structure(error: bergshamra_core::Error, fragment: &str) {
+    assert!(
+        matches!(error, bergshamra_core::Error::XmlStructure(_)),
+        "{error}"
+    );
+    assert!(error.to_string().contains(fragment), "{error}");
+}
+
+#[test]
+fn enveloped_document_reference_excludes_signature_but_object_reference_covers_manifest() {
+    let env = format!(
+        r#"<ds:Transform Algorithm="{}"/>"#,
+        algorithm::ENVELOPED_SIGNATURE
+    );
+    for root_uri in ["", "#xpointer(/)"] {
+        let m = manifest("a", &reference("#payload", None, "", "DIGEST_PAYLOAD"));
+        let xml = template(
+            &(reference(root_uri, None, &env, "") + &reference("#object", None, "", "")),
+            &m,
+        );
+        let xml = fill_digest(xml, "DIGEST_PAYLOAD", "payload");
+        let signed = sign_template(&xml);
+        assert!(verify(&context(), &signed).unwrap().is_valid());
+        let report = verify_with_manifests(&context(), &signed, &ManifestLimits::default())
+            .expect("enveloped exclusion must not hide the separately authenticated Object");
+        assert_eq!(report.manifests.len(), 1);
+        assert_eq!(report.manifests[0].references[0].uri, "#payload");
+    }
+}
+
+#[test]
+fn large_ordinary_enveloped_document_does_not_consume_manifest_node_budget() {
+    let env = format!(
+        r#"<ds:Transform Algorithm="{}"/>"#,
+        algorithm::ENVELOPED_SIGNATURE
+    );
+    let xml = template(&reference("", None, &env, ""), "")
+        .replace("original body", &"<Item/>".repeat(100_100));
+    let signed = sign_template(&xml);
+    assert!(verify(&context(), &signed).unwrap().is_valid());
+    assert!(
+        verify_with_manifests(&context(), &signed, &ManifestLimits::default())
+            .expect("a >100k-node ordinary document needs no Manifest traversal")
+            .manifests
+            .is_empty()
+    );
+    let mut limits = ManifestLimits::default();
+    limits.max_nodes = 0; // No reachable Manifest candidates need graph inspection.
+    let report = verify_with_manifests(&context(), &signed, &limits)
+        .expect("ordinary payload nodes are not Manifest graph work");
+    assert!(matches!(report.signature, VerifyResult::Valid { .. }));
+    assert!(report.manifests.is_empty());
+}
+
+#[test]
+fn enveloped_exclusion_preserves_manifests_outside_the_signature() {
+    let env = format!(
+        r#"<ds:Transform Algorithm="{}"/>"#,
+        algorithm::ENVELOPED_SIGNATURE
+    );
+    let m = manifest("a", &reference("#payload", None, "", "DIGEST_PAYLOAD"));
+    let xml = template(&reference("", None, &env, ""), "")
+        .replace("<ds:Signature>", &(m + "<ds:Signature>"));
+    let xml = fill_digest(xml, "DIGEST_PAYLOAD", "payload");
+    let signed = sign_template(&xml);
+    let report = verify_with_manifests(&context(), &signed, &ManifestLimits::default())
+        .expect("enveloped data outside Signature remains authenticated");
+    assert_eq!(report.manifests.len(), 1);
+}
+
+fn strict_template(wrapped: bool) -> String {
+    let m = manifest("a", &reference("#payload", None, "", "DIGEST_PAYLOAD"));
+    let mut xml = template(&reference("#a", Some(MANIFEST_TYPE), "", ""), "")
+        .replace("<ds:Signature>", &(m + "<ds:Signature>"));
+    if wrapped {
+        xml = xml.replace(
+            "<Payload Id=\"payload\">original body</Payload>",
+            "<Wrapper><Payload Id=\"payload\">original body</Payload></Wrapper>",
+        );
+    }
+    fill_digest(xml, "DIGEST_PAYLOAD", "payload")
+}
+
+#[test]
+fn strict_position_policy_applies_to_manifest_members_and_permissive_mode_reports_targets() {
+    for wrapped in [false, true] {
+        let signed = sign_template(&strict_template(wrapped));
+        let permissive =
+            verify_with_manifests(&context(), &signed, &ManifestLimits::default()).unwrap();
+        assert!(permissive.manifests[0].references[0]
+            .resolved_node
+            .is_some());
+        let mut strict = context();
+        strict.strict_verification = true;
+        assert!(verify(&strict, &signed).unwrap().is_valid()); // Manifest is a Signature sibling.
+        let result = verify_with_manifests(&strict, &signed, &ManifestLimits::default());
+        if wrapped {
+            assert_structure(
+                result.expect_err("wrapped member violates caller XSW position policy"),
+                "strict mode",
+            );
+        } else {
+            assert!(result.is_ok(), "sibling member is eligible: {result:?}");
+        }
+    }
+}
+
+fn signature_part(xml: &str) -> String {
+    let start = xml.find("<ds:Signature>").unwrap();
+    let end = xml.find("</ds:Signature>").unwrap() + "</ds:Signature>".len();
+    xml[start..end].to_owned()
+}
+
+#[test]
+fn first_signature_and_original_dom_provenance_are_explicit() {
+    let plain = signature_part(&sign_template(&template(
+        &reference("#payload", None, "", ""),
+        "",
+    )))
+    .replace("Id=\"object\"", "Id=\"plain-object\"");
+    let nested = signature_part(&sign_template(&nested_template(false)));
+    for (signatures, expected_count) in [(plain.clone() + &nested, 0), (nested + &plain, 2)] {
+        let xml = format!(
+            r#"<Root xmlns:ds="{}"><Payload Id="payload">original body</Payload>{signatures}</Root>"#,
+            ns::DSIG
+        );
+        let all = bergshamra_dsig::verify::verify_all(&context(), &xml).unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().all(VerifyResult::is_valid));
+        let doc = uppsala::parse(&xml).unwrap();
+        let signatures = doc
+            .descendants(doc.root())
+            .into_iter()
+            .filter(|id| {
+                doc.element(*id)
+                    .is_some_and(|e| e.matches_name_ns(ns::DSIG, "Signature"))
+            })
+            .collect::<Vec<_>>();
+        let report = bergshamra_dsig::verify::verify_document_with_manifests(
+            &context(),
+            &doc,
+            Some(&xml),
+            &ManifestLimits::default(),
+        )
+        .unwrap();
+        let VerifyResult::Valid {
+            signature_node,
+            references,
+            ..
+        } = &report.signature
+        else {
+            panic!("Ok must carry Valid")
+        };
+        assert_eq!(*signature_node, signatures[0]);
+        assert_eq!(report.manifests.len(), expected_count);
+        if expected_count != 0 {
+            assert_eq!(references[0].uri, "#a");
+            for manifest in &report.manifests {
+                assert!(doc
+                    .element(manifest.manifest_node)
+                    .unwrap()
+                    .matches_name_ns(ns::DSIG, "Manifest"));
+                for member in &manifest.references {
+                    let target = doc.element(member.resolved_node.unwrap()).unwrap();
+                    assert_eq!(
+                        Some(member.uri.trim_start_matches('#')),
+                        target.get_attribute("Id")
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn digest_mismatches_have_the_same_category_in_outer_and_manifest_references() {
+    let outer = sign_template(&template(&reference("#payload", None, "", ""), ""));
+    let nested = sign_template(&nested_template(false));
+    for signed in [outer, nested] {
+        let changed = signed.replacen("original body", "changed body", 1);
+        let error =
+            verify_with_manifests(&context(), &changed, &ManifestLimits::default()).unwrap_err();
+        assert!(
+            matches!(error, bergshamra_core::Error::DigestMismatch(_)),
+            "{error}"
+        );
+        assert!(error.to_string().contains("#payload"), "{error}");
+    }
+}
+
+#[test]
+fn unsupported_member_digest_and_unresolved_uri_retain_their_error_categories() {
+    for (member, unsupported) in [
+        (
+            reference("#payload", None, "", PLACEHOLDER)
+                .replace(algorithm::SHA256, "urn:unsupported:digest"),
+            true,
+        ),
+        (
+            reference("urn:unmapped:member", None, "", PLACEHOLDER),
+            false,
+        ),
+    ] {
+        let signed = sign_template(&template(
+            &reference("#a", Some(MANIFEST_TYPE), "", ""),
+            &manifest("a", &member),
+        ));
+        let error =
+            verify_with_manifests(&context(), &signed, &ManifestLimits::default()).unwrap_err();
+        if unsupported {
+            assert!(
+                matches!(error, bergshamra_core::Error::UnsupportedAlgorithm(_)),
+                "{error}"
+            );
+        } else {
+            assert!(
+                matches!(error, bergshamra_core::Error::InvalidUri(_)),
+                "{error}"
+            );
+        }
+        assert!(error.to_string().contains("Manifest"), "{error}");
+        assert!(
+            error.to_string().contains(if unsupported {
+                "#payload"
+            } else {
+                "urn:unmapped:member"
+            }),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn graph_error_precedence_and_invalid_outer_result_are_explicit() {
+    let ordinary = sign_template(&template(&reference("#payload", None, "", ""), ""));
+    let a = manifest("a", &reference("#a", Some(MANIFEST_TYPE), "", PLACEHOLDER));
+    let cyclic = sign_template(&template(&reference("#a", Some(MANIFEST_TYPE), "", ""), &a));
+    for (signed, cycle) in [(ordinary, false), (cyclic, true)] {
+        let begin = signed.find("<ds:SignatureValue>").unwrap() + "<ds:SignatureValue>".len();
+        let mut invalid = signed.clone();
+        invalid.replace_range(
+            begin..begin + 1,
+            if &signed[begin..begin + 1] == "A" {
+                "B"
+            } else {
+                "A"
+            },
+        );
+        assert!(!verify(&context(), &invalid).unwrap().is_valid());
+        let error =
+            verify_with_manifests(&context(), &invalid, &ManifestLimits::default()).unwrap_err();
+        if cycle {
+            assert_structure(error, "cycle");
+        } else {
+            assert!(
+                matches!(error, bergshamra_core::Error::SignatureInvalid(_)),
+                "{error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn callers_can_raise_reference_budget_without_changing_default_policy() {
+    let member = reference("#payload", None, "", "DIGEST_PAYLOAD");
+    let xml = template(
+        &reference("#a", Some(MANIFEST_TYPE), "", ""),
+        &manifest("a", &member.repeat(129)),
+    );
+    let signed = sign_template(&fill_digest(xml, "DIGEST_PAYLOAD", "payload"));
+    assert_structure(
+        verify_with_manifests(&context(), &signed, &ManifestLimits::default()).unwrap_err(),
+        "references",
+    );
+    let mut limits = ManifestLimits::default();
+    limits.max_references = 130;
+    let report = verify_with_manifests(&context(), &signed, &limits).unwrap();
+    assert_eq!(report.manifests[0].references.len(), 129);
 }
