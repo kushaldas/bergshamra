@@ -114,10 +114,7 @@ pub fn verify_document_with_manifests(
     source_xml: Option<&str>,
     limits: &ManifestLimits,
 ) -> Result<ManifestVerificationResult, Error> {
-    if limits.max_depth == 0 || limits.max_depth > 64 {
-        return Err(limit_error("depth must be between 1 and 64"));
-    }
-    check_document_bytes(doc, source_xml, limits.max_document_bytes)?;
+    check_manifest_input(doc, source_xml, limits)?;
     let id_map = build_verify_id_map(ctx, doc)?;
     let signature_node = find_element(doc, ns::DSIG, ns::node::SIGNATURE)
         .ok_or_else(|| Error::MissingElement("Signature".into()))?;
@@ -129,25 +126,8 @@ pub fn verify_document_with_manifests(
             "Manifest verification requires outer references".into(),
         ));
     }
-    let mut graph = Graph {
-        doc,
-        index: ManifestIndex::new(doc, &id_map, signature_node),
-        signature_node,
-        id_map: &id_map,
-        limits,
-        active: HashSet::new(),
-        complete: HashMap::new(),
-        references: outer_refs.len(),
-        inspected_nodes: 0,
-        plans: Vec::new(),
-    };
-    if graph.references > limits.max_references {
-        return Err(limit_error("references"));
-    }
     // Plan and bound the whole reachable graph before doing external I/O.
-    for reference in &outer_refs {
-        graph.follow(*reference, 1)?;
-    }
+    let plans = plan_manifests(doc, signature_node, &id_map, &outer_refs, limits)?;
     let signature = verify_signature_node_with_limit(
         ctx,
         doc,
@@ -172,10 +152,10 @@ pub fn verify_document_with_manifests(
             account_retained_octets(&mut retained_octets, reference, ctx.retain_reference_octets)?;
         }
     }
-    let mut manifests = Vec::with_capacity(graph.plans.len());
+    let mut manifests = Vec::with_capacity(plans.len());
     // Reverse postorder is topological: authenticate every parent binding
     // before interpreting a descendant Manifest's resource declarations.
-    for (manifest_node, references) in graph.plans.into_iter().rev() {
+    for (manifest_node, references) in plans.into_iter().rev() {
         let mut checked = Vec::with_capacity(references.len());
         for reference in references {
             let uri = doc
@@ -223,6 +203,51 @@ pub fn verify_document_with_manifests(
         signature,
         manifests,
     })
+}
+
+/// Check the limits themselves and the input size before any other work.
+pub(crate) fn check_manifest_input(
+    doc: &Document<'_>,
+    source_xml: Option<&str>,
+    limits: &ManifestLimits,
+) -> Result<(), Error> {
+    if limits.max_depth == 0 || limits.max_depth > 64 {
+        return Err(limit_error("depth must be between 1 and 64"));
+    }
+    check_document_bytes(doc, source_xml, limits.max_document_bytes)
+}
+
+/// Discover and bound, without I/O, the Manifests that `outer_refs` of the
+/// Signature at `signature_node` authenticate. Each entry is a Manifest and its
+/// member references; the order is postorder, so every Manifest comes after
+/// the Manifests that its members reference. Verification walks it in
+/// reverse; signing walks it forward to fill children before parents.
+pub(crate) fn plan_manifests(
+    doc: &Document<'_>,
+    signature_node: NodeId,
+    id_map: &HashMap<String, NodeId>,
+    outer_refs: &[NodeId],
+    limits: &ManifestLimits,
+) -> Result<Vec<(NodeId, Vec<NodeId>)>, Error> {
+    let mut graph = Graph {
+        doc,
+        index: ManifestIndex::new(doc, id_map, signature_node),
+        signature_node,
+        id_map,
+        limits,
+        active: HashSet::new(),
+        complete: HashMap::new(),
+        references: outer_refs.len(),
+        inspected_nodes: 0,
+        plans: Vec::new(),
+    };
+    if graph.references > limits.max_references {
+        return Err(limit_error("references"));
+    }
+    for reference in outer_refs {
+        graph.follow(*reference, 1)?;
+    }
+    Ok(graph.plans)
 }
 
 fn limit_error(which: &str) -> Error {

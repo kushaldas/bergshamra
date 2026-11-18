@@ -80,6 +80,21 @@ pub struct DsigContext {
     /// truncation. `None` (the default) retains nothing and keeps the streaming
     /// digest fast path.
     pub retain_reference_octets: Option<usize>,
+    /// Opt-in signing of authenticated same-document Manifest members.
+    ///
+    /// When `true`, signing first fills each empty member `<DigestValue>` of
+    /// the `<Manifest>` elements inside this Signature's `<Object>` elements
+    /// that a `<SignedInfo>` `<Reference>` authenticates (the discovery rules of
+    /// [`verify_document_with_manifests`](crate::verify::verify_document_with_manifests)).
+    /// Members use the same resolver, URL maps, transforms and digest code as
+    /// `<SignedInfo>` references; nested Manifests are filled children first,
+    /// and every Manifest before the `<SignedInfo>` references. Non-empty
+    /// member digests are left unchanged. Default
+    /// [`ManifestLimits`](crate::verify::ManifestLimits) bound the graph and
+    /// the detached reads (also of `<SignedInfo>` references, with no
+    /// current-directory fallback); any failure fails the signing call and
+    /// leaves no partial output. `false` (the default) keeps Manifests as-is.
+    pub sign_manifest_members: bool,
     /// Optional HSM-backed signer. When set, bypasses KeysManager for signing.
     pub hsm_signer: Option<Box<dyn Signer>>,
     /// Optional HSM-backed verifier. When set, bypasses KeysManager for verification.
@@ -114,6 +129,7 @@ impl std::fmt::Debug for DsigContext {
             .field("strict_verification", &self.strict_verification)
             .field("require_reference_digests", &self.require_reference_digests)
             .field("retain_reference_octets", &self.retain_reference_octets)
+            .field("sign_manifest_members", &self.sign_manifest_members)
             .field(
                 "hsm_signer",
                 &self.hsm_signer.as_ref().map(|_| "<hsm_signer>"),
@@ -182,6 +198,7 @@ impl DsigContext {
             strict_verification: false,
             require_reference_digests: true,
             retain_reference_octets: None,
+            sign_manifest_members: false,
             hsm_signer: None,
             hsm_verifier: None,
         }

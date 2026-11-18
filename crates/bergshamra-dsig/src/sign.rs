@@ -5,8 +5,10 @@
 //! Signs an XML document using a template with empty DigestValue/SignatureValue.
 
 use crate::context::{
-    local_reference_relative_path, read_existing_relative_file, url_map_matches, DsigContext,
+    local_reference_relative_path, read_existing_relative_file,
+    read_existing_relative_file_with_limit, read_reference_file, url_map_matches, DsigContext,
 };
+use crate::verify::{check_manifest_input, plan_manifests, ManifestLimits};
 use bergshamra_c14n::C14nMode;
 use bergshamra_core::{algorithm, ns, Error};
 use bergshamra_crypto::digest;
@@ -61,7 +63,7 @@ pub fn sign_owned(ctx: &DsigContext, mut result_xml: String) -> Result<String, E
     let mut id_attrs: Vec<&str> = vec!["Id", "ID", "id", "AssertionID"];
     let extra: Vec<&str> = ctx.id_attrs.iter().map(|s| s.as_str()).collect();
     id_attrs.extend(extra);
-    let _id_map = build_id_map(&doc, &id_attrs)?;
+    let id_map = build_id_map(&doc, &id_attrs)?;
 
     // Find Signature element
     let sig_node = find_element(&doc, ns::DSIG, ns::node::SIGNATURE)
@@ -95,6 +97,25 @@ pub fn sign_owned(ctx: &DsigContext, mut result_xml: String) -> Result<String, E
         .ok_or_else(|| Error::MissingAttribute("Algorithm on SignatureMethod".into()))?
         .to_owned();
 
+    // Opt-in: plan the authenticated Manifests on this parse and keep each
+    // member as an element path, which survives the DigestValue text fills.
+    let manifest_limits = ManifestLimits::default();
+    let max_bytes = ctx
+        .sign_manifest_members
+        .then_some(manifest_limits.max_reference_bytes);
+    let member_paths = if ctx.sign_manifest_members {
+        check_manifest_input(&doc, Some(result_xml.as_str()), &manifest_limits)?;
+        manifest_members_to_sign(&doc, sig_node, signed_info, &id_map, &manifest_limits)?
+            .into_iter()
+            .map(|member| {
+                element_path(&doc, member)
+                    .ok_or_else(|| Error::XmlStructure("detached Manifest member".into()))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
+
     // Process each Reference to compute digests.
     // We re-parse result_xml on each iteration so that same-document references
     // (e.g. URI=#reference-1) see DigestValues filled in by earlier iterations.
@@ -104,6 +125,40 @@ pub fn sign_owned(ctx: &DsigContext, mut result_xml: String) -> Result<String, E
     // initial parse keeps later in-place replacements from reallocating while a
     // document tree is live.
     result_xml.reserve(4096);
+
+    // Fill Manifest members first (children before parents), so that the
+    // SignedInfo references and parent members digest the filled values.
+    for path in &member_paths {
+        let cur_doc = uppsala::parse(&result_xml).map_err(|e| Error::XmlParse(e.to_string()))?;
+        let cur_id_map = build_id_map(&cur_doc, &id_attrs)?;
+        let cur_sig = find_element(&cur_doc, ns::DSIG, ns::node::SIGNATURE)
+            .ok_or_else(|| Error::MissingElement("Signature".into()))?;
+        let member = resolve_element_path(&cur_doc, path)
+            .ok_or_else(|| Error::XmlStructure("Manifest member moved while signing".into()))?;
+        let Some(digest_value) = empty_digest_value(&cur_doc, member)? else {
+            continue;
+        };
+        let Some(computed) = compute_reference_digest(
+            ctx,
+            &cur_doc,
+            Some(&result_xml),
+            cur_sig,
+            &cur_id_map,
+            &id_attrs,
+            member,
+            max_bytes,
+        )?
+        else {
+            continue;
+        };
+        let replacement =
+            empty_element_replacement(&result_xml, &cur_doc, digest_value, "DigestValue")
+                .ok_or_else(|| Error::XmlStructure("Manifest DigestValue has no range".into()))?;
+        drop(cur_doc);
+        use base64::Engine;
+        let digest_b64 = base64::engine::general_purpose::STANDARD.encode(computed);
+        replace_element_in_place(&mut result_xml, replacement, &digest_b64);
+    }
 
     for ref_idx in 0..ref_count {
         // Re-parse current state so same-document refs see filled DigestValues
@@ -118,108 +173,21 @@ pub fn sign_owned(ctx: &DsigContext, mut result_xml: String) -> Result<String, E
             find_child_elements(&cur_doc, cur_signed_info, ns::DSIG, ns::node::REFERENCE);
         let reference = cur_refs[ref_idx];
 
-        let uri = cur_doc
-            .element(reference)
-            .and_then(|e| e.get_attribute(ns::attr::URI))
-            .unwrap_or("");
-
-        // Skip cid: URIs — these reference MIME attachments outside the XML document
-        // (common in WS-Security). Digests are pre-computed by the caller.
+        // cid: URIs reference MIME attachments outside the XML document
+        // (common in WS-Security); digests are pre-computed by the caller.
         // See docs/adr/0002-cid-uri-scheme-skip.md
-        if uri.starts_with("cid:") {
+        let Some(computed) = compute_reference_digest(
+            ctx,
+            &cur_doc,
+            Some(&result_xml),
+            cur_sig,
+            &cur_id_map,
+            &id_attrs,
+            reference,
+            max_bytes,
+        )?
+        else {
             continue;
-        }
-
-        let digest_method =
-            find_child_element(&cur_doc, reference, ns::DSIG, ns::node::DIGEST_METHOD)
-                .ok_or_else(|| Error::MissingElement("DigestMethod".into()))?;
-        let digest_uri = cur_doc
-            .element(digest_method)
-            .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
-            .ok_or_else(|| Error::MissingAttribute("Algorithm on DigestMethod".into()))?;
-
-        let transforms_node =
-            find_child_element(&cur_doc, reference, ns::DSIG, ns::node::TRANSFORMS);
-
-        // The common enveloped-signature + C14N case can be digested directly
-        // from the parsed document. Any transform chain outside that narrow
-        // shape returns `None` and is handled by the generic pipeline below.
-        let fast_digest = reference_node_set_for_fast(&cur_doc, &cur_id_map, uri)?
-            .and_then(|node_set| {
-                try_fast_reference_digest(&cur_doc, cur_sig, node_set, transforms_node, digest_uri)
-                    .transpose()
-            })
-            .transpose()?;
-
-        let computed = if let Some(computed) = fast_digest {
-            computed
-        } else {
-            // Resolve reference and apply the generic transform pipeline.
-            let mut data = if uri.is_empty() {
-                // Per W3C spec: URI="" selects whole document without comments
-                let ns = NodeSet::all_without_comments(&cur_doc);
-                bergshamra_transforms::TransformData::xml_borrowed(&result_xml, Some(ns))
-            } else if let Some(fragment) = bergshamra_xml::xpath::parse_same_document_ref(uri) {
-                if fragment == "xpointer(/)" {
-                    bergshamra_transforms::TransformData::xml_borrowed(&result_xml, None)
-                } else {
-                    let is_xpointer = bergshamra_xml::xpath::parse_xpointer_id(fragment).is_some();
-                    let frag_id =
-                        bergshamra_xml::xpath::parse_xpointer_id(fragment).unwrap_or(fragment);
-                    let resolved_id =
-                        bergshamra_xml::xpath::resolve_id(&cur_doc, &cur_id_map, frag_id)?;
-                    let ns = if is_xpointer {
-                        NodeSet::tree_with_comments(resolved_id, &cur_doc)
-                    } else {
-                        NodeSet::tree_without_comments(resolved_id, &cur_doc)
-                    };
-                    bergshamra_transforms::TransformData::xml_borrowed(&result_xml, Some(ns))
-                }
-            } else {
-                // Try url-map for external URIs. Mappings are exact except for
-                // a same-resource `#fragment` suffix.
-                let mut resolved = None;
-                for (map_url, file_path) in &ctx.url_maps {
-                    if url_map_matches(uri, map_url) {
-                        let bytes = std::fs::read(file_path)
-                            .map_err(|e| Error::Other(format!("url-map {file_path}: {e}")))?;
-                        resolved = Some(bergshamra_transforms::TransformData::Binary(bytes));
-                        break;
-                    }
-                }
-                // Match verifier behavior for local detached files: URI
-                // schemes are not local paths, and any local path candidate
-                // must pass the same absolute/traversal checks.
-                if resolved.is_none() {
-                    if let Some(bytes) =
-                        read_signing_relative_reference_uri(uri, ctx.base_dir.as_deref())?
-                    {
-                        resolved = Some(bergshamra_transforms::TransformData::Binary(bytes));
-                    }
-                }
-                resolved.ok_or_else(|| Error::InvalidUri(format!("unsupported URI: {uri}")))?
-            };
-
-            if let Some(transforms_id) = transforms_node {
-                for t_node in cur_doc.children(transforms_id) {
-                    let is_transform = cur_doc
-                        .element(t_node)
-                        .is_some_and(|e| &*e.name.local_name == ns::node::TRANSFORM);
-                    if !is_transform {
-                        continue;
-                    }
-                    let t_uri = cur_doc
-                        .element(t_node)
-                        .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
-                        .unwrap_or("");
-                    data = crate::verify::apply_transform(t_uri, data, t_node, cur_sig, &cur_doc)?;
-                }
-            }
-
-            let bytes = data.to_binary()?;
-            let computed = digest::digest(digest_uri, &bytes)?;
-            drop(bytes);
-            computed
         };
 
         use base64::Engine;
@@ -615,7 +583,23 @@ pub fn sign_document_node(
             "node {sig_node:?} is a Signature element that is not attached to the document"
         )));
     }
+    if !ctx.sign_manifest_members {
+        return sign_attached_signature(ctx, doc, sig_node);
+    }
+    // Sign a clone so that any failure leaves `doc` unchanged. The clone keeps
+    // the arena layout, so caller-held node ids stay valid.
+    let mut signed = doc.clone();
+    sign_attached_signature(ctx, &mut signed, sig_node)?;
+    *doc = signed;
+    Ok(())
+}
 
+/// Fill and sign the attached `<ds:Signature>` at `sig_node` in place.
+fn sign_attached_signature(
+    ctx: &DsigContext,
+    doc: &mut Document<'_>,
+    sig_node: NodeId,
+) -> Result<(), Error> {
     let mut id_attrs: Vec<&str> = vec!["Id", "ID", "id", "AssertionID"];
     let extra: Vec<&str> = ctx.id_attrs.iter().map(|s| s.as_str()).collect();
     id_attrs.extend(extra);
@@ -648,45 +632,35 @@ pub fn sign_document_node(
         .ok_or_else(|| Error::MissingAttribute("Algorithm on SignatureMethod".into()))?
         .to_owned();
 
+    let manifest_limits = ManifestLimits::default();
+    let max_bytes = ctx
+        .sign_manifest_members
+        .then_some(manifest_limits.max_reference_bytes);
+    if ctx.sign_manifest_members {
+        check_manifest_input(doc, None, &manifest_limits)?;
+        let members =
+            manifest_members_to_sign(doc, sig_node, signed_info, &id_map, &manifest_limits)?;
+        for member in members {
+            let Some(digest_value) = empty_digest_value(doc, member)? else {
+                continue;
+            };
+            if let Some(computed) = compute_reference_digest(
+                ctx, doc, None, sig_node, &id_map, &id_attrs, member, max_bytes,
+            )? {
+                use base64::Engine;
+                let digest_b64 = base64::engine::general_purpose::STANDARD.encode(computed);
+                replace_element_text(doc, digest_value, digest_b64);
+            }
+        }
+    }
+
     let references = find_child_elements(doc, signed_info, ns::DSIG, ns::node::REFERENCE);
     for reference in references {
-        let uri = doc
-            .element(reference)
-            .and_then(|e| e.get_attribute(ns::attr::URI))
-            .unwrap_or("")
-            .to_owned();
-        if uri.starts_with("cid:") {
+        let Some(computed) = compute_reference_digest(
+            ctx, doc, None, sig_node, &id_map, &id_attrs, reference, max_bytes,
+        )?
+        else {
             continue;
-        }
-
-        let digest_method = find_child_element(doc, reference, ns::DSIG, ns::node::DIGEST_METHOD)
-            .ok_or_else(|| Error::MissingElement("DigestMethod".into()))?;
-        let digest_uri = doc
-            .element(digest_method)
-            .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
-            .ok_or_else(|| Error::MissingAttribute("Algorithm on DigestMethod".into()))?
-            .to_owned();
-        let transforms_node = find_child_element(doc, reference, ns::DSIG, ns::node::TRANSFORMS);
-
-        let fast_digest = reference_node_set_for_fast(doc, &id_map, &uri)?
-            .and_then(|node_set| {
-                try_fast_reference_digest(doc, sig_node, node_set, transforms_node, &digest_uri)
-                    .transpose()
-            })
-            .transpose()?;
-
-        let computed = if let Some(computed) = fast_digest {
-            computed
-        } else {
-            compute_reference_digest_via_transform_pipeline(
-                ctx,
-                doc,
-                sig_node,
-                &id_attrs,
-                &uri,
-                transforms_node,
-                &digest_uri,
-            )?
         };
 
         use base64::Engine;
@@ -900,6 +874,7 @@ fn compute_reference_digest_via_transform_pipeline(
     uri: &str,
     live_transforms_node: Option<NodeId>,
     digest_uri: &str,
+    max_bytes: Option<usize>,
 ) -> Result<Vec<u8>, Error> {
     let current_xml = live_doc.to_xml();
     let snapshot = uppsala::parse(&current_xml).map_err(|e| {
@@ -913,13 +888,109 @@ fn compute_reference_digest_via_transform_pipeline(
         .map(|node| remap_node_into_snapshot(live_doc, node, doc))
         .transpose()?;
     let id_map = &build_id_map(doc, id_attrs)?;
+    digest_resolved_reference(
+        ctx,
+        doc,
+        &current_xml,
+        sig_node,
+        id_map,
+        uri,
+        transforms_node,
+        digest_uri,
+        max_bytes,
+    )
+}
 
+/// Compute the digest of `reference`, or `None` for a skipped `cid:` URI.
+///
+/// The streaming C14N fast path is tried first. Otherwise, with `xml` (the
+/// exact text `doc` was parsed from) the generic pipeline runs on `doc`;
+/// without it, on a snapshot of the serialized live document. `max_bytes`
+/// bounds detached reads and disables the current-directory fallback.
+#[allow(clippy::too_many_arguments)]
+fn compute_reference_digest(
+    ctx: &DsigContext,
+    doc: &Document<'_>,
+    xml: Option<&str>,
+    sig_node: NodeId,
+    id_map: &HashMap<String, NodeId>,
+    id_attrs: &[&str],
+    reference: NodeId,
+    max_bytes: Option<usize>,
+) -> Result<Option<Vec<u8>>, Error> {
+    let uri = doc
+        .element(reference)
+        .and_then(|e| e.get_attribute(ns::attr::URI))
+        .unwrap_or("");
+    if uri.starts_with("cid:") {
+        return Ok(None);
+    }
+    let digest_method = find_child_element(doc, reference, ns::DSIG, ns::node::DIGEST_METHOD)
+        .ok_or_else(|| Error::MissingElement("DigestMethod".into()))?;
+    let digest_uri = doc
+        .element(digest_method)
+        .and_then(|e| e.get_attribute(ns::attr::ALGORITHM))
+        .ok_or_else(|| Error::MissingAttribute("Algorithm on DigestMethod".into()))?;
+    let transforms_node = find_child_element(doc, reference, ns::DSIG, ns::node::TRANSFORMS);
+
+    // The common enveloped-signature + C14N case is digested directly from
+    // the parsed document; any other chain uses the generic pipeline.
+    let fast_digest = reference_node_set_for_fast(doc, id_map, uri)?
+        .and_then(|node_set| {
+            try_fast_reference_digest(doc, sig_node, node_set, transforms_node, digest_uri)
+                .transpose()
+        })
+        .transpose()?;
+    if let Some(computed) = fast_digest {
+        return Ok(Some(computed));
+    }
+    match xml {
+        Some(xml) => digest_resolved_reference(
+            ctx,
+            doc,
+            xml,
+            sig_node,
+            id_map,
+            uri,
+            transforms_node,
+            digest_uri,
+            max_bytes,
+        ),
+        None => compute_reference_digest_via_transform_pipeline(
+            ctx,
+            doc,
+            sig_node,
+            id_attrs,
+            uri,
+            transforms_node,
+            digest_uri,
+            max_bytes,
+        ),
+    }
+    .map(Some)
+}
+
+/// Resolve `uri` against `doc` (parsed from `xml`) or the detached resolver,
+/// apply the transforms and digest the result.
+#[allow(clippy::too_many_arguments)]
+fn digest_resolved_reference(
+    ctx: &DsigContext,
+    doc: &Document<'_>,
+    xml: &str,
+    sig_node: NodeId,
+    id_map: &HashMap<String, NodeId>,
+    uri: &str,
+    transforms_node: Option<NodeId>,
+    digest_uri: &str,
+    max_bytes: Option<usize>,
+) -> Result<Vec<u8>, Error> {
     let mut data = if uri.is_empty() {
+        // Per W3C spec: URI="" selects whole document without comments
         let ns = NodeSet::all_without_comments(doc);
-        bergshamra_transforms::TransformData::xml_borrowed(&current_xml, Some(ns))
+        bergshamra_transforms::TransformData::xml_borrowed(xml, Some(ns))
     } else if let Some(fragment) = bergshamra_xml::xpath::parse_same_document_ref(uri) {
         if fragment == "xpointer(/)" {
-            bergshamra_transforms::TransformData::xml_borrowed(&current_xml, None)
+            bergshamra_transforms::TransformData::xml_borrowed(xml, None)
         } else {
             let is_xpointer = bergshamra_xml::xpath::parse_xpointer_id(fragment).is_some();
             let frag_id = bergshamra_xml::xpath::parse_xpointer_id(fragment).unwrap_or(fragment);
@@ -929,20 +1000,30 @@ fn compute_reference_digest_via_transform_pipeline(
             } else {
                 NodeSet::tree_without_comments(resolved_id, doc)
             };
-            bergshamra_transforms::TransformData::xml_borrowed(&current_xml, Some(ns))
+            bergshamra_transforms::TransformData::xml_borrowed(xml, Some(ns))
         }
     } else {
+        // Try url-map for external URIs. Mappings are exact except for a
+        // same-resource `#fragment` suffix.
         let mut resolved = None;
         for (map_url, file_path) in &ctx.url_maps {
             if url_map_matches(uri, map_url) {
-                let bytes = std::fs::read(file_path)
-                    .map_err(|e| Error::Other(format!("url-map {file_path}: {e}")))?;
+                let bytes = match max_bytes {
+                    None => std::fs::read(file_path)
+                        .map_err(|e| Error::Other(format!("url-map {file_path}: {e}")))?,
+                    Some(_) => read_reference_file(std::path::Path::new(file_path), max_bytes)
+                        .map_err(|e| Error::Other(format!("url-map {file_path}: {e}")))?,
+                };
                 resolved = Some(bergshamra_transforms::TransformData::Binary(bytes));
                 break;
             }
         }
+        // Match verifier behavior for local detached files: URI schemes are
+        // not local paths, and any local path candidate must pass the same
+        // absolute/traversal checks.
         if resolved.is_none() {
-            if let Some(bytes) = read_signing_relative_reference_uri(uri, ctx.base_dir.as_deref())?
+            if let Some(bytes) =
+                read_signing_relative_reference_uri(uri, ctx.base_dir.as_deref(), max_bytes)?
             {
                 resolved = Some(bergshamra_transforms::TransformData::Binary(bytes));
             }
@@ -968,6 +1049,47 @@ fn compute_reference_digest_via_transform_pipeline(
 
     let bytes = data.to_binary()?;
     digest::digest(digest_uri, &bytes)
+}
+
+/// Member references of the Manifests that `signed_info` authenticates and
+/// that live in an `<Object>` of `sig_node`, children before parents.
+/// Manifests outside this Signature are not modified.
+fn manifest_members_to_sign(
+    doc: &Document<'_>,
+    sig_node: NodeId,
+    signed_info: NodeId,
+    id_map: &HashMap<String, NodeId>,
+    limits: &ManifestLimits,
+) -> Result<Vec<NodeId>, Error> {
+    let outer = find_child_elements(doc, signed_info, ns::DSIG, ns::node::REFERENCE);
+    let in_own_object = |manifest: NodeId| {
+        let mut node = manifest;
+        while let Some(parent) = doc.parent(node) {
+            if parent == sig_node {
+                return doc
+                    .element(node)
+                    .is_some_and(|e| e.matches_name_ns(ns::DSIG, ns::node::OBJECT));
+            }
+            node = parent;
+        }
+        false
+    };
+    Ok(plan_manifests(doc, sig_node, id_map, &outer, limits)?
+        .into_iter()
+        .filter(|(manifest, _)| in_own_object(*manifest))
+        .flat_map(|(_, members)| members)
+        .collect())
+}
+
+/// The member's `<DigestValue>` when it is empty; `None` when already filled.
+fn empty_digest_value(doc: &Document<'_>, reference: NodeId) -> Result<Option<NodeId>, Error> {
+    let digest_value = find_child_element(doc, reference, ns::DSIG, ns::node::DIGEST_VALUE)
+        .ok_or_else(|| Error::MissingElement("DigestValue in Manifest Reference".into()))?;
+    Ok(doc
+        .text_content_deep(digest_value)
+        .trim()
+        .is_empty()
+        .then_some(digest_value))
 }
 
 fn replace_element_text(doc: &mut Document<'_>, element: NodeId, content: String) {
@@ -1073,18 +1195,25 @@ fn escape_xml_attr(value: &str) -> String {
 /// This mirrors verifier local-file fallback so signing cannot accidentally
 /// digest a local file for a scheme URI such as `urn:payload`, nor use absolute
 /// paths or parent traversal that verification would later reject.
+/// With `max_bytes`, reads are bounded and, as in bounded Manifest
+/// verification, there is no current-directory fallback.
 fn read_signing_relative_reference_uri(
     uri: &str,
     base_dir: Option<&str>,
+    max_bytes: Option<usize>,
 ) -> Result<Option<Vec<u8>>, Error> {
     let Some(path) = local_reference_relative_path(uri)? else {
         return Ok(None);
     };
 
     if let Some(base) = base_dir {
-        if let Some(data) = read_existing_relative_file(std::path::Path::new(base), path, uri)? {
+        let base = std::path::Path::new(base);
+        if let Some(data) = read_existing_relative_file_with_limit(base, path, uri, max_bytes)? {
             return Ok(Some(data));
         }
+    }
+    if max_bytes.is_some() {
+        return Ok(None);
     }
 
     let cwd = std::env::current_dir().map_err(|e| Error::Other(format!("current dir: {e}")))?;

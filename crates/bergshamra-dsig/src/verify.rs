@@ -24,6 +24,7 @@ use uppsala::{Document, NodeId, NodeKind, XmlWriter};
 
 mod manifest;
 
+pub(crate) use manifest::{check_manifest_input, plan_manifests};
 pub use manifest::{
     verify_document_with_manifests, verify_with_manifests, ManifestLimits,
     ManifestVerificationResult, VerifiedManifest,
