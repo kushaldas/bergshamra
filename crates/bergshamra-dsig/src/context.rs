@@ -70,6 +70,16 @@ pub struct DsigContext {
     /// `cid:` attachments, after the caller verifies those external bytes
     /// out-of-band.
     pub require_reference_digests: bool,
+    /// Opt-in retention of the exact octets each verified `<Reference>` digested.
+    ///
+    /// When `Some(limit)`, verification fills
+    /// [`VerifiedReference::digested_octets`](crate::VerifiedReference::digested_octets)
+    /// with the post-transform bytes that were passed to the digest algorithm,
+    /// for `<SignedInfo>` references and explicit Manifest members. `limit` bounds
+    /// the total retained bytes per signature; exceeding it is an error, never a
+    /// truncation. `None` (the default) retains nothing and keeps the streaming
+    /// digest fast path.
+    pub retain_reference_octets: Option<usize>,
     /// Optional HSM-backed signer. When set, bypasses KeysManager for signing.
     pub hsm_signer: Option<Box<dyn Signer>>,
     /// Optional HSM-backed verifier. When set, bypasses KeysManager for verification.
@@ -103,6 +113,7 @@ impl std::fmt::Debug for DsigContext {
             .field("trusted_keys_only", &self.trusted_keys_only)
             .field("strict_verification", &self.strict_verification)
             .field("require_reference_digests", &self.require_reference_digests)
+            .field("retain_reference_octets", &self.retain_reference_octets)
             .field(
                 "hsm_signer",
                 &self.hsm_signer.as_ref().map(|_| "<hsm_signer>"),
@@ -170,6 +181,7 @@ impl DsigContext {
             trusted_keys_only: false,
             strict_verification: false,
             require_reference_digests: true,
+            retain_reference_octets: None,
             hsm_signer: None,
             hsm_verifier: None,
         }

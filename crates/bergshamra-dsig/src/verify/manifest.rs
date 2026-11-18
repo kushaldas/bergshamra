@@ -1,9 +1,9 @@
 //! Explicit, bounded assessment of authenticated same-document Manifests.
 
 use super::{
-    build_verify_id_map, find_child_element, find_child_elements, find_element,
-    validate_reference_position, verify_reference_with_limit, verify_signature_node_with_limit,
-    VerifiedReference, VerifyResult,
+    account_retained_octets, build_verify_id_map, find_child_element, find_child_elements,
+    find_element, validate_reference_position, verify_reference_with_limit,
+    verify_signature_node_with_limit, VerifiedReference, VerifyResult,
 };
 use crate::DsigContext;
 use bergshamra_c14n::C14nMode;
@@ -165,6 +165,13 @@ pub fn verify_document_with_manifests(
             "Manifest verification requires every outer digest".into(),
         ));
     }
+    // Outer references and Manifest members share one retained-octets budget.
+    let mut retained_octets = 0usize;
+    if let VerifyResult::Valid { references, .. } = &signature {
+        for reference in references {
+            account_retained_octets(&mut retained_octets, reference, ctx.retain_reference_octets)?;
+        }
+    }
     let mut manifests = Vec::with_capacity(graph.plans.len());
     // Reverse postorder is topological: authenticate every parent binding
     // before interpreting a descendant Manifest's resource declarations.
@@ -185,8 +192,10 @@ pub fn verify_document_with_manifests(
                 ctx.debug,
                 ctx.base_dir.as_deref(),
                 Some(limits.max_reference_bytes),
+                ctx.retain_reference_octets.is_some(),
             )
             .map_err(|error| reference_error(doc, manifest_node, uri, error))?;
+            account_retained_octets(&mut retained_octets, &result, ctx.retain_reference_octets)?;
             if let Some(reason) = mismatch {
                 return Err(Error::DigestMismatch(format!(
                     "Manifest reference URI={uri}: {reason}"

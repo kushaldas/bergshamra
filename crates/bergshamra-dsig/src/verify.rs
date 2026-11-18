@@ -48,6 +48,31 @@ pub struct VerifiedReference {
     /// Callers that process `cid:` references **must** verify attachment digests
     /// separately.
     pub digest_verified: bool,
+    /// The exact post-transform octets that were digested, when
+    /// [`DsigContext::retain_reference_octets`] is set. `None` otherwise, and
+    /// always `None` for skipped `cid:` references.
+    pub digested_octets: Option<Vec<u8>>,
+}
+
+/// Account for retained reference octets against the per-signature limit.
+/// Exceeding the limit is an error; octets are never truncated.
+pub(crate) fn account_retained_octets(
+    retained: &mut usize,
+    reference: &VerifiedReference,
+    limit: Option<usize>,
+) -> Result<(), Error> {
+    let (Some(limit), Some(octets)) = (limit, reference.digested_octets.as_ref()) else {
+        return Ok(());
+    };
+    *retained = retained
+        .checked_add(octets.len())
+        .filter(|total| *total <= limit)
+        .ok_or_else(|| {
+            Error::XmlStructure(format!(
+                "retained reference octets exceed the configured limit of {limit} bytes"
+            ))
+        })?;
+    Ok(())
 }
 
 /// Information about the key that was used to verify the signature.
@@ -406,30 +431,22 @@ fn verify_signature_node_with_limit(
     // 3. Verify each Reference
     let references = find_child_elements(doc, signed_info, ns::DSIG, ns::node::REFERENCE);
     let mut verified_refs = Vec::with_capacity(references.len());
+    let retain_octets = ctx.retain_reference_octets.is_some();
+    let mut retained_octets = 0usize;
     for reference in &references {
-        let (mismatch, vref) = match max_reference_bytes {
-            Some(limit) => verify_reference_with_limit(
-                *reference,
-                doc,
-                id_map,
-                xml,
-                sig_node,
-                &ctx.url_maps,
-                ctx.debug,
-                ctx.base_dir.as_deref(),
-                Some(limit),
-            ),
-            None => verify_reference(
-                *reference,
-                doc,
-                id_map,
-                xml,
-                sig_node,
-                &ctx.url_maps,
-                ctx.debug,
-                ctx.base_dir.as_deref(),
-            ),
-        }?;
+        let (mismatch, vref) = verify_reference_with_limit(
+            *reference,
+            doc,
+            id_map,
+            xml,
+            sig_node,
+            &ctx.url_maps,
+            ctx.debug,
+            ctx.base_dir.as_deref(),
+            max_reference_bytes,
+            retain_octets,
+        )?;
+        account_retained_octets(&mut retained_octets, &vref, ctx.retain_reference_octets)?;
         verified_refs.push(vref);
         if let Some(reason) = mismatch {
             if typed_reference_errors {
@@ -856,6 +873,7 @@ fn valid_result(
 ///
 /// Returns `Ok((None, vref))` if the digest matches, `Ok((Some(reason), vref))` if it
 /// does not match. The `VerifiedReference` carries the URI and resolved target node.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn verify_reference(
     reference: NodeId,
@@ -868,7 +886,7 @@ fn verify_reference(
     base_dir: Option<&str>,
 ) -> Result<(Option<String>, VerifiedReference), Error> {
     verify_reference_with_limit(
-        reference, doc, id_map, xml, sig_node, url_maps, debug, base_dir, None,
+        reference, doc, id_map, xml, sig_node, url_maps, debug, base_dir, None, false,
     )
 }
 
@@ -883,6 +901,7 @@ fn verify_reference_with_limit(
     debug: bool,
     base_dir: Option<&str>,
     max_reference_bytes: Option<usize>,
+    retain_octets: bool,
 ) -> Result<(Option<String>, VerifiedReference), Error> {
     // Read URI attribute
     let uri = doc
@@ -900,6 +919,7 @@ fn verify_reference_with_limit(
                 uri: uri.to_owned(),
                 resolved_node: None,
                 digest_verified: false,
+                digested_octets: None,
             },
         ));
     }
@@ -928,10 +948,11 @@ fn verify_reference_with_limit(
         .map_err(|e| Error::Base64(format!("DigestValue: {e}")))?;
 
     // Read transforms once, then try the narrow same-document C14N fast path.
-    // In debug mode we deliberately skip the streaming digest fast path because
-    // callers asked to see the exact pre-digest bytes.
+    // In debug mode, and when octets are retained, we deliberately skip the
+    // streaming digest fast path because callers asked for the exact pre-digest
+    // bytes.
     let transforms_node = find_child_element(doc, reference, ns::DSIG, ns::node::TRANSFORMS);
-    if !debug {
+    if !debug && !retain_octets {
         if let Some((computed, resolved_node)) =
             try_fast_reference_digest(doc, id_map, uri, sig_node, transforms_node, digest_uri)?
         {
@@ -939,6 +960,7 @@ fn verify_reference_with_limit(
                 uri: uri.to_owned(),
                 resolved_node,
                 digest_verified: true,
+                digested_octets: None,
             };
             return Ok(compare_reference_digest(
                 uri,
@@ -1022,12 +1044,6 @@ fn verify_reference_with_limit(
         (data.to_binary()?, resolved_node, debug_pre_digest_bytes)
     };
 
-    let vref = VerifiedReference {
-        uri: uri.to_owned(),
-        resolved_node,
-        digest_verified: true,
-    };
-
     if debug {
         eprintln!("== PreDigest data - start buffer (URI={uri}):");
         if debug_pre_digest_bytes {
@@ -1038,8 +1054,14 @@ fn verify_reference_with_limit(
         eprintln!("\n== PreDigest data - end buffer");
     }
 
-    // Compute digest
+    // Compute digest; when requested, keep exactly the digested buffer.
     let computed = digest::digest(digest_uri, &bytes)?;
+    let vref = VerifiedReference {
+        uri: uri.to_owned(),
+        resolved_node,
+        digest_verified: true,
+        digested_octets: retain_octets.then_some(bytes),
+    };
     Ok(compare_reference_digest(
         uri,
         computed,
@@ -4757,6 +4779,7 @@ mod tests {
             uri: "#body".to_owned(),
             resolved_node: Some(NodeId::new(0)),
             digest_verified,
+            digested_octets: None,
         }
     }
 
