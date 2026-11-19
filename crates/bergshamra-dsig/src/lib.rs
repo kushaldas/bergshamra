@@ -171,3 +171,9 @@ fn map_kryptering_err(e: kryptering::Error) -> bergshamra_core::Error {
         other => bergshamra_core::Error::Crypto(other.to_string()),
     }
 }
+
+/// Explicit bounded assessment of authenticated same-document Manifests.
+pub use verify::{
+    verify_document_with_manifests, verify_with_manifests, ManifestLimits,
+    ManifestVerificationResult, VerifiedManifest,
+};

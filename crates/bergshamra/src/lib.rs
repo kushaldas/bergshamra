@@ -12,6 +12,32 @@
 //! canonical XML (`c14n`), key loading and lookup (`keys`), transform handling
 //! (`transforms`), or algorithm implementations (`crypto`).
 
+//! # Binding Manifest results to expected nodes
+//!
+//! Manifest verification checks the first Signature and every reachable member.
+//! Generic XMLDSig success can contain zero reachable Manifests; a package caller
+//! must require its expected Signature and Manifest identities as well.
+//!
+//! ```rust,no_run
+//! use bergshamra::{DsigContext, ManifestLimits, verify_document_with_manifests, VerifyResult};
+//! use bergshamra::xml::{Document, NodeId};
+//!
+//! fn assess_expected(
+//!     ctx: &DsigContext, doc: &Document<'_>, expected_signature: NodeId,
+//!     expected_manifest: NodeId,
+//! ) -> Result<(), bergshamra::Error> {
+//!     let assessment = verify_document_with_manifests(ctx, doc, None, &ManifestLimits::default())?;
+//!     match assessment.signature {
+//!         VerifyResult::Valid { signature_node, .. } if signature_node == expected_signature => {},
+//!         _ => return Err(bergshamra::Error::SignatureInvalid("unexpected Signature".into())),
+//!     }
+//!     if !assessment.manifests.iter().any(|m| m.manifest_node == expected_manifest) {
+//!         return Err(bergshamra::Error::MissingElement("expected package Manifest".into()));
+//!     }
+//!     Ok(())
+//! }
+//! ```
+
 /// Canonical XML support, including inclusive, exclusive, and C14N 1.1 modes.
 pub use bergshamra_c14n as c14n;
 /// Core shared types, XML security namespace constants, and the error type.
@@ -51,3 +77,9 @@ pub use bergshamra_dsig::verify::{verify, verify_all};
 pub use bergshamra_enc::decrypt::{decrypt, decrypt_to_bytes};
 /// Encrypt bytes into an XML Encryption template.
 pub use bergshamra_enc::encrypt::encrypt;
+
+/// Verify a signature and its authenticated same-document Manifest members.
+pub use bergshamra_dsig::{
+    verify_document_with_manifests, verify_with_manifests, ManifestLimits,
+    ManifestVerificationResult, VerifiedManifest,
+};

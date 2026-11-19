@@ -70,6 +70,31 @@ pub struct DsigContext {
     /// `cid:` attachments, after the caller verifies those external bytes
     /// out-of-band.
     pub require_reference_digests: bool,
+    /// Opt-in retention of the exact octets each verified `<Reference>` digested.
+    ///
+    /// When `Some(limit)`, verification fills
+    /// [`VerifiedReference::digested_octets`](crate::VerifiedReference::digested_octets)
+    /// with the post-transform bytes that were passed to the digest algorithm,
+    /// for `<SignedInfo>` references and explicit Manifest members. `limit` bounds
+    /// the total retained bytes per signature; exceeding it is an error, never a
+    /// truncation. `None` (the default) retains nothing and keeps the streaming
+    /// digest fast path.
+    pub retain_reference_octets: Option<usize>,
+    /// Opt-in signing of authenticated same-document Manifest members.
+    ///
+    /// When `true`, signing first fills each empty member `<DigestValue>` of
+    /// the `<Manifest>` elements inside this Signature's `<Object>` elements
+    /// that a `<SignedInfo>` `<Reference>` authenticates (the discovery rules of
+    /// [`verify_document_with_manifests`](crate::verify::verify_document_with_manifests)).
+    /// Members use the same resolver, URL maps, transforms and digest code as
+    /// `<SignedInfo>` references; nested Manifests are filled children first,
+    /// and every Manifest before the `<SignedInfo>` references. Non-empty
+    /// member digests are left unchanged. Default
+    /// [`ManifestLimits`](crate::verify::ManifestLimits) bound the graph and
+    /// the detached reads (also of `<SignedInfo>` references, with no
+    /// current-directory fallback); any failure fails the signing call and
+    /// leaves no partial output. `false` (the default) keeps Manifests as-is.
+    pub sign_manifest_members: bool,
     /// Optional HSM-backed signer. When set, bypasses KeysManager for signing.
     pub hsm_signer: Option<Box<dyn Signer>>,
     /// Optional HSM-backed verifier. When set, bypasses KeysManager for verification.
@@ -103,6 +128,8 @@ impl std::fmt::Debug for DsigContext {
             .field("trusted_keys_only", &self.trusted_keys_only)
             .field("strict_verification", &self.strict_verification)
             .field("require_reference_digests", &self.require_reference_digests)
+            .field("retain_reference_octets", &self.retain_reference_octets)
+            .field("sign_manifest_members", &self.sign_manifest_members)
             .field(
                 "hsm_signer",
                 &self.hsm_signer.as_ref().map(|_| "<hsm_signer>"),
@@ -170,6 +197,8 @@ impl DsigContext {
             trusted_keys_only: false,
             strict_verification: false,
             require_reference_digests: true,
+            retain_reference_octets: None,
+            sign_manifest_members: false,
             hsm_signer: None,
             hsm_verifier: None,
         }
@@ -371,6 +400,15 @@ pub(crate) fn read_existing_relative_file(
     relative_path: &std::path::Path,
     uri: &str,
 ) -> Result<Option<Vec<u8>>, Error> {
+    read_existing_relative_file_with_limit(base, relative_path, uri, None)
+}
+
+pub(crate) fn read_existing_relative_file_with_limit(
+    base: &std::path::Path,
+    relative_path: &std::path::Path,
+    uri: &str,
+    max_bytes: Option<usize>,
+) -> Result<Option<Vec<u8>>, Error> {
     let full = base.join(relative_path);
     if !full.exists() {
         return Ok(None);
@@ -388,7 +426,94 @@ pub(crate) fn read_existing_relative_file(
         )));
     }
 
-    let data = std::fs::read(&canonical_full)
-        .map_err(|e| Error::Other(format!("{}: {e}", canonical_full.display())))?;
+    let data = read_reference_file(&canonical_full, max_bytes)
+        .map_err(|e| Error::Other(format!("URI={uri} {}: {e}", canonical_full.display())))?;
     Ok(Some(data))
+}
+
+/// Read through the existing resolver with an optional byte limit. `take` also
+/// bounds a file that grows after the metadata check; an oversized resource is
+/// never truncated and treated as the complete reference payload.
+pub(crate) fn read_reference_file(
+    path: &std::path::Path,
+    max_bytes: Option<usize>,
+) -> Result<Vec<u8>, Error> {
+    let Some(limit) = max_bytes else {
+        return Ok(std::fs::read(path)?);
+    };
+    // Reject known special files before opening (e.g. a blocking named pipe).
+    let metadata = std::fs::metadata(path)?;
+    if !metadata.is_file() {
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Reference resource is not a regular file",
+        )));
+    }
+    if metadata.len() > limit as u64 {
+        return Err(Error::Other(format!(
+            "Reference resource byte limit exceeded ({limit} bytes)"
+        )));
+    }
+    let file = std::fs::File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Reference resource is not a regular file",
+        )));
+    }
+    if metadata.len() > limit as u64 {
+        return Err(Error::Other(format!(
+            "Reference resource byte limit exceeded ({limit} bytes)"
+        )));
+    }
+    read_reference_stream(file, limit)
+}
+
+fn read_reference_stream(reader: impl std::io::Read, limit: usize) -> Result<Vec<u8>, Error> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    reader
+        .take((limit as u64).saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(Error::Other(format!(
+            "Reference resource byte limit exceeded ({limit} bytes)"
+        )));
+    }
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod manifest_read_regressions {
+    use super::*;
+    #[test]
+    fn resource_growth_after_metadata_is_not_accepted_as_a_truncated_prefix() {
+        use std::io::{Read, Write};
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("bergshamra-growth-{}-{nonce}", std::process::id()));
+        let mut writer = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        writer.write_all(b"a").unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let checked_size = file.metadata().unwrap().len();
+        assert_eq!(checked_size, 1);
+        writer.write_all(b"bc").unwrap(); // Deterministic growth after the metadata snapshot.
+        let error = read_reference_stream(file, checked_size as usize).unwrap_err();
+        assert!(matches!(error, Error::Other(ref message) if message.contains("byte limit")));
+        let mut actual = Vec::new();
+        std::fs::File::open(&path)
+            .unwrap()
+            .read_to_end(&mut actual)
+            .unwrap();
+        assert_eq!(actual, b"abc");
+        std::fs::remove_file(&path).unwrap();
+    }
 }

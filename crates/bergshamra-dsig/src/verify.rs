@@ -11,7 +11,8 @@
 //! 6. Verify `<SignatureValue>`
 
 use crate::context::{
-    local_reference_relative_path, read_existing_relative_file, url_map_matches, DsigContext,
+    local_reference_relative_path, read_existing_relative_file_with_limit, read_reference_file,
+    url_map_matches, DsigContext,
 };
 use bergshamra_c14n::C14nMode;
 use bergshamra_core::{algorithm, ns, Error};
@@ -20,6 +21,14 @@ use bergshamra_xml::nodeset::NodeSet;
 use bergshamra_xml::xpath;
 use std::collections::HashMap;
 use uppsala::{Document, NodeId, NodeKind, XmlWriter};
+
+mod manifest;
+
+pub(crate) use manifest::{check_manifest_input, plan_manifests};
+pub use manifest::{
+    verify_document_with_manifests, verify_with_manifests, ManifestLimits,
+    ManifestVerificationResult, VerifiedManifest,
+};
 
 /// Metadata about a single verified `<Reference>`.
 ///
@@ -40,6 +49,31 @@ pub struct VerifiedReference {
     /// Callers that process `cid:` references **must** verify attachment digests
     /// separately.
     pub digest_verified: bool,
+    /// The exact post-transform octets that were digested, when
+    /// [`DsigContext::retain_reference_octets`] is set. `None` otherwise, and
+    /// always `None` for skipped `cid:` references.
+    pub digested_octets: Option<Vec<u8>>,
+}
+
+/// Account for retained reference octets against the per-signature limit.
+/// Exceeding the limit is an error; octets are never truncated.
+pub(crate) fn account_retained_octets(
+    retained: &mut usize,
+    reference: &VerifiedReference,
+    limit: Option<usize>,
+) -> Result<(), Error> {
+    let (Some(limit), Some(octets)) = (limit, reference.digested_octets.as_ref()) else {
+        return Ok(());
+    };
+    *retained = retained
+        .checked_add(octets.len())
+        .filter(|total| *total <= limit)
+        .ok_or_else(|| {
+            Error::XmlStructure(format!(
+                "retained reference octets exceed the configured limit of {limit} bytes"
+            ))
+        })?;
+    Ok(())
 }
 
 /// Information about the key that was used to verify the signature.
@@ -283,6 +317,18 @@ fn verify_signature_node(
     sig_node: NodeId,
     id_map: &std::collections::HashMap<String, NodeId>,
 ) -> Result<VerifyResult, Error> {
+    verify_signature_node_with_limit(ctx, doc, xml, sig_node, id_map, None, false)
+}
+
+fn verify_signature_node_with_limit(
+    ctx: &DsigContext,
+    doc: &Document<'_>,
+    xml: Option<&str>,
+    sig_node: NodeId,
+    id_map: &std::collections::HashMap<String, NodeId>,
+    max_reference_bytes: Option<usize>,
+    typed_reference_errors: bool,
+) -> Result<VerifyResult, Error> {
     // Find <SignedInfo>
     let signed_info = find_child_element(doc, sig_node, ns::DSIG, ns::node::SIGNED_INFO)
         .ok_or_else(|| Error::MissingElement("SignedInfo".into()))?;
@@ -386,8 +432,10 @@ fn verify_signature_node(
     // 3. Verify each Reference
     let references = find_child_elements(doc, signed_info, ns::DSIG, ns::node::REFERENCE);
     let mut verified_refs = Vec::with_capacity(references.len());
+    let retain_octets = ctx.retain_reference_octets.is_some();
+    let mut retained_octets = 0usize;
     for reference in &references {
-        let (mismatch, vref) = verify_reference(
+        let (mismatch, vref) = verify_reference_with_limit(
             *reference,
             doc,
             id_map,
@@ -396,9 +444,17 @@ fn verify_signature_node(
             &ctx.url_maps,
             ctx.debug,
             ctx.base_dir.as_deref(),
+            max_reference_bytes,
+            retain_octets,
         )?;
+        account_retained_octets(&mut retained_octets, &vref, ctx.retain_reference_octets)?;
         verified_refs.push(vref);
         if let Some(reason) = mismatch {
+            if typed_reference_errors {
+                return Err(Error::DigestMismatch(format!(
+                    "SignedInfo reference: {reason}"
+                )));
+            }
             return Ok(VerifyResult::Invalid {
                 reason: format!("Reference digest failed: {reason}"),
             });
@@ -818,6 +874,7 @@ fn valid_result(
 ///
 /// Returns `Ok((None, vref))` if the digest matches, `Ok((Some(reason), vref))` if it
 /// does not match. The `VerifiedReference` carries the URI and resolved target node.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn verify_reference(
     reference: NodeId,
@@ -828,6 +885,24 @@ fn verify_reference(
     url_maps: &[(String, String)],
     debug: bool,
     base_dir: Option<&str>,
+) -> Result<(Option<String>, VerifiedReference), Error> {
+    verify_reference_with_limit(
+        reference, doc, id_map, xml, sig_node, url_maps, debug, base_dir, None, false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)] // Same reference evaluator, with an optional bounded read.
+fn verify_reference_with_limit(
+    reference: NodeId,
+    doc: &Document<'_>,
+    id_map: &HashMap<String, NodeId>,
+    xml: Option<&str>,
+    sig_node: NodeId,
+    url_maps: &[(String, String)],
+    debug: bool,
+    base_dir: Option<&str>,
+    max_reference_bytes: Option<usize>,
+    retain_octets: bool,
 ) -> Result<(Option<String>, VerifiedReference), Error> {
     // Read URI attribute
     let uri = doc
@@ -845,6 +920,7 @@ fn verify_reference(
                 uri: uri.to_owned(),
                 resolved_node: None,
                 digest_verified: false,
+                digested_octets: None,
             },
         ));
     }
@@ -873,10 +949,11 @@ fn verify_reference(
         .map_err(|e| Error::Base64(format!("DigestValue: {e}")))?;
 
     // Read transforms once, then try the narrow same-document C14N fast path.
-    // In debug mode we deliberately skip the streaming digest fast path because
-    // callers asked to see the exact pre-digest bytes.
+    // In debug mode, and when octets are retained, we deliberately skip the
+    // streaming digest fast path because callers asked for the exact pre-digest
+    // bytes.
     let transforms_node = find_child_element(doc, reference, ns::DSIG, ns::node::TRANSFORMS);
-    if !debug {
+    if !debug && !retain_octets {
         if let Some((computed, resolved_node)) =
             try_fast_reference_digest(doc, id_map, uri, sig_node, transforms_node, digest_uri)?
         {
@@ -884,6 +961,7 @@ fn verify_reference(
                 uri: uri.to_owned(),
                 resolved_node,
                 digest_verified: true,
+                digested_octets: None,
             };
             return Ok(compare_reference_digest(
                 uri,
@@ -902,13 +980,31 @@ fn verify_reference(
         // Resolve URI and get initial data for the generic transform pipeline.
         let owned_xml;
         let xml_text = match xml {
-            Some(xml) => xml,
+            Some(xml) => Some(xml),
+            // Detached resolution produces binary data, never document nodes.
+            // Keep absent source explicit; the resolver rejects same-document
+            // resolution without source rather than accepting a placeholder.
+            None if max_reference_bytes.is_some() && !uri.is_empty() && !uri.starts_with('#') => {
+                None
+            }
             None => {
                 owned_xml = doc.to_xml();
-                &owned_xml
+                Some(owned_xml.as_str())
             }
         };
-        let resolved = resolve_reference_uri(uri, doc, id_map, xml_text, url_maps, base_dir)?;
+        let resolved = if let (None, Some(xml_text)) = (max_reference_bytes, xml_text) {
+            resolve_reference_uri(uri, doc, id_map, xml_text, url_maps, base_dir)
+        } else {
+            resolve_reference_uri_with_limit(
+                uri,
+                doc,
+                id_map,
+                xml_text,
+                url_maps,
+                base_dir,
+                max_reference_bytes,
+            )
+        }?;
         let (mut data, resolved_node, debug_pre_digest_bytes) = match resolved {
             ResolvedUri::Xml {
                 xml_text,
@@ -949,12 +1045,6 @@ fn verify_reference(
         (data.to_binary()?, resolved_node, debug_pre_digest_bytes)
     };
 
-    let vref = VerifiedReference {
-        uri: uri.to_owned(),
-        resolved_node,
-        digest_verified: true,
-    };
-
     if debug {
         eprintln!("== PreDigest data - start buffer (URI={uri}):");
         if debug_pre_digest_bytes {
@@ -965,8 +1055,14 @@ fn verify_reference(
         eprintln!("\n== PreDigest data - end buffer");
     }
 
-    // Compute digest
+    // Compute digest; when requested, keep exactly the digested buffer.
     let computed = digest::digest(digest_uri, &bytes)?;
+    let vref = VerifiedReference {
+        uri: uri.to_owned(),
+        resolved_node,
+        digest_verified: true,
+        digested_octets: retain_octets.then_some(bytes),
+    };
     Ok(compare_reference_digest(
         uri,
         computed,
@@ -1267,12 +1363,31 @@ fn resolve_reference_uri<'a>(
     url_maps: &[(String, String)],
     base_dir: Option<&str>,
 ) -> Result<ResolvedUri<'a>, Error> {
+    resolve_reference_uri_with_limit(uri, doc, id_map, Some(xml), url_maps, base_dir, None)
+}
+
+fn resolve_reference_uri_with_limit<'a>(
+    uri: &str,
+    doc: &Document<'_>,
+    id_map: &HashMap<String, NodeId>,
+    xml: Option<&'a str>,
+    url_maps: &[(String, String)],
+    base_dir: Option<&str>,
+    max_reference_bytes: Option<usize>,
+) -> Result<ResolvedUri<'a>, Error> {
+    let source = || {
+        xml.ok_or_else(|| {
+            Error::XmlStructure(format!(
+                "same-document Reference requires XML source: URI={uri}"
+            ))
+        })
+    };
     if uri.is_empty() {
         // Whole document, per W3C spec section 4.3.3.3:
         // "if the URI is not a full XPointer, then all comment nodes are excluded"
         let ns = NodeSet::all_without_comments(doc);
         Ok(ResolvedUri::Xml {
-            xml_text: xml,
+            xml_text: source()?,
             node_set: Some(ns),
             resolved_node: None,
         })
@@ -1280,7 +1395,7 @@ fn resolve_reference_uri<'a>(
         // Handle xpointer(/) — selects entire document
         if fragment == "xpointer(/)" {
             return Ok(ResolvedUri::Xml {
-                xml_text: xml,
+                xml_text: source()?,
                 node_set: None,
                 resolved_node: None,
             });
@@ -1296,7 +1411,7 @@ fn resolve_reference_uri<'a>(
             NodeSet::tree_without_comments(node, doc)
         };
         Ok(ResolvedUri::Xml {
-            xml_text: xml,
+            xml_text: source()?,
             node_set: Some(ns),
             resolved_node: Some(node),
         })
@@ -1305,8 +1420,17 @@ fn resolve_reference_uri<'a>(
         // same-resource `#fragment` suffix.
         for (map_url, file_path) in url_maps {
             if url_map_matches(uri, map_url) {
-                let data = std::fs::read(file_path)
-                    .map_err(|e| Error::Other(format!("url-map {file_path}: {e}")))?;
+                let data =
+                    read_reference_file(std::path::Path::new(file_path), max_reference_bytes)
+                        .map_err(|error| match (max_reference_bytes, error) {
+                            (Some(_), Error::Io(error)) => Error::Io(std::io::Error::new(
+                                error.kind(),
+                                format!("url-map URI={uri} {file_path}: {error}"),
+                            )),
+                            (_, error) => {
+                                Error::Other(format!("url-map URI={uri} {file_path}: {error}"))
+                            }
+                        })?;
                 return Ok(ResolvedUri::Binary {
                     bytes: data,
                     debug_pre_digest_bytes: false,
@@ -1314,7 +1438,7 @@ fn resolve_reference_uri<'a>(
             }
         }
 
-        if let Some(data) = read_relative_reference_uri(uri, base_dir)? {
+        if let Some(data) = read_relative_reference_uri(uri, base_dir, max_reference_bytes)? {
             return Ok(ResolvedUri::Binary {
                 bytes: data,
                 debug_pre_digest_bytes: false,
@@ -1337,19 +1461,32 @@ fn resolve_reference_uri<'a>(
 fn read_relative_reference_uri(
     uri: &str,
     base_dir: Option<&str>,
+    max_reference_bytes: Option<usize>,
 ) -> Result<Option<Vec<u8>>, Error> {
     let Some(path) = local_reference_relative_path(uri)? else {
         return Ok(None);
     };
 
     if let Some(base) = base_dir {
-        if let Some(data) = read_existing_relative_file(std::path::Path::new(base), path, uri)? {
+        if let Some(data) = read_existing_relative_file_with_limit(
+            std::path::Path::new(base),
+            path,
+            uri,
+            max_reference_bytes,
+        )? {
             return Ok(Some(data));
         }
     }
 
+    // Bounded opt-in Manifest assessment requires an explicit base or URL map.
+    // Unbounded legacy verification retains its historical cwd fallback.
+    if max_reference_bytes.is_some() {
+        return Ok(None);
+    }
     let cwd = std::env::current_dir().map_err(|e| Error::Other(format!("current dir: {e}")))?;
-    if let Some(data) = read_existing_relative_file(&cwd, path, uri)? {
+    if let Some(data) =
+        read_existing_relative_file_with_limit(&cwd, path, uri, max_reference_bytes)?
+    {
         return Ok(Some(data));
     }
 
@@ -4643,6 +4780,7 @@ mod tests {
             uri: "#body".to_owned(),
             resolved_node: Some(NodeId::new(0)),
             digest_verified,
+            digested_octets: None,
         }
     }
 
@@ -5524,5 +5662,30 @@ mod tests {
         assert!(message.contains("512-bit RSA key") && message.contains("unsupported"));
         #[cfg(feature = "rustcrypto")]
         assert!(message.contains("RSA SPKI import failed"), "{message}");
+    }
+}
+
+#[cfg(test)]
+mod manifest_source_invariant {
+    use super::*;
+
+    #[test]
+    fn absent_source_cannot_resolve_to_same_document_xml() {
+        let doc = uppsala::parse("<Root Id=\"payload\"/>").unwrap();
+        let ids = build_verify_id_map(
+            &DsigContext::new_permissive(bergshamra_keys::KeysManager::new()),
+            &doc,
+        )
+        .unwrap();
+        for uri in ["", "#payload", "#xpointer(/)"] {
+            let result =
+                resolve_reference_uri_with_limit(uri, &doc, &ids, None, &[], None, Some(1024));
+            match result {
+                Err(Error::XmlStructure(message)) => {
+                    assert!(message.contains("requires XML source"))
+                }
+                _ => panic!("absent source cannot resolve same-document URI={uri}"),
+            }
+        }
     }
 }

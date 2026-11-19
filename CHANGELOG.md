@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Opt-in `verify_with_manifests` and `verify_document_with_manifests` assess
+  authenticated same-document Manifest graphs using the existing Reference
+  resolver, transform dispatcher (including OPC RelationshipTransform), and
+  digest implementation. Limits cover recursion, cycles, graph size, input
+  bytes and detached Reference reads. Failed or unavailable members return
+  errors, never an outer-only success. Existing verification entry points
+  retain their behavior. See [Manifest verification](docs/manifest-verification.md)
+  for supported scope and partial-package coverage.
+- Refined opt-in Manifest coverage for enveloped signatures, indexed graph
+  discovery, member strict/XSW policy, typed errors and explicit relative-resource
+  resolution. Source-less DOM size checking now streams without an eager full
+  XML copy. Existing default verification behavior remains unchanged.
+- Rejected malformed nested Manifest declarations, clarified bounded mapped-file
+  I/O errors without changing legacy categories, and made absent XML source
+  explicit in detached resolution. Added excluded-transform, existing OPC
+  relationship mutation and compiled facade-example regressions.
+
 ## 0.12.0 [2026-11-09]
 
 ### Security
