@@ -32,7 +32,7 @@ pub trait KeyTransportAlgorithm: Send {
 pub struct OaepParams {
     /// Digest algorithm URI (default: SHA-1)
     pub digest_uri: Option<String>,
-    /// MGF algorithm URI (default: MGF1 with same digest)
+    /// MGF algorithm URI (default: MGF1 with SHA-1)
     pub mgf_uri: Option<String>,
     /// OAEPparams (optional label, base64-decoded)
     pub oaep_params: Option<Vec<u8>>,
@@ -67,11 +67,9 @@ pub fn from_uri_with_params(
             } else {
                 algorithm::RSA_OAEP_ENC11
             };
-            let digest = resolve_digest(params.digest_uri.as_deref())?;
-            let mgf = resolve_oaep_mgf(uri, &params, digest)?;
             let config = OaepConfig {
-                digest,
-                mgf_digest: mgf,
+                digest: resolve_digest(params.digest_uri.as_deref())?,
+                mgf_digest: resolve_mgf(params.mgf_uri.as_deref())?,
             };
             Ok(Box::new(KrypteringKeyTransport {
                 uri: static_uri,
@@ -114,42 +112,17 @@ fn resolve_digest(uri: Option<&str>) -> Result<HashAlgorithm, Error> {
 }
 
 /// Resolve the MGF URI to a `HashAlgorithm`.
-fn resolve_mgf(uri: Option<&str>) -> Result<Option<HashAlgorithm>, Error> {
+fn resolve_mgf(uri: Option<&str>) -> Result<HashAlgorithm, Error> {
     match uri {
-        None => Ok(None),
-        Some(algorithm::MGF1_SHA1) => Ok(Some(HashAlgorithm::Sha1)),
-        Some(algorithm::MGF1_SHA224) => Ok(Some(HashAlgorithm::Sha224)),
-        Some(algorithm::MGF1_SHA256) => Ok(Some(HashAlgorithm::Sha256)),
-        Some(algorithm::MGF1_SHA384) => Ok(Some(HashAlgorithm::Sha384)),
-        Some(algorithm::MGF1_SHA512) => Ok(Some(HashAlgorithm::Sha512)),
+        None | Some(algorithm::MGF1_SHA1) => Ok(HashAlgorithm::Sha1),
+        Some(algorithm::MGF1_SHA224) => Ok(HashAlgorithm::Sha224),
+        Some(algorithm::MGF1_SHA256) => Ok(HashAlgorithm::Sha256),
+        Some(algorithm::MGF1_SHA384) => Ok(HashAlgorithm::Sha384),
+        Some(algorithm::MGF1_SHA512) => Ok(HashAlgorithm::Sha512),
         Some(other) => Err(Error::UnsupportedAlgorithm(format!(
             "unsupported OAEP MGF: {other}"
         ))),
     }
-}
-
-/// Resolve the MGF hash for OAEP.
-///
-/// For `rsa-oaep-mgf1p` (XML Enc 1.0): MGF1 always uses SHA-1 unless an explicit
-/// MGF element overrides it.  The DigestMethod only controls the OAEP label hash.
-///
-/// For `rsa-oaep` (XML Enc 1.1): MGF defaults to the same hash as DigestMethod
-/// when no explicit MGF element is present.
-fn resolve_oaep_mgf(
-    uri: &str,
-    params: &OaepParams,
-    digest: HashAlgorithm,
-) -> Result<HashAlgorithm, Error> {
-    // If an explicit MGF element is present, use it
-    if let Some(mgf) = resolve_mgf(params.mgf_uri.as_deref())? {
-        return Ok(mgf);
-    }
-    // rsa-oaep-mgf1p: MGF1 defaults to SHA-1
-    if uri == algorithm::RSA_OAEP {
-        return Ok(HashAlgorithm::Sha1);
-    }
-    // rsa-oaep (enc11): MGF defaults to same as digest
-    Ok(digest)
 }
 
 // ── Wrapper that delegates to kryptering ────────────────────────────
@@ -210,10 +183,9 @@ mod tests {
 
     #[test]
     fn resolve_mgf_rejects_unknown_uri() {
-        assert_eq!(resolve_mgf(None).unwrap(), None);
         assert_eq!(
             resolve_mgf(Some(algorithm::MGF1_SHA256)).unwrap(),
-            Some(HashAlgorithm::Sha256)
+            HashAlgorithm::Sha256
         );
         assert!(resolve_mgf(Some("urn:test:unsupported-mgf")).is_err());
     }
@@ -261,6 +233,42 @@ mod tests {
         let encrypted = transport.encrypt(&public, plaintext).unwrap();
         assert_ne!(encrypted, plaintext);
         assert_eq!(transport.decrypt(&private, &encrypted).unwrap(), plaintext);
+    }
+
+    #[cfg(feature = "rustcrypto")]
+    #[test]
+    fn rsa_oaep_enc11_omitted_mgf_uses_sha1_with_sha256_digest() {
+        use kryptering::algorithm::{KeyTransportAlgorithm, OaepConfig};
+        use rsa::pkcs8::EncodePrivateKey;
+
+        let private = rsa::PrivateKey::new(&mut getrandom::SysRng, 2048).unwrap();
+        let private_der = private.to_pkcs8_der().unwrap();
+        let key = kryptering::SoftwareKey::from_pkcs8_der(
+            kryptering::KeyAlgorithm::Rsa,
+            private_der.as_bytes(),
+        )
+        .unwrap();
+        let plaintext = b"document content-encryption key";
+        let expected_algorithm = KeyTransportAlgorithm::RsaOaep(OaepConfig {
+            digest: HashAlgorithm::Sha256,
+            mgf_digest: HashAlgorithm::Sha1,
+        });
+        let encrypted =
+            kryptering::keytransport::kt_encrypt(expected_algorithm, &key, plaintext, None)
+                .expect("provider should encrypt with SHA-256 and MGF1-SHA1");
+
+        let transport = from_uri_with_params(
+            algorithm::RSA_OAEP_ENC11,
+            OaepParams {
+                digest_uri: Some(algorithm::SHA256.to_owned()),
+                ..OaepParams::default()
+            },
+        )
+        .unwrap();
+        let decrypted = transport
+            .decrypt(&key, &encrypted)
+            .expect("omitted MGF should decrypt with MGF1-SHA1");
+        assert_eq!(decrypted, plaintext);
     }
 
     #[cfg(feature = "legacy-algorithms")]
